@@ -5,13 +5,13 @@ import (
 	"fmt"
 	"os"
 
+	connectorSchema "github.com/conductorone/baton-docusign/pkg/connector"
 	"github.com/conductorone/baton-sdk/pkg/config"
 	"github.com/conductorone/baton-sdk/pkg/connectorbuilder"
 	"github.com/conductorone/baton-sdk/pkg/field"
 	"github.com/conductorone/baton-sdk/pkg/types"
 	"github.com/grpc-ecosystem/go-grpc-middleware/logging/zap/ctxzap"
 	"github.com/spf13/viper"
-	"github.com/conductorone/baton-docusign/pkg/connector"
 	"go.uber.org/zap"
 )
 
@@ -48,7 +48,11 @@ func getConnector(ctx context.Context, v *viper.Viper) (types.ConnectorServer, e
 		return nil, err
 	}
 
-	cb, err := connector.New(ctx)
+	docusignApi := v.GetString(apiUrlField.FieldName)
+	docusignAccount := v.GetString(accountField.FieldName)
+	docusignToken := v.GetString(tokenField.FieldName)
+
+	cb, err := connectorSchema.New(ctx, docusignApi, docusignToken, docusignAccount)
 	if err != nil {
 		l.Error("error creating connector", zap.Error(err))
 		return nil, err

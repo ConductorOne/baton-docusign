@@ -39,7 +39,7 @@ func WithDescription(description string) EntitlementOption {
 }
 
 func NewEntitlementID(resource *v2.Resource, permission string) string {
-	return fmt.Sprintf("%s:%s:%s", resource.Id.ResourceType, resource.Id.Resource, permission)
+	return fmt.Sprintf("%s:%s", resource.Id.Resource, permission)
 }
 
 func NewPermissionEntitlement(resource *v2.Resource, name string, entitlementOptions ...EntitlementOption) *v2.Entitlement {
