@@ -240,7 +240,6 @@ func getUserStatus(status string) v2.UserTrait_Status_Status {
 	}
 }
 
-// newPermissionBuilder crea una nueva instancia de permissionBuilder
 func newPermissionBuilder(client *client.Client) *permissionBuilder {
 	return &permissionBuilder{
 		resourceType: permissionResourceType,

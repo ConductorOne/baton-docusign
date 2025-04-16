@@ -33,7 +33,6 @@ type GroupsResponse struct {
 	Page   Page
 }
 
-// UserDetail representa la respuesta detallada del endpoint de usuario
 type UserDetail struct {
 	UserID                string       `json:"userId"`
 	UserName              string       `json:"userName"`
@@ -45,7 +44,6 @@ type UserDetail struct {
 	GroupList             []Group      `json:"groupList"`
 }
 
-// UserSettings contiene todos los permisos granularies del usuario
 type UserSettings struct {
 	CanManageAccount          string             `json:"canManageAccount"`
 	AccountManagementGranular AccountManagement  `json:"accountManagementGranular"`
@@ -72,7 +70,6 @@ type UserSettings struct {
 	SenderEmailNotifications  EmailNotifications `json:"senderEmailNotifications"`
 }
 
-// AccountManagement contiene permisos granulares de gestión de cuenta
 type AccountManagement struct {
 	CanManageUsers                   string `json:"canManageUsers"`
 	CanManageAdmins                  string `json:"canManageAdmins"`
@@ -81,9 +78,34 @@ type AccountManagement struct {
 	CanManageAccountSecuritySettings string `json:"canManageAccountSecuritySettings"`
 }
 
-// EmailNotifications contiene configuraciones de notificaciones
 type EmailNotifications struct {
 	EnvelopeActivation string `json:"envelopeActivation"`
 	EnvelopeComplete   string `json:"envelopeComplete"`
 	EnvelopeDeclined   string `json:"envelopeDeclined"`
+}
+
+type NewUser struct {
+	UserName     string        `json:"userName"`
+	Email        string        `json:"email"`
+	UserSettings *UserSettings `json:"userSettings,omitempty"`
+}
+
+type CreateUsersRequest struct {
+	NewUsers []NewUser `json:"newUsers"`
+}
+
+type UserCreationResponse struct {
+	NewUsers []struct {
+		UserId          string `json:"userId"`
+		Uri             string `json:"uri"`
+		Email           string `json:"email"`
+		UserName        string `json:"userName"`
+		UserStatus      string `json:"userStatus"`
+		CreatedDateTime string `json:"createdDateTime"`
+		MembershipId    string `json:"membershipId"`
+		ErrorDetails    *struct {
+			ErrorCode string `json:"errorCode"`
+			Message   string `json:"message"`
+		} `json:"errorDetails,omitempty"`
+	} `json:"newUsers"`
 }

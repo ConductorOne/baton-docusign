@@ -16,7 +16,7 @@ type Connector struct {
 	client *client.Client
 }
 
-// ResourceSyncers returns a ResourceSyncer for each resource type that should be synced from the upstream service.
+
 func (d *Connector) ResourceSyncers(ctx context.Context) []connectorbuilder.ResourceSyncer {
 	return []connectorbuilder.ResourceSyncer{
 		newUserBuilder(d.client),
@@ -25,27 +25,56 @@ func (d *Connector) ResourceSyncers(ctx context.Context) []connectorbuilder.Reso
 	}
 }
 
-// Asset takes an input AssetRef and attempts to fetch it using the connector's authenticated http client
-// It streams a response, always starting with a metadata object, following by chunked payloads for the asset.
+
 func (d *Connector) Asset(ctx context.Context, asset *v2.AssetRef) (string, io.ReadCloser, error) {
 	return "", nil, nil
 }
 
-// Metadata returns metadata about the connector.
 func (d *Connector) Metadata(ctx context.Context) (*v2.ConnectorMetadata, error) {
 	return &v2.ConnectorMetadata{
-		DisplayName: "DocuSign Connector",
-		Description: "Connector syncs data users, permissions, groups  and create account of DocuSign",
+		DisplayName: "DocuSign",
+		Description: "Connector syncs data users, permissions, groups  and create users of DocuSign",
+		AccountCreationSchema: &v2.ConnectorAccountCreationSchema{
+			FieldMap: map[string]*v2.ConnectorAccountCreationSchema_Field{
+				"name": {
+					DisplayName: "Name",
+					Required:    true,
+					Description: "This name will be used for the user.",
+					Field: &v2.ConnectorAccountCreationSchema_Field_StringField{
+						StringField: &v2.ConnectorAccountCreationSchema_StringField{},
+					},
+					Placeholder: "Name",
+					Order:       1,
+				},
+				"email": {
+					DisplayName: "Email",
+					Required:    true,
+					Description: "This email will be used as the login for the user.",
+					Field: &v2.ConnectorAccountCreationSchema_Field_StringField{
+						StringField: &v2.ConnectorAccountCreationSchema_StringField{},
+					},
+					Placeholder: "Email",
+					Order:       2,
+				},
+				"username": {
+					DisplayName: "Username",
+					Required:    true,
+					Description: "This username will be used for the user.",
+					Field: &v2.ConnectorAccountCreationSchema_Field_StringField{
+						StringField: &v2.ConnectorAccountCreationSchema_StringField{},
+					},
+					Placeholder: "Username",
+					Order:       3,
+				},
+			},
+		},
 	}, nil
 }
 
-// Validate is called to ensure that the connector is properly configured. It should exercise any API credentials
-// to be sure that they are valid.
 func (d *Connector) Validate(ctx context.Context) (annotations.Annotations, error) {
 	return nil, nil
 }
 
-// New returns a new instance of the connector.
 func New(ctx context.Context, apiUrl string, token string, account string) (*Connector, error) {
 	l := ctxzap.Extract(ctx)
 	docusignClient, err := client.New(ctx, client.NewClient(ctx, apiUrl, token, account))

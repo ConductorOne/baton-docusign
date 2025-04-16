@@ -19,6 +19,7 @@ const (
 	getPermissions = "/restapi/v2.1/accounts/%s/users/%s"        // Endpoint for permissions resources
 	getGroupUsers  = "/restapi/v2.1/accounts/%s/groups/%s/users" // Endpoint for groupUsers resources
 	getUserGroups  = "/restapi/v2.1/accounts/%s/users/%s"        // Endpoint for userGroups resources
+	createUsers    = "/restapi/v2.1/accounts/%s/users"
 )
 
 type Client struct {
@@ -233,7 +234,6 @@ func (c *Client) GetGroupUsers(ctx context.Context, groupId string) ([]User, ann
 	return allUsers, annotationsOut, nil
 }
 
-// GetUserDetails obtiene los detalles completos de un usuario incluyendo sus permisos
 func (c *Client) GetUserDetails(ctx context.Context, userID string) (*UserDetail, annotations.Annotations, error) {
 	baseURL, err := url.Parse(c.apiUrl)
 	if err != nil {
@@ -257,7 +257,6 @@ func (c *Client) GetUserDetails(ctx context.Context, userID string) (*UserDetail
 	return &userDetail, ann, nil
 }
 
-// GetAllUsersWithDetails obtiene todos los usuarios con sus detalles completos
 func (c *Client) GetAllUsersWithDetails(ctx context.Context) ([]*UserDetail, annotations.Annotations, error) {
 	users, annos, err := c.GetUsers(ctx)
 	if err != nil {
@@ -278,6 +277,78 @@ func (c *Client) GetAllUsersWithDetails(ctx context.Context) ([]*UserDetail, ann
 	}
 
 	return userDetails, annos, nil
+}
+
+func (c *Client) CreateUsers(ctx context.Context, request CreateUsersRequest) (*UserCreationResponse, annotations.Annotations, error) {
+	if len(request.NewUsers) == 0 {
+		return nil, nil, fmt.Errorf("at least one user must be provided")
+	}
+
+	baseURL, err := url.Parse(c.apiUrl)
+	if err != nil {
+		return nil, nil, fmt.Errorf("invalid base URL: %w", err)
+	}
+
+	createUsersPath := fmt.Sprintf(createUsers, c.accountId)
+	createUsersEndpoint, err := url.Parse(createUsersPath)
+	if err != nil {
+		return nil, nil, fmt.Errorf("invalid create users endpoint: %w", err)
+	}
+
+	createUsersURL := baseURL.ResolveReference(createUsersEndpoint)
+
+	var response UserCreationResponse
+	_, ann, err := c.doRequestWithBody(ctx, http.MethodPost, createUsersURL.String(), request, &response)
+	if err != nil {
+		return nil, ann, fmt.Errorf("error creating users: %w", err)
+	}
+
+	return &response, ann, nil
+}
+
+func (c *Client) doRequestWithBody(
+	ctx context.Context,
+	method string,
+	requestURL string,
+	body interface{},
+	res interface{},
+) (http.Header, annotations.Annotations, error) {
+	parsedURL, err := url.Parse(requestURL)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	req, err := c.wrapper.NewRequest(
+		ctx,
+		method,
+		parsedURL,
+		uhttp.WithContentTypeJSONHeader(),
+		uhttp.WithAcceptJSONHeader(),
+		uhttp.WithBearerToken(c.token),
+		uhttp.WithJSONBody(body),
+	)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	var resp *http.Response
+	var doOptions []uhttp.DoOption
+	if res != nil {
+		doOptions = append(doOptions, uhttp.WithJSONResponse(res))
+	}
+
+	resp, err = c.wrapper.Do(req, doOptions...)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer resp.Body.Close()
+
+	annotation := annotations.Annotations{}
+	if desc, err := ratelimit.ExtractRateLimitData(resp.StatusCode, &resp.Header); err == nil {
+		annotation.WithRateLimiting(desc)
+	}
+
+	return resp.Header, annotation, nil
 }
 
 func (c *Client) doRequest(
