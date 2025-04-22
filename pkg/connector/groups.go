@@ -18,30 +18,21 @@ type groupBuilder struct {
 	client       *client.Client
 }
 
-// ResourceType returns the type of resource this builder is responsible for.
 func (g *groupBuilder) ResourceType(ctx context.Context) *v2.ResourceType {
 	return groupResourceType
 }
 
-// List retrieves the list of groups from the DocuSign API and converts them into C1 resources.
 func (g *groupBuilder) List(ctx context.Context, parentResourceID *v2.ResourceId, pToken *pagination.Token) ([]*v2.Resource, string, annotations.Annotations, error) {
-	var resources []*v2.Resource
-	annos := annotations.Annotations{}
-
-	groups, newAnnos, err := g.client.GetGroups(ctx)
+	groups, annos, err := g.client.GetGroups(ctx)
 	if err != nil {
-		return nil, "", nil, err
+		return nil, "", nil, fmt.Errorf("docusign-connector: failed to list groups: %w", err)
 	}
 
-	for _, a := range newAnnos {
-		annos.Append(a)
-	}
-
+	resources := make([]*v2.Resource, 0, len(groups))
 	for _, group := range groups {
-		groupCopy := group
-		groupResource, err := parseIntoGroupResource(&groupCopy)
+		groupResource, err := parseIntoGroupResource(&group)
 		if err != nil {
-			return nil, "", nil, err
+			return nil, "", nil, fmt.Errorf("docusign-connector: failed to parse group: %w", err)
 		}
 		resources = append(resources, groupResource)
 	}
@@ -49,31 +40,24 @@ func (g *groupBuilder) List(ctx context.Context, parentResourceID *v2.ResourceId
 	return resources, "", annos, nil
 }
 
-// Entitlements returns the entitlements (permissions) associated with a group resource.
-func (g *groupBuilder) Entitlements(ctx context.Context, resource *v2.Resource, pToken *pagination.Token) ([]*v2.Entitlement, string, annotations.Annotations, error) {
-	e := entitlement.NewAssignmentEntitlement(
-		resource,
+func (g *groupBuilder) Entitlements(ctx context.Context, res *v2.Resource, pToken *pagination.Token) ([]*v2.Entitlement, string, annotations.Annotations, error) {
+	ent := entitlement.NewAssignmentEntitlement(
+		res,
 		"member",
 		entitlement.WithGrantableTo(userResourceType),
-		entitlement.WithDisplayName(fmt.Sprintf("Member of %s", resource.DisplayName)),
-		entitlement.WithDescription(fmt.Sprintf("Member of %s group", resource.DisplayName)),
+		entitlement.WithDisplayName(fmt.Sprintf("Member of %s", res.DisplayName)),
+		entitlement.WithDescription(fmt.Sprintf("Member of %s group", res.DisplayName)),
 	)
-	return []*v2.Entitlement{e}, "", nil, nil
+	return []*v2.Entitlement{ent}, "", nil, nil
 }
 
-// Grants returns the list of grants (assignments of entitlements) for users in a group.
-func (g *groupBuilder) Grants(ctx context.Context, parentResource *v2.Resource, pToken *pagination.Token) ([]*v2.Grant, string, annotations.Annotations, error) {
-	var grants []*v2.Grant
-	annos := annotations.Annotations{}
-
-	groupUsers, newAnnos, err := g.client.GetGroupUsers(ctx, parentResource.Id.Resource)
+func (g *groupBuilder) Grants(ctx context.Context, res *v2.Resource, pToken *pagination.Token) ([]*v2.Grant, string, annotations.Annotations, error) {
+	groupUsers, annos, err := g.client.GetGroupUsers(ctx, res.Id.Resource)
 	if err != nil {
-		return nil, "", nil, fmt.Errorf("error fetching group users: %w", err)
-	}
-	for _, a := range newAnnos {
-		annos.Append(a)
+		return nil, "", nil, fmt.Errorf("docusign-connector: failed to get group users for %s: %w", res.Id.Resource, err)
 	}
 
+	grants := make([]*v2.Grant, 0, len(groupUsers))
 	for _, user := range groupUsers {
 		userResource, err := resource.NewUserResource(
 			user.UserName,
@@ -87,27 +71,25 @@ func (g *groupBuilder) Grants(ctx context.Context, parentResource *v2.Resource, 
 			},
 		)
 		if err != nil {
-			return nil, "", nil, err
+			return nil, "", nil, fmt.Errorf("docusign-connector: failed to create user resource: %w", err)
 		}
 
-		grant := grant.NewGrant(
-			parentResource,
+		grants = append(grants, grant.NewGrant(
+			res,
 			"member",
 			userResource.Id,
 			grant.WithGrantMetadata(map[string]interface{}{
-				"group_id":   parentResource.Id.Resource,
-				"group_name": parentResource.DisplayName,
+				"group_id":   res.Id.Resource,
+				"group_name": res.DisplayName,
 				"user_id":    user.UserId,
 				"username":   user.UserName,
 			}),
-		)
-		grants = append(grants, grant)
+		))
 	}
 
 	return grants, "", annos, nil
 }
 
-// newGroupBuilder initializes a new groupBuilder instance.
 func newGroupBuilder(client *client.Client) *groupBuilder {
 	return &groupBuilder{
 		resourceType: groupResourceType,
@@ -115,22 +97,19 @@ func newGroupBuilder(client *client.Client) *groupBuilder {
 	}
 }
 
-// parseIntoGroupResource converts a DocuSign Group object into a C1 Resource object.
 func parseIntoGroupResource(group *client.Group) (*v2.Resource, error) {
 	profile := map[string]interface{}{
-		"groupName":   group.GroupName,
-		"groupType":   group.GroupType,
+		"group_name":  group.GroupName,
+		"group_type":  group.GroupType,
 		"users_count": group.UsersCount,
-	}
-
-	groupTraits := []resource.GroupTraitOption{
-		resource.WithGroupProfile(profile),
 	}
 
 	return resource.NewGroupResource(
 		group.GroupName,
 		groupResourceType,
 		group.GroupId,
-		groupTraits,
+		[]resource.GroupTraitOption{
+			resource.WithGroupProfile(profile),
+		},
 	)
 }

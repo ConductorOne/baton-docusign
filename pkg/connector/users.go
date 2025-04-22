@@ -118,7 +118,6 @@ func (b *userBuilder) CreateAccount(
 		return nil, nil, nil, fmt.Errorf("username is required")
 	}
 
-	// Build request payload
 	usersRequest := client.CreateUsersRequest{
 		NewUsers: []client.NewUser{{
 			UserName: username,
@@ -126,7 +125,6 @@ func (b *userBuilder) CreateAccount(
 		}},
 	}
 
-	// Make API call
 	createdUsers, _, err := b.client.CreateUsers(ctx, usersRequest)
 	if err != nil {
 		return nil, nil, nil, err
@@ -141,7 +139,6 @@ func (b *userBuilder) CreateAccount(
 			created.ErrorDetails.ErrorCode, created.ErrorDetails.Message)
 	}
 
-	// Map API response to Baton user resource
 	userRes, err := parseIntoUserResource(&client.User{
 		UserId:     created.UserId,
 		UserName:   created.UserName,

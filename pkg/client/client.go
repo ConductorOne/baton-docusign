@@ -28,13 +28,13 @@ type Client struct {
 	accountId    string
 	clientID     string
 	clientSecret string
-	refreshToken string
+	redirectUri  string
 	wrapper      *uhttp.BaseHttpClient
 }
 
-// New creates a new Client instance, automatically performing OAuth2 authentication using client credentials and refresh token.
-func New(ctx context.Context, input *Client) (*Client, error) {
-	httpClient, token, err := NewAuthenticatedClient(ctx, input.clientID, input.clientSecret, input.accountId, input.apiUrl)
+// New creates a new Client instance, automatically performing OAuth2 authentication.
+func New(ctx context.Context, apiUrl string, account string, clientId string, clientSecret string, redirectUri string) (*Client, error) {
+	httpClient, token, err := NewAuthenticatedClient(ctx, clientId, clientSecret, account, redirectUri)
 	if err != nil {
 		return nil, err
 	}
@@ -46,17 +46,17 @@ func New(ctx context.Context, input *Client) (*Client, error) {
 
 	return &Client{
 		wrapper:      baseHttpClient,
-		apiUrl:       input.apiUrl,
+		apiUrl:       apiUrl,
 		token:        token.AccessToken,
-		accountId:    input.accountId,
-		clientID:     input.clientID,
-		clientSecret: input.clientSecret,
-		refreshToken: token.RefreshToken,
+		accountId:    account,
+		clientID:     clientId,
+		clientSecret: clientSecret,
+		redirectUri:  redirectUri,
 	}, nil
 }
 
-// NewClient creates a new Client instance using the provided token and optional HTTP client.
-func NewClient(ctx context.Context, apiUrl string, token string, account string, clientId string, clientSecret string, refreshToken string, httpClient ...*uhttp.BaseHttpClient) *Client {
+// NewClient creates a new Client instance using the provided token.
+func NewClient(ctx context.Context, apiUrl string, token string, account string, clientId string, clientSecret string, redirectURI string, httpClient ...*uhttp.BaseHttpClient) *Client {
 	var wrapper = &uhttp.BaseHttpClient{}
 	if len(httpClient) > 0 {
 		wrapper = httpClient[0]
@@ -69,192 +69,189 @@ func NewClient(ctx context.Context, apiUrl string, token string, account string,
 		accountId:    account,
 		clientID:     clientId,
 		clientSecret: clientSecret,
-		refreshToken: refreshToken,
+		redirectUri:  redirectURI,
 	}
+}
+
+// buildURL constructs a complete URL from base path and path parameters
+func (c *Client) buildURL(path string, pathParams ...interface{}) (*url.URL, error) {
+	baseURL, err := url.Parse(c.apiUrl)
+	if err != nil {
+		return nil, fmt.Errorf("invalid base URL: %w", err)
+	}
+
+	formattedPath := fmt.Sprintf(path, pathParams...)
+	endpoint, err := url.Parse(formattedPath)
+	if err != nil {
+		return nil, fmt.Errorf("invalid endpoint path: %w", err)
+	}
+
+	return baseURL.ResolveReference(endpoint), nil
+}
+
+// paginatedRequest handles paginated requests for a given endpoint
+func (c *Client) paginatedRequest(
+	ctx context.Context,
+	path string,
+	pathParams []interface{},
+	response interface{},
+	extractItems func() []interface{},
+) ([]interface{}, annotations.Annotations, error) {
+	var allItems []interface{}
+	var annotationsOut annotations.Annotations
+	startPosition := 0
+
+	for {
+		url, err := c.buildURL(path, pathParams...)
+		if err != nil {
+			return nil, nil, err
+		}
+
+		query := url.Query()
+		query.Set("startPosition", fmt.Sprintf("%d", startPosition))
+		url.RawQuery = query.Encode()
+
+		_, ann, err := c.doRequest(ctx, http.MethodGet, url.String(), response)
+		if err != nil {
+			return nil, annotationsOut, err
+		}
+
+		allItems = append(allItems, extractItems()...)
+		annotationsOut = append(annotationsOut, ann...)
+
+		page := getPageFromResponse(response)
+		if page.EndPosition+1 >= page.TotalSetSize {
+			break
+		}
+
+		startPosition = page.EndPosition + 1
+	}
+
+	return allItems, annotationsOut, nil
 }
 
 // GetUsers retrieves all users in the account, paginated.
 func (c *Client) GetUsers(ctx context.Context) ([]User, annotations.Annotations, error) {
-	var allUsers []User
-	startPosition := 0
-	annotationsOut := annotations.Annotations{}
+	var response UsersResponse
+	items, ann, err := c.paginatedRequest(
+		ctx,
+		getUsers,
+		[]interface{}{c.accountId},
+		&response,
+		func() []interface{} {
+			var items []interface{}
+			for _, user := range response.Users {
+				items = append(items, user)
+			}
+			return items
+		},
+	)
 
-	for {
-		baseURL, err := url.Parse(c.apiUrl)
-		if err != nil {
-			return nil, nil, fmt.Errorf("invalid base URL: %w", err)
-		}
-
-		usersPath := fmt.Sprintf(getUsers, c.accountId)
-		usersEndpoint, err := url.Parse(usersPath)
-		if err != nil {
-			return nil, nil, fmt.Errorf("invalid users endpoint: %w", err)
-		}
-
-		usersURL := baseURL.ResolveReference(usersEndpoint)
-		query := usersURL.Query()
-		query.Set("startPosition", fmt.Sprintf("%d", startPosition))
-		usersURL.RawQuery = query.Encode()
-
-		var response UsersResponse
-		_, ann, err := c.doRequest(ctx, http.MethodGet, usersURL.String(), &response)
-		if err != nil {
-			return nil, ann, fmt.Errorf("error fetching users: %w", err)
-		}
-
-		allUsers = append(allUsers, response.Users...)
-		annotationsOut = append(annotationsOut, ann...)
-
-		if response.Page.EndPosition+1 >= response.Page.TotalSetSize {
-			break
-		}
-
-		startPosition = response.Page.EndPosition + 1
+	if err != nil {
+		return nil, ann, fmt.Errorf("error fetching users: %w", err)
 	}
 
-	return allUsers, annotationsOut, nil
+	var users []User
+	for _, item := range items {
+		users = append(users, item.(User))
+	}
+
+	return users, ann, nil
 }
 
 // GetGroups retrieves all groups in the account, paginated.
 func (c *Client) GetGroups(ctx context.Context) ([]Group, annotations.Annotations, error) {
-	var allGroups []Group
-	startPosition := 0
-	annotationsOut := annotations.Annotations{}
+	var response GroupsResponse
+	items, ann, err := c.paginatedRequest(
+		ctx,
+		getGroups,
+		[]interface{}{c.accountId},
+		&response,
+		func() []interface{} {
+			var items []interface{}
+			for _, group := range response.Groups {
+				items = append(items, group)
+			}
+			return items
+		},
+	)
 
-	for {
-		baseURL, err := url.Parse(c.apiUrl)
-		if err != nil {
-			return nil, nil, fmt.Errorf("invalid base URL: %w", err)
-		}
-
-		groupsPath := fmt.Sprintf(getGroups, c.accountId)
-		groupsEndpoint, err := url.Parse(groupsPath)
-		if err != nil {
-			return nil, nil, fmt.Errorf("invalid groups endpoint: %w", err)
-		}
-
-		groupURL := baseURL.ResolveReference(groupsEndpoint)
-		query := groupURL.Query()
-		query.Set("startPosition", fmt.Sprintf("%d", startPosition))
-		groupURL.RawQuery = query.Encode()
-
-		var response GroupsResponse
-		_, ann, err := c.doRequest(ctx, http.MethodGet, groupURL.String(), &response)
-		if err != nil {
-			return nil, ann, fmt.Errorf("error fetching groups: %w", err)
-		}
-
-		allGroups = append(allGroups, response.Groups...)
-		annotationsOut = append(annotationsOut, ann...)
-
-		if response.Page.EndPosition+1 >= response.Page.TotalSetSize {
-			break
-		}
-
-		startPosition = response.Page.EndPosition + 1
+	if err != nil {
+		return nil, ann, fmt.Errorf("error fetching groups: %w", err)
 	}
 
-	return allGroups, annotationsOut, nil
+	var groups []Group
+	for _, item := range items {
+		groups = append(groups, item.(Group))
+	}
+
+	return groups, ann, nil
 }
 
 // GetUserGroups retrieves all groups associated with a given user.
 func (c *Client) GetUserGroups(ctx context.Context, userID string) ([]Group, annotations.Annotations, error) {
-	var allGroups []Group
-	startPosition := 0
-	annotationsOut := annotations.Annotations{}
+	var response GroupsResponse
+	items, ann, err := c.paginatedRequest(
+		ctx,
+		getUserGroups,
+		[]interface{}{c.accountId, userID},
+		&response,
+		func() []interface{} {
+			var items []interface{}
+			for _, group := range response.Groups {
+				items = append(items, group)
+			}
+			return items
+		},
+	)
 
-	for {
-		baseURL, err := url.Parse(c.apiUrl)
-		if err != nil {
-			return nil, nil, fmt.Errorf("invalid base URL: %w", err)
-		}
-
-		userGroupsPath := fmt.Sprintf(getUserGroups, c.accountId, userID)
-		userGroupsEndpoint, err := url.Parse(userGroupsPath)
-		if err != nil {
-			return nil, nil, fmt.Errorf("invalid user groups endpoint: %w", err)
-		}
-
-		userGroupURL := baseURL.ResolveReference(userGroupsEndpoint)
-		query := userGroupURL.Query()
-		query.Set("startPosition", fmt.Sprintf("%d", startPosition))
-		userGroupURL.RawQuery = query.Encode()
-
-		var response GroupsResponse
-		_, ann, err := c.doRequest(ctx, http.MethodGet, userGroupURL.String(), &response)
-		if err != nil {
-			return nil, ann, fmt.Errorf("error fetching user groups: %w", err)
-		}
-
-		allGroups = append(allGroups, response.Groups...)
-		annotationsOut = append(annotationsOut, ann...)
-
-		if response.Page.EndPosition+1 >= response.Page.TotalSetSize {
-			break
-		}
-
-		startPosition = response.Page.EndPosition + 1
+	if err != nil {
+		return nil, ann, fmt.Errorf("error fetching user groups: %w", err)
 	}
 
-	return allGroups, annotationsOut, nil
+	var groups []Group
+	for _, item := range items {
+		groups = append(groups, item.(Group))
+	}
+
+	return groups, ann, nil
 }
 
 // GetGroupUsers retrieves all users associated with a specific group.
 func (c *Client) GetGroupUsers(ctx context.Context, groupId string) ([]User, annotations.Annotations, error) {
-	var allUsers []User
-	startPosition := 0
-	annotationsOut := annotations.Annotations{}
+	var response UsersResponse
+	items, ann, err := c.paginatedRequest(
+		ctx,
+		getGroupUsers,
+		[]interface{}{c.accountId, groupId},
+		&response,
+		func() []interface{} {
+			var items []interface{}
+			for _, user := range response.Users {
+				items = append(items, user)
+			}
+			return items
+		},
+	)
 
-	for {
-		baseURL, err := url.Parse(c.apiUrl)
-		if err != nil {
-			return nil, nil, fmt.Errorf("invalid base URL: %w", err)
-		}
-
-		groupUsersPath := fmt.Sprintf(getGroupUsers, c.accountId, groupId)
-		groupUsersEndpoint, err := url.Parse(groupUsersPath)
-		if err != nil {
-			return nil, nil, fmt.Errorf("invalid group users endpoint: %w", err)
-		}
-
-		groupUsersURL := baseURL.ResolveReference(groupUsersEndpoint)
-		query := groupUsersURL.Query()
-		query.Set("startPosition", fmt.Sprintf("%d", startPosition))
-		groupUsersURL.RawQuery = query.Encode()
-
-		var response UsersResponse
-		_, ann, err := c.doRequest(ctx, http.MethodGet, groupUsersURL.String(), &response)
-		if err != nil {
-			return nil, ann, fmt.Errorf("error fetching group users: %w", err)
-		}
-
-		allUsers = append(allUsers, response.Users...)
-		annotationsOut = append(annotationsOut, ann...)
-
-		if response.Page.EndPosition+1 >= response.Page.TotalSetSize {
-			break
-		}
-
-		startPosition = response.Page.EndPosition + 1
+	if err != nil {
+		return nil, ann, fmt.Errorf("error fetching group users: %w", err)
 	}
 
-	return allUsers, annotationsOut, nil
+	var users []User
+	for _, item := range items {
+		users = append(users, item.(User))
+	}
+
+	return users, ann, nil
 }
 
 // GetUserDetails retrieves details about a specific user, including permissions.
 func (c *Client) GetUserDetails(ctx context.Context, userID string) (*UserDetail, annotations.Annotations, error) {
-	baseURL, err := url.Parse(c.apiUrl)
+	userURL, err := c.buildURL(getPermissions, c.accountId, userID)
 	if err != nil {
-		return nil, nil, fmt.Errorf("invalid base URL: %w", err)
+		return nil, nil, err
 	}
-
-	userEndpointPath := fmt.Sprintf(getPermissions, c.accountId, userID)
-	userEndpoint, err := url.Parse(userEndpointPath)
-	if err != nil {
-		return nil, nil, fmt.Errorf("invalid user details endpoint: %w", err)
-	}
-
-	userURL := baseURL.ResolveReference(userEndpoint)
 
 	var userDetail UserDetail
 	_, ann, err := c.doRequest(ctx, http.MethodGet, userURL.String(), &userDetail)
@@ -292,18 +289,10 @@ func (c *Client) CreateUsers(ctx context.Context, request CreateUsersRequest) (*
 		return nil, nil, fmt.Errorf("at least one user must be provided")
 	}
 
-	baseURL, err := url.Parse(c.apiUrl)
+	createUsersURL, err := c.buildURL(createUsers, c.accountId)
 	if err != nil {
-		return nil, nil, fmt.Errorf("invalid base URL: %w", err)
+		return nil, nil, err
 	}
-
-	createUsersPath := fmt.Sprintf(createUsers, c.accountId)
-	createUsersEndpoint, err := url.Parse(createUsersPath)
-	if err != nil {
-		return nil, nil, fmt.Errorf("invalid create users endpoint: %w", err)
-	}
-
-	createUsersURL := baseURL.ResolveReference(createUsersEndpoint)
 
 	var response UserCreationResponse
 	_, ann, err := c.doRequestWithBody(ctx, http.MethodPost, createUsersURL.String(), request, &response)
@@ -340,24 +329,7 @@ func (c *Client) doRequestWithBody(
 		return nil, nil, err
 	}
 
-	var resp *http.Response
-	var doOptions []uhttp.DoOption
-	if res != nil {
-		doOptions = append(doOptions, uhttp.WithJSONResponse(res))
-	}
-
-	resp, err = c.wrapper.Do(req, doOptions...)
-	if err != nil {
-		return nil, nil, err
-	}
-	defer resp.Body.Close()
-
-	annotation := annotations.Annotations{}
-	if desc, err := ratelimit.ExtractRateLimitData(resp.StatusCode, &resp.Header); err == nil {
-		annotation.WithRateLimiting(desc)
-	}
-
-	return resp.Header, annotation, nil
+	return c.doRequestCommon(req, res)
 }
 
 // doRequest performs an HTTP request without a body and decodes the response if provided.
@@ -384,13 +356,17 @@ func (c *Client) doRequest(
 		return nil, nil, err
 	}
 
-	var resp *http.Response
+	return c.doRequestCommon(req, res)
+}
+
+// doRequestCommon handles common request processing logic
+func (c *Client) doRequestCommon(req *http.Request, res interface{}) (http.Header, annotations.Annotations, error) {
 	var doOptions []uhttp.DoOption
 	if res != nil {
 		doOptions = append(doOptions, uhttp.WithJSONResponse(res))
 	}
 
-	resp, err = c.wrapper.Do(req, doOptions...)
+	resp, err := c.wrapper.Do(req, doOptions...)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -402,4 +378,26 @@ func (c *Client) doRequest(
 	}
 
 	return resp.Header, annotation, nil
+}
+
+// Helper interface to extract page information from different response types
+type pagedResponse interface {
+	GetPage() Page
+}
+
+func (r *UsersResponse) GetPage() Page {
+	return r.Page
+}
+
+func (r *GroupsResponse) GetPage() Page {
+	return r.Page
+}
+
+// Helper function to get page info from response
+func getPageFromResponse(response interface{}) Page {
+	if r, ok := response.(pagedResponse); ok {
+		return r.GetPage()
+	}
+
+	return Page{}
 }
