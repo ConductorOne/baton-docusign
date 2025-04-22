@@ -13,20 +13,23 @@ import (
 	"github.com/conductorone/baton-sdk/pkg/types/resource"
 )
 
+// userBuilder implements the Baton connector interface for managing DocuSign users.
 type userBuilder struct {
 	resourceType *v2.ResourceType
 	client       *client.Client
 }
 
-func (o *userBuilder) ResourceType(ctx context.Context) *v2.ResourceType {
+// ResourceType returns the resource type handled by this builder.
+func (b *userBuilder) ResourceType(ctx context.Context) *v2.ResourceType {
 	return userResourceType
 }
 
-func (o *userBuilder) List(ctx context.Context, parentResourceID *v2.ResourceId, pToken *pagination.Token) ([]*v2.Resource, string, annotations.Annotations, error) {
+// List fetches all users from the DocuSign API and converts them to Baton resources.
+func (b *userBuilder) List(ctx context.Context, parentResourceID *v2.ResourceId, pToken *pagination.Token) ([]*v2.Resource, string, annotations.Annotations, error) {
 	var resources []*v2.Resource
 	annos := annotations.Annotations{}
 
-	users, newAnnos, err := o.client.GetUsers(ctx)
+	users, newAnnos, err := b.client.GetUsers(ctx)
 	if err != nil {
 		return nil, "", nil, err
 	}
@@ -47,15 +50,17 @@ func (o *userBuilder) List(ctx context.Context, parentResourceID *v2.ResourceId,
 	return resources, "", annos, nil
 }
 
-func (o *userBuilder) Entitlements(_ context.Context, resource *v2.Resource, _ *pagination.Token) ([]*v2.Entitlement, string, annotations.Annotations, error) {
+// Entitlements returns the list of entitlements for a user (not implemented here).
+func (b *userBuilder) Entitlements(_ context.Context, _ *v2.Resource, _ *pagination.Token) ([]*v2.Entitlement, string, annotations.Annotations, error) {
 	return nil, "", nil, nil
 }
 
-func (o *userBuilder) Grants(ctx context.Context, resource *v2.Resource, pToken *pagination.Token) ([]*v2.Grant, string, annotations.Annotations, error) {
+// Grants returns the groups a user is a member of.
+func (b *userBuilder) Grants(ctx context.Context, resource *v2.Resource, _ *pagination.Token) ([]*v2.Grant, string, annotations.Annotations, error) {
 	var grants []*v2.Grant
 	annos := annotations.Annotations{}
 
-	userGroups, newAnnos, err := o.client.GetUserGroups(ctx, resource.Id.Resource)
+	userGroups, newAnnos, err := b.client.GetUserGroups(ctx, resource.Id.Resource)
 	if err != nil {
 		return nil, "", nil, fmt.Errorf("error fetching user groups: %w", err)
 	}
@@ -70,17 +75,17 @@ func (o *userBuilder) Grants(ctx context.Context, resource *v2.Resource, pToken 
 			return nil, "", nil, err
 		}
 
-		grant := grant.NewGrant(
+		grants = append(grants, grant.NewGrant(
 			groupResource,
 			"member",
 			resource.Id,
-		)
-		grants = append(grants, grant)
+		))
 	}
 
 	return grants, "", annos, nil
 }
 
+// CreateAccountCapabilityDetails declares support for account provisioning without passwords.
 func (b *userBuilder) CreateAccountCapabilityDetails(ctx context.Context) (*v2.CredentialDetailsAccountProvisioning, annotations.Annotations, error) {
 	return &v2.CredentialDetailsAccountProvisioning{
 		SupportedCredentialOptions: []v2.CapabilityDetailCredentialOption{
@@ -90,6 +95,7 @@ func (b *userBuilder) CreateAccountCapabilityDetails(ctx context.Context) (*v2.C
 	}, nil, nil
 }
 
+// CreateAccount creates a new user in DocuSign using the given profile information.
 func (b *userBuilder) CreateAccount(
 	ctx context.Context,
 	accountInfo *v2.AccountInfo,
@@ -100,7 +106,6 @@ func (b *userBuilder) CreateAccount(
 	annotations.Annotations,
 	error,
 ) {
-	// Extract profile fields
 	pMap := accountInfo.Profile.AsMap()
 
 	email, ok := pMap["email"].(string)
@@ -113,15 +118,15 @@ func (b *userBuilder) CreateAccount(
 		return nil, nil, nil, fmt.Errorf("username is required")
 	}
 
-	newUser := client.NewUser{
-		UserName: username,
-		Email:    email,
-	}
-
+	// Build request payload
 	usersRequest := client.CreateUsersRequest{
-		NewUsers: []client.NewUser{newUser},
+		NewUsers: []client.NewUser{{
+			UserName: username,
+			Email:    email,
+		}},
 	}
 
+	// Make API call
 	createdUsers, _, err := b.client.CreateUsers(ctx, usersRequest)
 	if err != nil {
 		return nil, nil, nil, err
@@ -129,13 +134,14 @@ func (b *userBuilder) CreateAccount(
 	if len(createdUsers.NewUsers) == 0 {
 		return nil, nil, nil, fmt.Errorf("no user returned from API")
 	}
-	created := createdUsers.NewUsers[0]
 
+	created := createdUsers.NewUsers[0]
 	if created.ErrorDetails != nil {
 		return nil, nil, nil, fmt.Errorf("failed to create user: %s - %s",
 			created.ErrorDetails.ErrorCode, created.ErrorDetails.Message)
 	}
 
+	// Map API response to Baton user resource
 	userRes, err := parseIntoUserResource(&client.User{
 		UserId:     created.UserId,
 		UserName:   created.UserName,
@@ -146,13 +152,12 @@ func (b *userBuilder) CreateAccount(
 		return nil, nil, nil, err
 	}
 
-	car := &v2.CreateAccountResponse_SuccessResult{
+	return &v2.CreateAccountResponse_SuccessResult{
 		Resource: userRes,
-	}
-
-	return car, nil, nil, nil
+	}, nil, nil, nil
 }
 
+// newUserBuilder constructs a new userBuilder with the given client.
 func newUserBuilder(client *client.Client) *userBuilder {
 	return &userBuilder{
 		resourceType: userResourceType,
@@ -160,6 +165,7 @@ func newUserBuilder(client *client.Client) *userBuilder {
 	}
 }
 
+// parseIntoUserResource maps a DocuSign user into a Baton v2.Resource.
 func parseIntoUserResource(user *client.User) (*v2.Resource, error) {
 	var userStatus v2.UserTrait_Status_Status
 

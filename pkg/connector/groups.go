@@ -18,10 +18,12 @@ type groupBuilder struct {
 	client       *client.Client
 }
 
+// ResourceType returns the type of resource this builder is responsible for.
 func (g *groupBuilder) ResourceType(ctx context.Context) *v2.ResourceType {
 	return groupResourceType
 }
 
+// List retrieves the list of groups from the DocuSign API and converts them into C1 resources.
 func (g *groupBuilder) List(ctx context.Context, parentResourceID *v2.ResourceId, pToken *pagination.Token) ([]*v2.Resource, string, annotations.Annotations, error) {
 	var resources []*v2.Resource
 	annos := annotations.Annotations{}
@@ -47,6 +49,7 @@ func (g *groupBuilder) List(ctx context.Context, parentResourceID *v2.ResourceId
 	return resources, "", annos, nil
 }
 
+// Entitlements returns the entitlements (permissions) associated with a group resource.
 func (g *groupBuilder) Entitlements(ctx context.Context, resource *v2.Resource, pToken *pagination.Token) ([]*v2.Entitlement, string, annotations.Annotations, error) {
 	e := entitlement.NewAssignmentEntitlement(
 		resource,
@@ -58,6 +61,7 @@ func (g *groupBuilder) Entitlements(ctx context.Context, resource *v2.Resource, 
 	return []*v2.Entitlement{e}, "", nil, nil
 }
 
+// Grants returns the list of grants (assignments of entitlements) for users in a group.
 func (g *groupBuilder) Grants(ctx context.Context, parentResource *v2.Resource, pToken *pagination.Token) ([]*v2.Grant, string, annotations.Annotations, error) {
 	var grants []*v2.Grant
 	annos := annotations.Annotations{}
@@ -103,6 +107,7 @@ func (g *groupBuilder) Grants(ctx context.Context, parentResource *v2.Resource, 
 	return grants, "", annos, nil
 }
 
+// newGroupBuilder initializes a new groupBuilder instance.
 func newGroupBuilder(client *client.Client) *groupBuilder {
 	return &groupBuilder{
 		resourceType: groupResourceType,
@@ -110,6 +115,7 @@ func newGroupBuilder(client *client.Client) *groupBuilder {
 	}
 }
 
+// parseIntoGroupResource converts a DocuSign Group object into a C1 Resource object.
 func parseIntoGroupResource(group *client.Group) (*v2.Resource, error) {
 	profile := map[string]interface{}{
 		"groupName":   group.GroupName,

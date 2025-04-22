@@ -16,7 +16,6 @@ type Connector struct {
 	client *client.Client
 }
 
-
 func (d *Connector) ResourceSyncers(ctx context.Context) []connectorbuilder.ResourceSyncer {
 	return []connectorbuilder.ResourceSyncer{
 		newUserBuilder(d.client),
@@ -24,7 +23,6 @@ func (d *Connector) ResourceSyncers(ctx context.Context) []connectorbuilder.Reso
 		newPermissionBuilder(d.client),
 	}
 }
-
 
 func (d *Connector) Asset(ctx context.Context, asset *v2.AssetRef) (string, io.ReadCloser, error) {
 	return "", nil, nil
@@ -75,9 +73,9 @@ func (d *Connector) Validate(ctx context.Context) (annotations.Annotations, erro
 	return nil, nil
 }
 
-func New(ctx context.Context, apiUrl string, token string, account string) (*Connector, error) {
+func New(ctx context.Context, apiUrl string, token string, account string, clientId string, clientSecret string, refreshToken string) (*Connector, error) {
 	l := ctxzap.Extract(ctx)
-	docusignClient, err := client.New(ctx, client.NewClient(ctx, apiUrl, token, account))
+	docusignClient, err := client.New(ctx, client.NewClient(ctx, apiUrl, token, account, clientId, clientSecret, refreshToken))
 	if err != nil {
 		l.Error("error creating DocuSign client", zap.Error(err))
 		return nil, err

@@ -51,8 +51,11 @@ func getConnector(ctx context.Context, v *viper.Viper) (types.ConnectorServer, e
 	docusignApi := v.GetString(apiUrlField.FieldName)
 	docusignAccount := v.GetString(accountField.FieldName)
 	docusignToken := v.GetString(tokenField.FieldName)
+	docusignClientId := v.GetString(clientIdField.FieldName)
+	docusignClientSecret := v.GetString(clientSecretField.FieldName)
+	docusignRefreshToken := v.GetString(refreshTokenField.FieldName)
 
-	cb, err := connectorSchema.New(ctx, docusignApi, docusignToken, docusignAccount)
+	cb, err := connectorSchema.New(ctx, docusignApi, docusignToken, docusignAccount, docusignClientId, docusignClientSecret, docusignRefreshToken)
 	if err != nil {
 		l.Error("error creating connector", zap.Error(err))
 		return nil, err

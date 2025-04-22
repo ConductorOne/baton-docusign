@@ -27,6 +27,7 @@ type permissionDefinition struct {
 	Purpose     v2.Entitlement_PurposeValue
 }
 
+// getPermissionDefinitions returns a static list of all the permissions that can be mapped from the user settings.
 func getPermissionDefinitions() []permissionDefinition {
 	return []permissionDefinition{
 		{"adminOnly", "Admin Only Actions", "Indicates some actions are exclusive for admins", v2.Entitlement_PURPOSE_VALUE_PERMISSION},
@@ -52,10 +53,12 @@ func getPermissionDefinitions() []permissionDefinition {
 	}
 }
 
+// ResourceType returns the resource type managed by this builder: "docusign-permissions".
 func (p *permissionBuilder) ResourceType(ctx context.Context) *v2.ResourceType {
 	return permissionResourceType
 }
 
+// createPermissionResource creates a generic resource that represents all permissions in DocuSign.
 func createPermissionResource() (*v2.Resource, error) {
 	return resource.NewRoleResource(
 		"docusign-permissions",
@@ -65,6 +68,7 @@ func createPermissionResource() (*v2.Resource, error) {
 	)
 }
 
+// createUserResource transforms a DocuSign user into a Baton-compatible resource.
 func createUserResource(user *client.UserDetail) (*v2.Resource, error) {
 	userTraits := []resource.UserTraitOption{
 		resource.WithUserProfile(map[string]interface{}{
@@ -83,6 +87,7 @@ func createUserResource(user *client.UserDetail) (*v2.Resource, error) {
 	)
 }
 
+// List returns a list of resources for permissions, including a permission resource.
 func (p *permissionBuilder) List(ctx context.Context, parentResourceID *v2.ResourceId, pToken *pagination.Token) ([]*v2.Resource, string, annotations.Annotations, error) {
 	permissionResource, err := createPermissionResource()
 	if err != nil {
@@ -92,6 +97,7 @@ func (p *permissionBuilder) List(ctx context.Context, parentResourceID *v2.Resou
 	return []*v2.Resource{permissionResource}, "", nil, nil
 }
 
+// Entitlements returns the entitlements (permissions) associated with a resource.
 func (p *permissionBuilder) Entitlements(ctx context.Context, resource *v2.Resource, _ *pagination.Token) ([]*v2.Entitlement, string, annotations.Annotations, error) {
 	var ents []*v2.Entitlement
 
@@ -109,6 +115,7 @@ func (p *permissionBuilder) Entitlements(ctx context.Context, resource *v2.Resou
 	return ents, "", nil, nil
 }
 
+// Grants returns a list of grants, i.e., permissions granted to users for a given resource.
 func (p *permissionBuilder) Grants(ctx context.Context, parentResource *v2.Resource, pToken *pagination.Token) ([]*v2.Grant, string, annotations.Annotations, error) {
 	var grants []*v2.Grant
 	annos := annotations.Annotations{}
@@ -143,6 +150,7 @@ func (p *permissionBuilder) Grants(ctx context.Context, parentResource *v2.Resou
 	return grants, "", annos, nil
 }
 
+// processUserPermissions processes and generates grants for a specific user based on their settings.
 func (p *permissionBuilder) processUserPermissions(permissionResource, userResource *v2.Resource, user *client.UserDetail) ([]*v2.Grant, error) {
 	var grants []*v2.Grant
 
@@ -208,6 +216,7 @@ func (p *permissionBuilder) processUserPermissions(permissionResource, userResou
 	return grants, nil
 }
 
+// checkPermissionValue checks if a permission value is valid and returns whether it is granted and its access level.
 func (p *permissionBuilder) checkPermissionValue(value interface{}) (bool, string) {
 	validValues := map[string]bool{
 		"true":  true,
@@ -229,6 +238,7 @@ func (p *permissionBuilder) checkPermissionValue(value interface{}) (bool, strin
 	}
 }
 
+// getUserStatus maps a user status string to the corresponding Baton status.
 func getUserStatus(status string) v2.UserTrait_Status_Status {
 	switch strings.ToLower(status) {
 	case "active":
@@ -240,6 +250,7 @@ func getUserStatus(status string) v2.UserTrait_Status_Status {
 	}
 }
 
+// newPermissionBuilder creates a new instance of permissionBuilder with the provided client.
 func newPermissionBuilder(client *client.Client) *permissionBuilder {
 	return &permissionBuilder{
 		resourceType: permissionResourceType,

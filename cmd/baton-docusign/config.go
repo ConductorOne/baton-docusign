@@ -21,8 +21,23 @@ var (
 		field.WithDescription("The DocuSign account ID"),
 		field.WithRequired(true),
 	)
+	clientIdField = field.StringField(
+		"clientId",
+		field.WithDescription("The authorization client id required for authentication."),
+		field.WithRequired(true),
+	)
+	clientSecretField = field.StringField(
+		"clientSecret",
+		field.WithDescription("The authorization client secret required for authentication."),
+		field.WithRequired(true),
+	)
+	refreshTokenField = field.StringField(
+		"refresh-token",
+		field.WithDescription("The authorization refresh token required for authentication."),
+		field.WithRequired(true),
+	)
 
-	ConfigurationFields = []field.SchemaField{apiUrlField, tokenField, accountField}
+	ConfigurationFields = []field.SchemaField{apiUrlField, tokenField, accountField, clientIdField, clientSecretField, refreshTokenField}
 
 	FieldRelationships = []field.SchemaFieldRelationship{}
 )

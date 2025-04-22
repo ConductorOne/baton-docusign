@@ -9,67 +9,71 @@ import (
 	"github.com/conductorone/baton-sdk/pkg/annotations"
 	"github.com/conductorone/baton-sdk/pkg/ratelimit"
 	"github.com/conductorone/baton-sdk/pkg/uhttp"
-	"github.com/grpc-ecosystem/go-grpc-middleware/logging/zap/ctxzap"
 )
 
 // API endpoint constants.
 const (
-	getUsers       = "/restapi/v2.1/accounts/%s/users"           // Endpoint for user resources
-	getGroups      = "/restapi/v2.1/accounts/%s/groups"          // Endpoint for group resources
-	getPermissions = "/restapi/v2.1/accounts/%s/users/%s"        // Endpoint for permissions resources
-	getGroupUsers  = "/restapi/v2.1/accounts/%s/groups/%s/users" // Endpoint for groupUsers resources
-	getUserGroups  = "/restapi/v2.1/accounts/%s/users/%s"        // Endpoint for userGroups resources
+	getUsers       = "/restapi/v2.1/accounts/%s/users"
+	getGroups      = "/restapi/v2.1/accounts/%s/groups"
+	getPermissions = "/restapi/v2.1/accounts/%s/users/%s"
+	getGroupUsers  = "/restapi/v2.1/accounts/%s/groups/%s/users"
+	getUserGroups  = "/restapi/v2.1/accounts/%s/users/%s"
 	createUsers    = "/restapi/v2.1/accounts/%s/users"
 )
 
+// Client is a wrapper for making authenticated API requests to the DocuSign API.
 type Client struct {
-	apiUrl    string
-	token     string
-	accountId string
-	wrapper   *uhttp.BaseHttpClient
+	apiUrl       string
+	token        string
+	accountId    string
+	clientID     string
+	clientSecret string
+	refreshToken string
+	wrapper      *uhttp.BaseHttpClient
 }
 
-func New(ctx context.Context, client *Client) (*Client, error) {
-	var (
-		clientApi     = client.apiUrl
-		clientToken   = client.token
-		clientAccount = client.accountId
-	)
-
-	httpClient, err := uhttp.NewClient(ctx, uhttp.WithLogger(true, ctxzap.Extract(ctx)))
-
+// New creates a new Client instance, automatically performing OAuth2 authentication using client credentials and refresh token.
+func New(ctx context.Context, input *Client) (*Client, error) {
+	httpClient, token, err := NewAuthenticatedClient(ctx, input.clientID, input.clientSecret, input.accountId, input.apiUrl)
 	if err != nil {
 		return nil, err
 	}
 
-	cli, err := uhttp.NewBaseHttpClientWithContext(ctx, httpClient)
-
+	baseHttpClient, err := uhttp.NewBaseHttpClientWithContext(ctx, httpClient)
 	if err != nil {
 		return nil, err
 	}
 
 	return &Client{
-		wrapper:   cli,
-		apiUrl:    clientApi,
-		token:     clientToken,
-		accountId: clientAccount,
+		wrapper:      baseHttpClient,
+		apiUrl:       input.apiUrl,
+		token:        token.AccessToken,
+		accountId:    input.accountId,
+		clientID:     input.clientID,
+		clientSecret: input.clientSecret,
+		refreshToken: token.RefreshToken,
 	}, nil
 }
 
-func NewClient(ctx context.Context, apiUrl string, token string, account string, httpClient ...*uhttp.BaseHttpClient) *Client {
+// NewClient creates a new Client instance using the provided token and optional HTTP client.
+func NewClient(ctx context.Context, apiUrl string, token string, account string, clientId string, clientSecret string, refreshToken string, httpClient ...*uhttp.BaseHttpClient) *Client {
 	var wrapper = &uhttp.BaseHttpClient{}
-	if httpClient != nil || len(httpClient) != 0 {
+	if len(httpClient) > 0 {
 		wrapper = httpClient[0]
 	}
 
 	return &Client{
-		wrapper:   wrapper,
-		apiUrl:    apiUrl,
-		token:     token,
-		accountId: account,
+		wrapper:      wrapper,
+		apiUrl:       apiUrl,
+		token:        token,
+		accountId:    account,
+		clientID:     clientId,
+		clientSecret: clientSecret,
+		refreshToken: refreshToken,
 	}
 }
 
+// GetUsers retrieves all users in the account, paginated.
 func (c *Client) GetUsers(ctx context.Context) ([]User, annotations.Annotations, error) {
 	var allUsers []User
 	startPosition := 0
@@ -111,6 +115,7 @@ func (c *Client) GetUsers(ctx context.Context) ([]User, annotations.Annotations,
 	return allUsers, annotationsOut, nil
 }
 
+// GetGroups retrieves all groups in the account, paginated.
 func (c *Client) GetGroups(ctx context.Context) ([]Group, annotations.Annotations, error) {
 	var allGroups []Group
 	startPosition := 0
@@ -152,6 +157,7 @@ func (c *Client) GetGroups(ctx context.Context) ([]Group, annotations.Annotation
 	return allGroups, annotationsOut, nil
 }
 
+// GetUserGroups retrieves all groups associated with a given user.
 func (c *Client) GetUserGroups(ctx context.Context, userID string) ([]Group, annotations.Annotations, error) {
 	var allGroups []Group
 	startPosition := 0
@@ -193,6 +199,7 @@ func (c *Client) GetUserGroups(ctx context.Context, userID string) ([]Group, ann
 	return allGroups, annotationsOut, nil
 }
 
+// GetGroupUsers retrieves all users associated with a specific group.
 func (c *Client) GetGroupUsers(ctx context.Context, groupId string) ([]User, annotations.Annotations, error) {
 	var allUsers []User
 	startPosition := 0
@@ -234,6 +241,7 @@ func (c *Client) GetGroupUsers(ctx context.Context, groupId string) ([]User, ann
 	return allUsers, annotationsOut, nil
 }
 
+// GetUserDetails retrieves details about a specific user, including permissions.
 func (c *Client) GetUserDetails(ctx context.Context, userID string) (*UserDetail, annotations.Annotations, error) {
 	baseURL, err := url.Parse(c.apiUrl)
 	if err != nil {
@@ -257,6 +265,7 @@ func (c *Client) GetUserDetails(ctx context.Context, userID string) (*UserDetail
 	return &userDetail, ann, nil
 }
 
+// GetAllUsersWithDetails retrieves all users and their corresponding detailed information.
 func (c *Client) GetAllUsersWithDetails(ctx context.Context) ([]*UserDetail, annotations.Annotations, error) {
 	users, annos, err := c.GetUsers(ctx)
 	if err != nil {
@@ -270,15 +279,14 @@ func (c *Client) GetAllUsersWithDetails(ctx context.Context) ([]*UserDetail, ann
 			return nil, annos, err
 		}
 
-		for _, a := range newAnnos {
-			annos.Append(a)
-		}
+		annos = append(annos, newAnnos...)
 		userDetails = append(userDetails, detail)
 	}
 
 	return userDetails, annos, nil
 }
 
+// CreateUsers creates one or more new users in the account.
 func (c *Client) CreateUsers(ctx context.Context, request CreateUsersRequest) (*UserCreationResponse, annotations.Annotations, error) {
 	if len(request.NewUsers) == 0 {
 		return nil, nil, fmt.Errorf("at least one user must be provided")
@@ -306,6 +314,7 @@ func (c *Client) CreateUsers(ctx context.Context, request CreateUsersRequest) (*
 	return &response, ann, nil
 }
 
+// doRequestWithBody performs an HTTP request with a JSON body and decodes the response.
 func (c *Client) doRequestWithBody(
 	ctx context.Context,
 	method string,
@@ -351,6 +360,7 @@ func (c *Client) doRequestWithBody(
 	return resp.Header, annotation, nil
 }
 
+// doRequest performs an HTTP request without a body and decodes the response if provided.
 func (c *Client) doRequest(
 	ctx context.Context,
 	method string,
@@ -375,17 +385,12 @@ func (c *Client) doRequest(
 	}
 
 	var resp *http.Response
-	switch method {
-	case http.MethodGet, http.MethodPost, http.MethodPut:
-		var doOptions []uhttp.DoOption
-		if res != nil {
-			doOptions = append(doOptions, uhttp.WithJSONResponse(res))
-		}
-		resp, err = c.wrapper.Do(req, doOptions...)
-	case http.MethodDelete:
-		resp, err = c.wrapper.Do(req)
+	var doOptions []uhttp.DoOption
+	if res != nil {
+		doOptions = append(doOptions, uhttp.WithJSONResponse(res))
 	}
 
+	resp, err = c.wrapper.Do(req, doOptions...)
 	if err != nil {
 		return nil, nil, err
 	}
