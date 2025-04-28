@@ -13,9 +13,14 @@ import (
 	"github.com/conductorone/baton-sdk/pkg/types/resource"
 )
 
+type groupsClientInterface interface {
+	GetGroups(ctx context.Context) ([]client.Group, annotations.Annotations, error)
+	GetGroupUsers(ctx context.Context, groupID string) ([]client.User, annotations.Annotations, error)
+}
+
 type groupBuilder struct {
 	resourceType *v2.ResourceType
-	client       *client.Client
+	client       groupsClientInterface
 }
 
 func (g *groupBuilder) ResourceType(ctx context.Context) *v2.ResourceType {

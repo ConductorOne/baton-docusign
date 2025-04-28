@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"net/url"
@@ -15,24 +16,30 @@ import (
 	"golang.org/x/oauth2"
 )
 
-const (
-	authURL      = "https://account-d.docusign.com/oauth/auth"  // URL for OAuth2 authorization
-	tokenURL     = "https://account-d.docusign.com/oauth/token" // URL for OAuth2 token exchange
-	defaultScope = "signature"                                  // Default OAuth2 scope
+var (
+	authURL      = "https://account-d.docusign.com/oauth/auth"
+	tokenURL     = "https://account-d.docusign.com/oauth/token" //nolint:gosec // Not a token, it's an endpoint URL
+	defaultScope = "signature"
+	test         = "https://account-d.docusign.com/oauth/userinfo"
 )
 
 type customTokenSource struct {
-	ctx          context.Context // Context for OAuth2 operations
-	oauthConfig  *oauth2.Config  // OAuth2 configuration
-	currentToken *oauth2.Token   // Current OAuth2 token
-	clientID     string          // OAuth2 client ID
-	clientSecret string          // OAuth2 client secret
-	accountID    string          // Account ID for DocuSign
-	redirectUri  string          // Redirect URI for OAuth2 authorization
-	mu           sync.Mutex      // Mutex to synchronize access to token
+	ctx          context.Context
+	oauthConfig  *oauth2.Config
+	currentToken *oauth2.Token
+	clientID     string
+	clientSecret string
+	accountID    string
+	redirectURI  string
+	mu           sync.Mutex
 }
 
-// newOAuth2Config creates and returns a new OAuth2 configuration with the provided client ID, client secret, and redirect URI.
+type retryingTokenSource struct {
+	baseSource oauth2.TokenSource
+	mu         sync.Mutex
+}
+
+// newOAuth2Config creates a new OAuth2 configuration using the provided client credentials and redirect URI.
 func newOAuth2Config(clientID, clientSecret, redirectURI string) *oauth2.Config {
 	return &oauth2.Config{
 		ClientID:     clientID,
@@ -46,8 +53,39 @@ func newOAuth2Config(clientID, clientSecret, redirectURI string) *oauth2.Config 
 	}
 }
 
-// Token retrieves the OAuth2 token. It checks if a valid token is available, tries to refresh it if needed,
-// or generates a new token if none is found or the current token is expired.
+// Token attempts to retrieve a valid token from the underlying source.
+// If the token is expired and unauthorized, it retries the request using a new token.
+func (r *retryingTokenSource) Token() (*oauth2.Token, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	tok, err := r.baseSource.Token()
+	if err != nil {
+		return nil, err
+	}
+
+	client := oauth2.NewClient(context.Background(), oauth2.StaticTokenSource(tok))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, test, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := client.Do(req)
+	if err != nil || resp.StatusCode == http.StatusUnauthorized {
+		r.baseSource = oauth2.ReuseTokenSource(nil, r.baseSource)
+		return r.baseSource.Token()
+	}
+	defer resp.Body.Close()
+
+	return tok, nil
+}
+
+// Token returns a valid access token, either by using the current one,
+// refreshing it using a refresh token, or by initiating the authorization code flow.
 func (ts *customTokenSource) Token() (*oauth2.Token, error) {
 	ts.mu.Lock()
 	defer ts.mu.Unlock()
@@ -57,45 +95,84 @@ func (ts *customTokenSource) Token() (*oauth2.Token, error) {
 	}
 
 	savedToken, err := loadTokenFromFile()
-	if err == nil && savedToken != nil && savedToken.Valid() {
-		ts.currentToken = savedToken
-		return savedToken, nil
-	}
-
-	if ts.currentToken != nil && ts.currentToken.RefreshToken != "" {
-		tok, err := ts.oauthConfig.TokenSource(ts.ctx, ts.currentToken).Token()
+	if err == nil && savedToken.RefreshToken != "" {
+		newToken, err := ts.refreshToken(savedToken.RefreshToken)
 		if err == nil {
-			ts.saveNewToken(tok)
-			return tok, nil
-		}
-	}
-
-	if savedToken != nil && savedToken.RefreshToken != "" {
-		tok, err := ts.oauthConfig.TokenSource(ts.ctx, savedToken).Token()
-		if err == nil {
-			ts.saveNewToken(tok) 
-			return tok, nil
+			return newToken, nil
 		}
 	}
 
 	return ts.generateInitialToken()
 }
 
-// generateInitialToken generates a new OAuth2 token by prompting the user to authorize the application
-// and exchange the authorization code for a token.
+// refreshToken refreshes the access token using the provided refresh token and returns the new token.
+func (ts *customTokenSource) refreshToken(refreshToken string) (*oauth2.Token, error) {
+	authHeader := base64.StdEncoding.EncodeToString([]byte(ts.clientID + ":" + ts.clientSecret))
+	form := url.Values{}
+	form.Add("grant_type", "refresh_token")
+	form.Add("refresh_token", refreshToken)
+	ctx := context.Background()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenURL, strings.NewReader(form.Encode()))
+	if err != nil {
+		return nil, fmt.Errorf("error creating request: %w", err)
+	}
+	req.Header.Add("Authorization", "Basic "+authHeader)
+	req.Header.Add("Content-Type", "application/x-www-form-urlencoded")
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("error sending request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("error reading response: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("status code %d: %s", resp.StatusCode, string(body))
+	}
+
+	var tokenResp struct {
+		AccessToken  string `json:"access_token"`
+		TokenType    string `json:"token_type"`
+		ExpiresIn    int    `json:"expires_in"`
+		RefreshToken string `json:"refresh_token"`
+	}
+	if err := json.Unmarshal(body, &tokenResp); err != nil {
+		return nil, fmt.Errorf("error decoding response: %w", err)
+	}
+
+	token := &oauth2.Token{
+		AccessToken:  tokenResp.AccessToken,
+		TokenType:    tokenResp.TokenType,
+		RefreshToken: tokenResp.RefreshToken,
+		Expiry:       time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second),
+	}
+	if token.RefreshToken == "" {
+		token.RefreshToken = refreshToken
+	}
+	ts.saveNewToken(token)
+	return token, nil
+}
+
+// generateInitialToken guides the user through the OAuth2 authorization code flow,
+// obtains the code, and exchanges it for a new token.
 func (ts *customTokenSource) generateInitialToken() (*oauth2.Token, error) {
 	authURL := ts.oauthConfig.AuthCodeURL("state-token", oauth2.AccessTypeOffline)
-	fmt.Printf("Go to the following URL to authorize the application:\n\n%s\n\n", authURL)
-	fmt.Printf("After authorization, you will be redirected to %s. Paste the full redirect URL here:\n", ts.redirectUri)
+
+	log.Printf("Go to the following URL to authorize the application:\n\n%s\n\n", authURL)
+	log.Printf("After authorization, you will be redirected to %s. Paste the full redirect URL here:\n", ts.redirectURI)
 
 	var redirectURL string
 	if _, err := fmt.Scanln(&redirectURL); err != nil {
-		return nil, fmt.Errorf("failed to read redirect URL: %v", err)
+		return nil, fmt.Errorf("failed to read redirect URL: %w", err)
 	}
 
 	u, err := url.Parse(redirectURL)
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse redirect URL: %v", err)
+		return nil, fmt.Errorf("failed to parse redirect URL: %w", err)
 	}
 
 	code := u.Query().Get("code")
@@ -105,74 +182,75 @@ func (ts *customTokenSource) generateInitialToken() (*oauth2.Token, error) {
 
 	token, err := ts.exchangeCodeForToken(code)
 	if err != nil {
-		return nil, fmt.Errorf("failed to exchange code for token: %v", err)
+		return nil, fmt.Errorf("failed to exchange code for token: %w", err)
 	}
 
 	ts.saveNewToken(token)
 	return token, nil
 }
 
-// exchangeCodeForToken exchanges the authorization code for an OAuth2 token
-// by making a POST request to the token endpoint.
+// exchangeCodeForToken exchanges the provided authorization code for a new OAuth2 token.
 func (ts *customTokenSource) exchangeCodeForToken(code string) (*oauth2.Token, error) {
-	// Prepare the authorization header with the client ID and secret
-	authHeader := base64.StdEncoding.EncodeToString(
-		[]byte(ts.clientID + ":" + ts.clientSecret),
-	)
-
-	// Prepare the form data for the token request
+	authHeader := base64.StdEncoding.EncodeToString([]byte(ts.clientID + ":" + ts.clientSecret))
 	form := url.Values{}
 	form.Add("grant_type", "authorization_code")
 	form.Add("code", code)
-	form.Add("redirect_uri", ts.redirectUri)
+	form.Add("redirect_uri", ts.redirectURI)
 
-	req, err := http.NewRequest("POST", tokenURL, strings.NewReader(form.Encode()))
+	// Crear el contexto. Si no tienes uno específico, puedes usar context.Background().
+	ctx := context.Background()
+
+	// Usar http.NewRequestWithContext en lugar de http.NewRequest
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenURL, strings.NewReader(form.Encode()))
 	if err != nil {
-		return nil, fmt.Errorf("failed to create token request: %v", err)
+		return nil, fmt.Errorf("error creating request: %w", err)
 	}
-
-	// Add the necessary headers for the request
 	req.Header.Add("Authorization", "Basic "+authHeader)
 	req.Header.Add("Content-Type", "application/x-www-form-urlencoded")
 
 	client := &http.Client{}
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("failed to execute token request: %v", err)
+		return nil, fmt.Errorf("error sending request: %w", err)
 	}
 	defer resp.Body.Close()
 
-	// If the response status is not OK, handle the error
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("error reading response: %w", err)
+	}
 	if resp.StatusCode != http.StatusOK {
-		var errorResponse struct {
-			Error            string `json:"error"`
-			ErrorDescription string `json:"error_description"`
-		}
-		json.NewDecoder(resp.Body).Decode(&errorResponse)
-		return nil, fmt.Errorf("token request failed with status %d: %s - %s",
-			resp.StatusCode, errorResponse.Error, errorResponse.ErrorDescription)
+		return nil, fmt.Errorf("status code %d: %s", resp.StatusCode, string(body))
 	}
 
-	// Decode the token from the response
-	var token oauth2.Token
-	if err := json.NewDecoder(resp.Body).Decode(&token); err != nil {
-		return nil, fmt.Errorf("failed to decode token response: %v", err)
+	var tokenResp struct {
+		AccessToken  string `json:"access_token"`
+		TokenType    string `json:"token_type"`
+		ExpiresIn    int    `json:"expires_in"`
+		RefreshToken string `json:"refresh_token"`
+	}
+	if err := json.Unmarshal(body, &tokenResp); err != nil {
+		return nil, fmt.Errorf("error decoding response: %w", err)
 	}
 
-	return &token, nil
+	token := &oauth2.Token{
+		AccessToken:  tokenResp.AccessToken,
+		TokenType:    tokenResp.TokenType,
+		RefreshToken: tokenResp.RefreshToken,
+		Expiry:       time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second),
+	}
+	ts.saveNewToken(token)
+	return token, nil
 }
 
-// saveNewToken saves the newly obtained OAuth2 token and writes it to a file for future use.
+// saveNewToken saves the new token in memory and persists it to file.
 func (ts *customTokenSource) saveNewToken(token *oauth2.Token) {
 	ts.currentToken = token
-	if err := saveTokenToFile(token); err != nil {
-		log.Printf("Error saving token: %v", err)
-	}
-	log.Printf("New token obtained. Expires in %v\n", time.Until(token.Expiry))
+	_ = saveTokenToFile(token)
 }
 
-// NewAuthenticatedClient creates a new authenticated HTTP client using OAuth2 authentication.
-// It returns the HTTP client, the OAuth2 token, and any errors encountered during the process.
+// NewAuthenticatedClient initializes an HTTP client authenticated with OAuth2,
+// handling token loading, refreshing, and reuse.
 func NewAuthenticatedClient(ctx context.Context, clientID, clientSecret, accountID, redirectURI string) (*http.Client, *oauth2.Token, error) {
 	oauthCfg := newOAuth2Config(clientID, clientSecret, redirectURI)
 
@@ -182,7 +260,7 @@ func NewAuthenticatedClient(ctx context.Context, clientID, clientSecret, account
 		clientID:     clientID,
 		clientSecret: clientSecret,
 		accountID:    accountID,
-		redirectUri:  redirectURI,
+		redirectURI:  redirectURI,
 	}
 
 	savedToken, err := loadTokenFromFile()
@@ -190,7 +268,9 @@ func NewAuthenticatedClient(ctx context.Context, clientID, clientSecret, account
 		ts.currentToken = savedToken
 	}
 
-	httpClient := oauth2.NewClient(ctx, ts)
+	reusableSource := oauth2.ReuseTokenSource(savedToken, ts)
+	retryingSource := &retryingTokenSource{baseSource: reusableSource}
+	httpClient := oauth2.NewClient(ctx, retryingSource)
 	tok, err := ts.Token()
 	if err != nil {
 		return nil, nil, err

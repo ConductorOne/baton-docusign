@@ -15,13 +15,17 @@ import (
 	"github.com/conductorone/baton-sdk/pkg/types/resource"
 )
 
-// permissionBuilder handles the construction of permission-related resources and grants
-type permissionBuilder struct {
-	resourceType *v2.ResourceType
-	client       *client.Client
+type userFetcher interface {
+	GetAllUsersWithDetails(ctx context.Context) ([]*client.UserDetail, annotations.Annotations, error)
 }
 
-// permissionDefinition defines the structure of a DocuSign permission
+// permissionBuilder handles the construction of permission-related resources and grants.
+type permissionBuilder struct {
+	resourceType *v2.ResourceType
+	client       userFetcher
+}
+
+// permissionDefinition defines the structure of a DocuSign permission.
 type permissionDefinition struct {
 	ID          string
 	DisplayName string
@@ -29,7 +33,7 @@ type permissionDefinition struct {
 	Purpose     v2.Entitlement_PurposeValue
 }
 
-// permissionMapping maps DocuSign user settings fields to permission IDs
+// permissionMapping maps DocuSign user settings fields to permission IDs.
 type permissionMapping struct {
 	FieldName    string
 	PermissionID string
@@ -40,7 +44,7 @@ const (
 )
 
 var (
-	// permissionDefinitions contains all possible DocuSign permissions with their metadata
+	// permissionDefinitions contains all possible DocuSign permissions with their metadata.
 	permissionDefinitions = []permissionDefinition{
 		{"adminOnly", "Admin Only Actions", "Indicates some actions are exclusive for admins", v2.Entitlement_PURPOSE_VALUE_PERMISSION},
 		{"canManageAccount", "Manage Account", "Can manage account settings", v2.Entitlement_PURPOSE_VALUE_PERMISSION},
@@ -64,7 +68,7 @@ var (
 		{"canUseSmartContracts", "Smart Contracts", "Can use smart contracts", v2.Entitlement_PURPOSE_VALUE_PERMISSION},
 	}
 
-	// fieldToPermissionMappings maps user setting fields to permission IDs
+	// fieldToPermissionMappings maps user setting fields to permission IDs.
 	fieldToPermissionMappings = []permissionMapping{
 		{"isAdmin", "adminOnly"},
 		{"adminOnly", "adminOnly"},
@@ -89,7 +93,7 @@ var (
 		{"canUseSmartContracts", "canUseSmartContracts"},
 	}
 
-	// validPermissionValues defines acceptable values for permission settings
+	// validPermissionValues defines acceptable values for permission settings.
 	validPermissionValues = map[string]bool{
 		"true":  true,
 		"admin": true,
@@ -97,12 +101,12 @@ var (
 	}
 )
 
-// ResourceType returns the resource type this builder manages (docusign-permissions)
+// ResourceType returns the resource type this builder manages (docusign-permissions).
 func (p *permissionBuilder) ResourceType(ctx context.Context) *v2.ResourceType {
 	return permissionResourceType
 }
 
-// List returns the singleton permission resource that represents all DocuSign permissions
+// List returns the singleton permission resource that represents all DocuSign permissions.
 func (p *permissionBuilder) List(ctx context.Context, parentResourceID *v2.ResourceId, pToken *pagination.Token) ([]*v2.Resource, string, annotations.Annotations, error) {
 	permissionResource, err := resource.NewRoleResource(
 		permissionResourceID,
@@ -117,7 +121,7 @@ func (p *permissionBuilder) List(ctx context.Context, parentResourceID *v2.Resou
 	return []*v2.Resource{permissionResource}, "", nil, nil
 }
 
-// Entitlements generates all possible permission entitlements for the permission resource
+// Entitlements generates all possible permission entitlements for the permission resource.
 func (p *permissionBuilder) Entitlements(ctx context.Context, resource *v2.Resource, _ *pagination.Token) ([]*v2.Entitlement, string, annotations.Annotations, error) {
 	entitlements := make([]*v2.Entitlement, 0, len(permissionDefinitions))
 
@@ -134,7 +138,7 @@ func (p *permissionBuilder) Entitlements(ctx context.Context, resource *v2.Resou
 	return entitlements, "", nil, nil
 }
 
-// Grants fetches all users and generates grants for their actual permissions
+// Grants fetches all users and generates grants for their actual permissions.
 func (p *permissionBuilder) Grants(ctx context.Context, resource *v2.Resource, pToken *pagination.Token) ([]*v2.Grant, string, annotations.Annotations, error) {
 	users, annos, err := p.client.GetAllUsersWithDetails(ctx)
 	if err != nil {
@@ -158,7 +162,7 @@ func (p *permissionBuilder) Grants(ctx context.Context, resource *v2.Resource, p
 	return grants, "", annos, nil
 }
 
-// createUserGrants generates grants for a single user based on their settings
+// createUserGrants generates grants for a single user based on their settings.
 func (p *permissionBuilder) createUserGrants(permissionResource *v2.Resource, user *client.UserDetail) ([]*v2.Grant, error) {
 	settingsMap, err := p.parseUserSettings(user.UserSettings)
 	if err != nil {
@@ -188,7 +192,7 @@ func (p *permissionBuilder) createUserGrants(permissionResource *v2.Resource, us
 	return grants, nil
 }
 
-// parseUserSettings converts user settings interface into a map for easier processing
+// parseUserSettings converts user settings interface into a map for easier processing.
 func (p *permissionBuilder) parseUserSettings(settings interface{}) (map[string]interface{}, error) {
 	settingsJSON, err := json.Marshal(settings)
 	if err != nil {
@@ -203,7 +207,7 @@ func (p *permissionBuilder) parseUserSettings(settings interface{}) (map[string]
 	return settingsMap, nil
 }
 
-// createUserResource creates a user resource from DocuSign user details
+// createUserResource creates a user resource from DocuSign user details.
 func (p *permissionBuilder) createUserResource(user *client.UserDetail) (*v2.Resource, error) {
 	return resource.NewUserResource(
 		user.UserName,
@@ -220,7 +224,7 @@ func (p *permissionBuilder) createUserResource(user *client.UserDetail) (*v2.Res
 	)
 }
 
-// createGrantMetadata creates metadata for permission grants
+// createGrantMetadata creates metadata for permission grants.
 func (p *permissionBuilder) createGrantMetadata(user *client.UserDetail, accessLevel string) map[string]interface{} {
 	return map[string]interface{}{
 		"source":       "DocuSign",
@@ -231,7 +235,7 @@ func (p *permissionBuilder) createGrantMetadata(user *client.UserDetail, accessL
 	}
 }
 
-// checkPermissionValue validates and normalizes a permission value
+// checkPermissionValue validates and normalizes a permission value.
 func (p *permissionBuilder) checkPermissionValue(value interface{}) (bool, string) {
 	switch v := value.(type) {
 	case string:
@@ -247,7 +251,7 @@ func (p *permissionBuilder) checkPermissionValue(value interface{}) (bool, strin
 	}
 }
 
-// getUserStatus converts DocuSign user status to Baton status enum
+// getUserStatus converts DocuSign user status to Baton status enum.
 func (p *permissionBuilder) getUserStatus(status string) v2.UserTrait_Status_Status {
 	switch strings.ToLower(status) {
 	case "active":
@@ -259,7 +263,7 @@ func (p *permissionBuilder) getUserStatus(status string) v2.UserTrait_Status_Sta
 	}
 }
 
-// newPermissionBuilder creates a new permissionBuilder instance
+// newPermissionBuilder creates a new permissionBuilder instance.
 func newPermissionBuilder(client *client.Client) *permissionBuilder {
 	return &permissionBuilder{
 		resourceType: permissionResourceType,

@@ -1,0 +1,9 @@
+{
+  "newUsers": [
+    {
+      "userId": "new-user-1",
+      "userName": "newuser1",
+      "email": "newuser1@test.com"
+    }
+  ]
+}

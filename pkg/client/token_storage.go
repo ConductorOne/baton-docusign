@@ -2,60 +2,77 @@ package client
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"time"
 
 	"golang.org/x/oauth2"
 )
 
-// tokenFileData is a structure that represents the data stored in the token file,
-// which includes the access token, refresh token, and the token expiry time.
+// Struct used to store OAuth2 token information in a JSON file.
 type tokenFileData struct {
-	AccessToken  string    `json:"access_token"`  // OAuth2 access token
-	RefreshToken string    `json:"refresh_token"` // OAuth2 refresh token
-	Expiry       time.Time `json:"expiry"`        // Token expiration time
+	AccessToken  string    `json:"access_token"`
+	RefreshToken string    `json:"refresh_token"`
+	TokenType    string    `json:"token_type"`
+	Expiry       time.Time `json:"expiry"`
 }
 
-const tokenFilePath = "docusign_token.json"
+const configFilePath = "docusign_token.json"
 
-// loadTokenFromFile loads the OAuth2 token from a file. It reads the saved token data
-// from the `docusign_token.json` file, unmarshals it into a `tokenFileData` structure,
-// and returns an `oauth2.Token` object.
+// loadTokenFromFile loads the OAuth2 token from a local JSON file.
+// If the expiry is not present, it calculates it based on file creation time.
 func loadTokenFromFile() (*oauth2.Token, error) {
-	data, err := os.ReadFile(tokenFilePath)
+	data, err := os.ReadFile(configFilePath)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("error reading token file: %w", err)
 	}
-
 
 	var saved tokenFileData
 	if err := json.Unmarshal(data, &saved); err != nil {
-		return nil, err 
+		return nil, fmt.Errorf("error decoding token file: %w", err)
 	}
 
-	return &oauth2.Token{
+	// If the expiry field is missing, use file modification time + 8h
+	if saved.Expiry.IsZero() {
+		info, err := os.Stat(configFilePath)
+		if err != nil {
+			return nil, fmt.Errorf("unable to get token file creation date: %w", err)
+		}
+		saved.Expiry = info.ModTime().Add(8 * time.Hour)
+	}
+
+	token := &oauth2.Token{
 		AccessToken:  saved.AccessToken,
 		RefreshToken: saved.RefreshToken,
+		TokenType:    saved.TokenType,
 		Expiry:       saved.Expiry,
-		TokenType:    "Bearer",
-	}, nil
+	}
+
+	return token, nil
 }
 
-// saveTokenToFile saves the provided OAuth2 token to a file. It serializes the token's
-// access token, refresh token, and expiry time into JSON format and writes it to the
-// `docusign_token.json` file.
+// saveTokenToFile saves the OAuth2 token to a local JSON file with restricted permissions.
+// If expiry is missing, it defaults to 1 hour from current time.
 func saveTokenToFile(token *oauth2.Token) error {
+	if token.Expiry.IsZero() {
+		token.Expiry = time.Now().Add(time.Hour)
+	}
+
 	data := tokenFileData{
 		AccessToken:  token.AccessToken,
 		RefreshToken: token.RefreshToken,
+		TokenType:    token.TokenType,
 		Expiry:       token.Expiry,
 	}
 
-	jsonData, err := json.MarshalIndent(data, "", "  ")
+	fileData, err := json.MarshalIndent(data, "", "  ")
 	if err != nil {
-		return err 
+		return fmt.Errorf("error serializing token: %w", err)
 	}
 
+	if err := os.WriteFile(configFilePath, fileData, 0600); err != nil {
+		return fmt.Errorf("error writing token file: %w", err)
+	}
 
-	return os.WriteFile(tokenFilePath, jsonData, 0600)
+	return nil
 }

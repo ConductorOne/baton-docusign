@@ -34,16 +34,6 @@ func (d *Connector) Metadata(ctx context.Context) (*v2.ConnectorMetadata, error)
 		Description: "Connector syncs data users, permissions, groups  and create users of DocuSign",
 		AccountCreationSchema: &v2.ConnectorAccountCreationSchema{
 			FieldMap: map[string]*v2.ConnectorAccountCreationSchema_Field{
-				"name": {
-					DisplayName: "Name",
-					Required:    true,
-					Description: "This name will be used for the user.",
-					Field: &v2.ConnectorAccountCreationSchema_Field_StringField{
-						StringField: &v2.ConnectorAccountCreationSchema_StringField{},
-					},
-					Placeholder: "Name",
-					Order:       1,
-				},
 				"email": {
 					DisplayName: "Email",
 					Required:    true,
@@ -52,7 +42,7 @@ func (d *Connector) Metadata(ctx context.Context) (*v2.ConnectorMetadata, error)
 						StringField: &v2.ConnectorAccountCreationSchema_StringField{},
 					},
 					Placeholder: "Email",
-					Order:       2,
+					Order:       1,
 				},
 				"username": {
 					DisplayName: "Username",
@@ -62,7 +52,7 @@ func (d *Connector) Metadata(ctx context.Context) (*v2.ConnectorMetadata, error)
 						StringField: &v2.ConnectorAccountCreationSchema_StringField{},
 					},
 					Placeholder: "Username",
-					Order:       3,
+					Order:       2,
 				},
 			},
 		},
@@ -73,10 +63,10 @@ func (d *Connector) Validate(ctx context.Context) (annotations.Annotations, erro
 	return nil, nil
 }
 
-func New(ctx context.Context, apiUrl, accountId, clientId, clientSecret, redirectUri string) (*Connector, error) {
+func New(ctx context.Context, apiUrl, accountId, clientId, clientSecret, redirectURI string) (*Connector, error) {
 	l := ctxzap.Extract(ctx)
 
-	docusignClient, err := client.New(ctx, apiUrl, accountId, clientId, clientSecret, redirectUri)
+	docusignClient, err := client.New(ctx, apiUrl, accountId, clientId, clientSecret, redirectURI)
 	if err != nil {
 		l.Error("error creating DocuSign client", zap.Error(err))
 		return nil, err

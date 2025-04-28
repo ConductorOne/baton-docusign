@@ -1,0 +1,17 @@
+{
+  "groups": [
+    {
+      "groupId": "1",
+      "groupName": "Admins",
+      "groupType": "adminGroup",
+      "usersCount": "1"
+    },
+    {
+      "groupId": "2",
+      "groupName": "Finance",
+      "groupType": "testGroup",
+      "usersCount": "2"
+    }
+  ],
+  "page": { "endPosition": "1", "totalSetSize": "2" }
+}

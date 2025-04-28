@@ -1,0 +1,16 @@
+{
+  "users": [
+    {
+      "userId": "1",
+      "userName": "testuser1",
+      "email": "user1@test.com",
+      "userStatus": "Active"
+    },
+    {
+      "userId": "2",
+      "userName": "testuser2",
+      "email": "user2@test.com",
+      "userStatus": "Disabled"
+    }
+  ]
+}

@@ -104,7 +104,7 @@ type CreateUsersRequest struct {
 type UserCreationResponse struct {
 	NewUsers []struct {
 		UserId          string `json:"userId"`
-		Uri             string `json:"uri"`
+		URI             string `json:"uri"`
 		Email           string `json:"email"`
 		UserName        string `json:"userName"`
 		UserStatus      string `json:"userStatus"`

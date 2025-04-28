@@ -28,13 +28,13 @@ type Client struct {
 	accountId    string
 	clientID     string
 	clientSecret string
-	redirectUri  string
+	redirectURI  string
 	wrapper      *uhttp.BaseHttpClient
 }
 
 // New creates a new Client instance, automatically performing OAuth2 authentication.
-func New(ctx context.Context, apiUrl string, account string, clientId string, clientSecret string, redirectUri string) (*Client, error) {
-	httpClient, token, err := NewAuthenticatedClient(ctx, clientId, clientSecret, account, redirectUri)
+func New(ctx context.Context, apiUrl string, account string, clientId string, clientSecret string, redirectURI string) (*Client, error) {
+	httpClient, token, err := NewAuthenticatedClient(ctx, clientId, clientSecret, account, redirectURI)
 	if err != nil {
 		return nil, err
 	}
@@ -51,7 +51,7 @@ func New(ctx context.Context, apiUrl string, account string, clientId string, cl
 		accountId:    account,
 		clientID:     clientId,
 		clientSecret: clientSecret,
-		redirectUri:  redirectUri,
+		redirectURI:  redirectURI,
 	}, nil
 }
 
@@ -69,11 +69,11 @@ func NewClient(ctx context.Context, apiUrl string, token string, account string,
 		accountId:    account,
 		clientID:     clientId,
 		clientSecret: clientSecret,
-		redirectUri:  redirectURI,
+		redirectURI:  redirectURI,
 	}
 }
 
-// buildURL constructs a complete URL from base path and path parameters
+// buildURL constructs a complete URL from base path and path parameters.
 func (c *Client) buildURL(path string, pathParams ...interface{}) (*url.URL, error) {
 	baseURL, err := url.Parse(c.apiUrl)
 	if err != nil {
@@ -89,7 +89,7 @@ func (c *Client) buildURL(path string, pathParams ...interface{}) (*url.URL, err
 	return baseURL.ResolveReference(endpoint), nil
 }
 
-// paginatedRequest handles paginated requests for a given endpoint
+// paginatedRequest handles paginated requests for a given endpoint.
 func (c *Client) paginatedRequest(
 	ctx context.Context,
 	path string,
@@ -359,7 +359,7 @@ func (c *Client) doRequest(
 	return c.doRequestCommon(req, res)
 }
 
-// doRequestCommon handles common request processing logic
+// doRequestCommon handles common request processing logic.
 func (c *Client) doRequestCommon(req *http.Request, res interface{}) (http.Header, annotations.Annotations, error) {
 	var doOptions []uhttp.DoOption
 	if res != nil {
@@ -380,7 +380,7 @@ func (c *Client) doRequestCommon(req *http.Request, res interface{}) (http.Heade
 	return resp.Header, annotation, nil
 }
 
-// Helper interface to extract page information from different response types
+// Helper interface to extract page information from different response types.
 type pagedResponse interface {
 	GetPage() Page
 }
@@ -393,7 +393,7 @@ func (r *GroupsResponse) GetPage() Page {
 	return r.Page
 }
 
-// Helper function to get page info from response
+// Helper function to get page info from response.
 func getPageFromResponse(response interface{}) Page {
 	if r, ok := response.(pagedResponse); ok {
 		return r.GetPage()
