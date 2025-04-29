@@ -63,10 +63,10 @@ func (d *Connector) Validate(ctx context.Context) (annotations.Annotations, erro
 	return nil, nil
 }
 
-func New(ctx context.Context, apiUrl, accountId, clientId, clientSecret, redirectURI string) (*Connector, error) {
+func New(ctx context.Context, apiUrl, accountId, clientId, clientSecret, redirectURI, accessToken string) (*Connector, error) {
 	l := ctxzap.Extract(ctx)
 
-	docusignClient, err := client.New(ctx, apiUrl, accountId, clientId, clientSecret, redirectURI)
+	docusignClient, err := client.New(ctx, apiUrl, accountId, clientId, clientSecret, redirectURI, accessToken)
 	if err != nil {
 		l.Error("error creating DocuSign client", zap.Error(err))
 		return nil, err

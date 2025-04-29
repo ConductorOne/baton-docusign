@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/conductorone/baton-sdk/pkg/uhttp"
 	"golang.org/x/oauth2"
 )
 
@@ -91,6 +92,10 @@ func (ts *customTokenSource) Token() (*oauth2.Token, error) {
 	defer ts.mu.Unlock()
 
 	if ts.currentToken != nil && ts.currentToken.Valid() {
+		return ts.currentToken, nil
+	}
+
+	if ts.currentToken != nil && ts.currentToken.AccessToken != "" {
 		return ts.currentToken, nil
 	}
 
@@ -277,4 +282,19 @@ func NewAuthenticatedClient(ctx context.Context, clientID, clientSecret, account
 	}
 
 	return httpClient, tok, nil
+}
+
+/*NewClientFromAccessToken performs the auth by means of an access token. */
+func NewClientFromAccessToken(ctx context.Context, accessToken string) (*uhttp.BaseHttpClient, error) {
+	token := &oauth2.Token{
+		AccessToken: accessToken,
+		TokenType:   "Bearer",
+	}
+	tokenSource := oauth2.StaticTokenSource(token)
+	httpClient := oauth2.NewClient(ctx, tokenSource)
+	baseHttpClient, err := uhttp.NewBaseHttpClientWithContext(ctx, httpClient)
+	if err != nil {
+		return nil, err
+	}
+	return baseHttpClient, nil
 }

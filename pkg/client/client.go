@@ -33,7 +33,23 @@ type Client struct {
 }
 
 // New creates a new Client instance, automatically performing OAuth2 authentication.
-func New(ctx context.Context, apiUrl string, account string, clientId string, clientSecret string, redirectURI string) (*Client, error) {
+func New(ctx context.Context, apiUrl string, account string, clientId string, clientSecret string, redirectURI string, accessToken string) (*Client, error) {
+	if accessToken != "" {
+		baseHttpClient, err := NewClientFromAccessToken(ctx, accessToken)
+		if err != nil {
+			return nil, err
+		}
+
+		return &Client{
+			wrapper:      baseHttpClient,
+			apiUrl:       apiUrl,
+			token:        accessToken,
+			accountId:    account,
+			clientID:     clientId,
+			clientSecret: clientSecret,
+			redirectURI:  redirectURI,
+		}, nil
+	}
 	httpClient, token, err := NewAuthenticatedClient(ctx, clientId, clientSecret, account, redirectURI)
 	if err != nil {
 		return nil, err

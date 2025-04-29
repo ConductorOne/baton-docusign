@@ -32,7 +32,7 @@ func initClient(t *testing.T) *client.Client {
 		t.Skip("One or more required environment variables are missing. Skipping integration test.")
 	}
 
-	c, err := client.New(ctx, apiURL, accountID, clientID, clientSecret, redirectURI)
+	c, err := client.New(ctx, apiURL, accountID, clientID, clientSecret, redirectURI, "")
 	if err != nil {
 		t.Fatalf("Failed to create DocuSign client: %v", err)
 	}
