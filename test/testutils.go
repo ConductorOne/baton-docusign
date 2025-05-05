@@ -31,19 +31,19 @@ func (m *MockRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) 
 
 // MockClient is a mock client used for unit tests that simulates the real client behavior.
 type MockClient struct {
-	GetUsersFunc      func(ctx context.Context) ([]client.User, annotations.Annotations, error)
+	GetUsersFunc      func(ctx context.Context, token string) ([]client.User, string, annotations.Annotations, error)
 	GetUserGroupsFunc func(ctx context.Context, userID string) ([]client.Group, annotations.Annotations, error)
-	GetGroupsFunc     func(ctx context.Context) ([]client.Group, annotations.Annotations, error)
-	GetGroupUsersFunc func(ctx context.Context, groupID string) ([]client.User, annotations.Annotations, error)
+	GetGroupsFunc     func(ctx context.Context, token string) ([]client.Group, string, annotations.Annotations, error)
+	GetGroupUsersFunc func(ctx context.Context, groupID string, pageToken string) ([]client.User, string, annotations.Annotations, error)
 	CreateUsersFunc   func(ctx context.Context, request client.CreateUsersRequest) (*client.UserCreationResponse, annotations.Annotations, error)
 }
 
 // GetUsers returns a list of users based on the mocked function.
-func (m *MockClient) GetUsers(ctx context.Context) ([]client.User, annotations.Annotations, error) {
+func (m *MockClient) GetUsers(ctx context.Context, token string) ([]client.User, string, annotations.Annotations, error) {
 	if m.GetUsersFunc != nil {
-		return m.GetUsersFunc(ctx)
+		return m.GetUsersFunc(ctx, token)
 	}
-	return nil, nil, nil
+	return nil, "", nil, nil
 }
 
 // GetUserGroups returns a list of groups for a given user based on the mocked function.
@@ -55,19 +55,19 @@ func (m *MockClient) GetUserGroups(ctx context.Context, userID string) ([]client
 }
 
 // GetGroups returns a list of groups based on the mocked function.
-func (m *MockClient) GetGroups(ctx context.Context) ([]client.Group, annotations.Annotations, error) {
+func (m *MockClient) GetGroups(ctx context.Context, token string) ([]client.Group, string, annotations.Annotations, error) {
 	if m.GetGroupsFunc != nil {
-		return m.GetGroupsFunc(ctx)
+		return m.GetGroupsFunc(ctx, token)
 	}
-	return nil, nil, nil
+	return nil, "", nil, nil
 }
 
 // GetGroupUsers returns a list of users for a given group based on the mocked function.
-func (m *MockClient) GetGroupUsers(ctx context.Context, groupID string) ([]client.User, annotations.Annotations, error) {
+func (m *MockClient) GetGroupUsers(ctx context.Context, groupID string, pageToken string) ([]client.User, string, annotations.Annotations, error) {
 	if m.GetGroupUsersFunc != nil {
-		return m.GetGroupUsersFunc(ctx, groupID)
+		return m.GetGroupUsersFunc(ctx, groupID, pageToken)
 	}
-	return nil, nil, nil
+	return nil, "", nil, nil
 }
 
 // CreateUsers creates users based on the mocked function.
@@ -136,9 +136,6 @@ func NewTestClient(response *http.Response, err error) *client.Client {
 		"https://mock.api.docusign.net",
 		"test-token",
 		"account123",
-		"id",
-		"secret",
-		"uri",
 		baseHttpClient,
 	)
 }

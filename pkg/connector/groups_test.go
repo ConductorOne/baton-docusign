@@ -84,10 +84,10 @@ func TestGroupBuilder_List(t *testing.T) {
 
 			require.NoError(t, err)
 			assert.Len(t, resources, tt.expectedLen)
-			assert.Empty(t, nextToken)
 			assert.NotNil(t, annos)
 
 			if tt.expectedLen > 0 {
+				assert.Equal(t, "eyJzdGFydF9wb3NpdGlvbiI6Mn0=", nextToken)
 				assert.Equal(t, "Admins", resources[0].DisplayName)
 				assert.Equal(t, "1", resources[0].Id.Resource)
 			}
@@ -102,7 +102,7 @@ func TestGroupBuilder_List_WithMockClient(t *testing.T) {
 		*test.MockClient
 	}{
 		MockClient: &test.MockClient{
-			GetGroupsFunc: func(ctx context.Context) ([]client.Group, annotations.Annotations, error) {
+			GetGroupsFunc: func(ctx context.Context, token string) ([]client.Group, string, annotations.Annotations, error) {
 				return []client.Group{
 					{
 						GroupId:    "1",
@@ -110,7 +110,7 @@ func TestGroupBuilder_List_WithMockClient(t *testing.T) {
 						GroupType:  "adminGroup",
 						UsersCount: "5",
 					},
-				}, nil, nil
+				}, "", nil, nil
 			},
 		},
 	}
@@ -164,7 +164,7 @@ func TestGroupBuilder_Grants(t *testing.T) {
 		*test.MockClient
 	}{
 		MockClient: &test.MockClient{
-			GetGroupUsersFunc: func(ctx context.Context, groupID string) ([]client.User, annotations.Annotations, error) {
+			GetGroupUsersFunc: func(ctx context.Context, groupID string, pageToken string) ([]client.User, string, annotations.Annotations, error) {
 				return []client.User{
 					{
 						UserId:     "user1",
@@ -172,7 +172,7 @@ func TestGroupBuilder_Grants(t *testing.T) {
 						Email:      "user1@test.com",
 						UserStatus: "active",
 					},
-				}, nil, nil
+				}, "", nil, nil
 			},
 		},
 	}

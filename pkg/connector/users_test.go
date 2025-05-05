@@ -76,7 +76,7 @@ func TestUserBuilder_List(t *testing.T) {
 // It verifies that the List method can correctly retrieve and parse a manually mocked user list.
 func TestUserBuilder_List_WithMockClient(t *testing.T) {
 	mockClient := &test.MockClient{
-		GetUsersFunc: func(ctx context.Context) ([]client.User, annotations.Annotations, error) {
+		GetUsersFunc: func(ctx context.Context, token string) ([]client.User, string, annotations.Annotations, error) {
 			return []client.User{
 				{
 					UserId:     "1",
@@ -84,7 +84,7 @@ func TestUserBuilder_List_WithMockClient(t *testing.T) {
 					Email:      "user1@test.com",
 					UserStatus: "Active",
 				},
-			}, nil, nil
+			}, "", nil, nil
 		},
 	}
 

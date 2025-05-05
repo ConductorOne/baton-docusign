@@ -14,6 +14,10 @@ type Page struct {
 	EndPosition   int `json:"endPosition,string"`
 }
 
+type pageToken struct {
+	StartPosition int `json:"start_position"`
+}
+
 type User struct {
 	UserId     string `json:"userId"`
 	UserName   string `json:"userName"`

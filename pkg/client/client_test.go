@@ -42,7 +42,7 @@ func createTestServer(t *testing.T, mockResponse string, urlPath string, method 
 func createClient(baseURL string) *client.Client {
 	httpClient := &http.Client{}
 	baseHttpClient := uhttp.NewBaseHttpClient(httpClient)
-	return client.NewClient(context.Background(), baseURL, "test-token", "account123", "id", "secret", "uri", baseHttpClient)
+	return client.NewClient(context.Background(), baseURL, "test-token", "account123", baseHttpClient)
 }
 
 // Test case to verify successful retrieval of users without pagination.
@@ -54,7 +54,7 @@ func TestClient_GetUsers(t *testing.T) {
 		defer testServer.Close()
 
 		c := createClient(testServer.URL)
-		users, _, err := c.GetUsers(context.Background())
+		users, _, _, err := c.GetUsers(context.Background(), "")
 
 		require.NoError(t, err)
 		assert.Len(t, users, 2)
@@ -89,7 +89,7 @@ func TestClient_GetGroups(t *testing.T) {
 		defer testServer.Close()
 
 		c := createClient(testServer.URL)
-		groups, _, err := c.GetGroups(context.Background())
+		groups, _, _, err := c.GetGroups(context.Background(), "")
 
 		require.NoError(t, err)
 		assert.Len(t, groups, 2)
@@ -106,26 +106,10 @@ func TestClient_GetGroupUsers(t *testing.T) {
 		defer testServer.Close()
 
 		c := createClient(testServer.URL)
-		users, _, err := c.GetGroupUsers(context.Background(), "g1")
+		users, _, _, err := c.GetGroupUsers(context.Background(), "g1", "")
 
 		require.NoError(t, err)
 		assert.Len(t, users, 1)
-	})
-}
-
-// Test case to verify successful retrieval of groups for a specific user.
-func TestClient_GetUserGroups(t *testing.T) {
-	t.Run("successfully retrieves groups for user", func(t *testing.T) {
-		mockResponse := readMockResponse("user_groups.json")
-		testServer := createTestServer(t, mockResponse, getUserDetailsTest, "")
-
-		defer testServer.Close()
-
-		c := createClient(testServer.URL)
-		groups, _, err := c.GetUserGroups(context.Background(), "u1")
-
-		require.NoError(t, err)
-		assert.Len(t, groups, 1)
 	})
 }
 

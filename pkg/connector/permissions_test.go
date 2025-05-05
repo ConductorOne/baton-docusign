@@ -12,6 +12,19 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// createUserDetail simplifies the creation of a UserDetail with the specified attributes.
+func createUserDetail(userId, userName, email, isAdmin, userStatus, permissionProfileName string, userSettings client.UserSettings) *client.UserDetail {
+	return &client.UserDetail{
+		UserID:                userId,
+		UserName:              userName,
+		Email:                 email,
+		IsAdmin:               isAdmin,
+		UserStatus:            userStatus,
+		PermissionProfileName: permissionProfileName,
+		UserSettings:          userSettings,
+	}
+}
+
 // TestPermissionBuilder_List verifies that the permission builder correctly lists the permission resource.
 func TestPermissionBuilder_List(t *testing.T) {
 	builder := &permissionBuilder{
@@ -99,18 +112,5 @@ func TestPermissionBuilder_Grants(t *testing.T) {
 
 	for slug, granted := range expectedEntitlements {
 		assert.True(t, granted, "Expected grant for entitlement %s", slug)
-	}
-}
-
-// createUserDetail simplifies the creation of a UserDetail with the specified attributes.
-func createUserDetail(userId, userName, email, isAdmin, userStatus, permissionProfileName string, userSettings client.UserSettings) *client.UserDetail {
-	return &client.UserDetail{
-		UserID:                userId,
-		UserName:              userName,
-		Email:                 email,
-		IsAdmin:               isAdmin,
-		UserStatus:            userStatus,
-		PermissionProfileName: permissionProfileName,
-		UserSettings:          userSettings,
 	}
 }

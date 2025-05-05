@@ -15,6 +15,7 @@ import (
 	"github.com/conductorone/baton-sdk/pkg/types/resource"
 )
 
+// userFetcher defines an interface to fetch all DocuSign users with detailed settings.
 type userFetcher interface {
 	GetAllUsersWithDetails(ctx context.Context) ([]*client.UserDetail, annotations.Annotations, error)
 }
@@ -30,7 +31,6 @@ type permissionDefinition struct {
 	ID          string
 	DisplayName string
 	Description string
-	Purpose     v2.Entitlement_PurposeValue
 }
 
 // permissionMapping maps DocuSign user settings fields to permission IDs.
@@ -39,6 +39,7 @@ type permissionMapping struct {
 	PermissionID string
 }
 
+// permissionResourceID is the singleton ID for the permissions resource.
 const (
 	permissionResourceID = "docusign-permissions"
 )
@@ -46,26 +47,26 @@ const (
 var (
 	// permissionDefinitions contains all possible DocuSign permissions with their metadata.
 	permissionDefinitions = []permissionDefinition{
-		{"adminOnly", "Admin Only Actions", "Indicates some actions are exclusive for admins", v2.Entitlement_PURPOSE_VALUE_PERMISSION},
-		{"canManageAccount", "Manage Account", "Can manage account settings", v2.Entitlement_PURPOSE_VALUE_PERMISSION},
-		{"canManageTemplates", "Manage Templates", "Can manage shared templates", v2.Entitlement_PURPOSE_VALUE_PERMISSION},
-		{"canEditSharedAddressbook", "Edit Shared Addressbook", "Can edit shared address book", v2.Entitlement_PURPOSE_VALUE_PERMISSION},
-		{"canManageOrganization", "Manage Organization", "Can manage organization settings", v2.Entitlement_PURPOSE_VALUE_PERMISSION},
-		{"canManageDistributor", "Manage Distributor", "Can manage distributor settings", v2.Entitlement_PURPOSE_VALUE_PERMISSION},
-		{"canSendEnvelope", "Send Envelope", "Can send envelopes", v2.Entitlement_PURPOSE_VALUE_PERMISSION},
-		{"canSignEnvelope", "Sign Envelope", "Can sign envelopes", v2.Entitlement_PURPOSE_VALUE_PERMISSION},
-		{"allowSendOnBehalfOf", "Send On Behalf Of", "Can send envelopes on behalf of others", v2.Entitlement_PURPOSE_VALUE_PERMISSION},
-		{"bulkSend", "Bulk Send", "Can send envelopes in bulk", v2.Entitlement_PURPOSE_VALUE_PERMISSION},
-		{"canSendAPIRequests", "Send API Requests", "Can make API requests", v2.Entitlement_PURPOSE_VALUE_PERMISSION},
-		{"enableSequentialSigningUI", "Sequential Signing UI", "Can use sequential signing UI", v2.Entitlement_PURPOSE_VALUE_PERMISSION},
-		{"enableDSPro", "DS Pro Features", "Access to DocuSign Pro features", v2.Entitlement_PURPOSE_VALUE_PERMISSION},
-		{"canUseScratchpad", "Use Scratchpad", "Can use scratchpad feature", v2.Entitlement_PURPOSE_VALUE_PERMISSION},
-		{"canCreateWorkspaces", "Create Workspaces", "Can create collaborative workspaces", v2.Entitlement_PURPOSE_VALUE_PERMISSION},
-		{"enableTransactionPoint", "Transaction Point", "Can use transaction point feature", v2.Entitlement_PURPOSE_VALUE_PERMISSION},
-		{"powerFormMode", "PowerForm Admin", "Administrative control over PowerForms", v2.Entitlement_PURPOSE_VALUE_PERMISSION},
-		{"apiCanExportAC", "Export Audit Certificates", "Can export audit certificates via API", v2.Entitlement_PURPOSE_VALUE_PERMISSION},
-		{"enableVaulting", "Vaulting Access", "Can use long-term storage (Vaulting)", v2.Entitlement_PURPOSE_VALUE_PERMISSION},
-		{"canUseSmartContracts", "Smart Contracts", "Can use smart contracts", v2.Entitlement_PURPOSE_VALUE_PERMISSION},
+		{"adminOnly", "Admin Only Actions", "Indicates some actions are exclusive for admins"},
+		{"canManageAccount", "Manage Account", "Can manage account settings"},
+		{"canManageTemplates", "Manage Templates", "Can manage shared templates"},
+		{"canEditSharedAddressbook", "Edit Shared Addressbook", "Can edit shared address book"},
+		{"canManageOrganization", "Manage Organization", "Can manage organization settings"},
+		{"canManageDistributor", "Manage Distributor", "Can manage distributor settings"},
+		{"canSendEnvelope", "Send Envelope", "Can send envelopes"},
+		{"canSignEnvelope", "Sign Envelope", "Can sign envelopes"},
+		{"allowSendOnBehalfOf", "Send On Behalf Of", "Can send envelopes on behalf of others"},
+		{"bulkSend", "Bulk Send", "Can send envelopes in bulk"},
+		{"canSendAPIRequests", "Send API Requests", "Can make API requests"},
+		{"enableSequentialSigningUI", "Sequential Signing UI", "Can use sequential signing UI"},
+		{"enableDSPro", "DS Pro Features", "Access to DocuSign Pro features"},
+		{"canUseScratchpad", "Use Scratchpad", "Can use scratchpad feature"},
+		{"canCreateWorkspaces", "Create Workspaces", "Can create collaborative workspaces"},
+		{"enableTransactionPoint", "Transaction Point", "Can use transaction point feature"},
+		{"powerFormMode", "PowerForm Admin", "Administrative control over PowerForms"},
+		{"apiCanExportAC", "Export Audit Certificates", "Can export audit certificates via API"},
+		{"enableVaulting", "Vaulting Access", "Can use long-term storage (Vaulting)"},
+		{"canUseSmartContracts", "Smart Contracts", "Can use smart contracts"},
 	}
 
 	// fieldToPermissionMappings maps user setting fields to permission IDs.
@@ -169,27 +170,30 @@ func (p *permissionBuilder) createUserGrants(permissionResource *v2.Resource, us
 		return nil, err
 	}
 
-	userResource, err := p.createUserResource(user)
-	if err != nil {
-		return nil, err
-	}
-
 	var grants []*v2.Grant
 	for _, mapping := range fieldToPermissionMappings {
 		if value, exists := settingsMap[mapping.FieldName]; exists {
 			if hasPermission, accessLevel := p.checkPermissionValue(value); hasPermission {
+				subject := makeUserSubjectID(user.UserID)
 				grants = append(grants, grant.NewGrant(
 					permissionResource,
 					mapping.PermissionID,
-					userResource.Id,
+					subject,
 					grant.WithGrantMetadata(p.createGrantMetadata(user, accessLevel)),
-				),
-				)
+				))
 			}
 		}
 	}
 
 	return grants, nil
+}
+
+// makeUserSubjectID creates a ResourceId for a user based on their user ID.
+func makeUserSubjectID(userID string) *v2.ResourceId {
+	return &v2.ResourceId{
+		ResourceType: userResourceType.Id,
+		Resource:     userID,
+	}
 }
 
 // parseUserSettings converts user settings interface into a map for easier processing.
@@ -205,23 +209,6 @@ func (p *permissionBuilder) parseUserSettings(settings interface{}) (map[string]
 	}
 
 	return settingsMap, nil
-}
-
-// createUserResource creates a user resource from DocuSign user details.
-func (p *permissionBuilder) createUserResource(user *client.UserDetail) (*v2.Resource, error) {
-	return resource.NewUserResource(
-		user.UserName,
-		userResourceType,
-		user.UserID,
-		[]resource.UserTraitOption{
-			resource.WithUserProfile(map[string]interface{}{
-				"email":      user.Email,
-				"isAdmin":    user.IsAdmin,
-				"permission": user.PermissionProfileName,
-			}),
-			resource.WithStatus(p.getUserStatus(user.UserStatus)),
-		},
-	)
 }
 
 // createGrantMetadata creates metadata for permission grants.
@@ -248,18 +235,6 @@ func (p *permissionBuilder) checkPermissionValue(value interface{}) (bool, strin
 		return false, "false"
 	default:
 		return false, ""
-	}
-}
-
-// getUserStatus converts DocuSign user status to Baton status enum.
-func (p *permissionBuilder) getUserStatus(status string) v2.UserTrait_Status_Status {
-	switch strings.ToLower(status) {
-	case "active":
-		return v2.UserTrait_Status_STATUS_ENABLED
-	case "inactive", "deactivated":
-		return v2.UserTrait_Status_STATUS_DISABLED
-	default:
-		return v2.UserTrait_Status_STATUS_UNSPECIFIED
 	}
 }
 
