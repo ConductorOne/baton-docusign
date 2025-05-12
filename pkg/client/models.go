@@ -7,6 +7,11 @@ type TokenResponse struct {
 	RefreshToken string `json:"refresh_token"`
 }
 
+type PageOptions struct {
+	PageSize  int
+	PageToken string
+}
+
 type Page struct {
 	ResultSetSize int `json:"resultSetSize,string"`
 	TotalSetSize  int `json:"totalSetSize,string"`

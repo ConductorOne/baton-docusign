@@ -4,14 +4,14 @@
       "groupId": "1",
       "groupName": "Admins",
       "groupType": "adminGroup",
-      "usersCount": "1"
+      "usersCount": "5"
     },
     {
       "groupId": "2",
-      "groupName": "Finance",
-      "groupType": "testGroup",
-      "usersCount": "2"
+      "groupName": "Developers",
+      "groupType": "regularGroup",
+      "usersCount": "10"
     }
   ],
-  "page": { "endPosition": "1", "totalSetSize": "2" }
+  "nextPageToken": "eyJzdGFydF9wb3NpdGlvbiI6Mn0="
 }

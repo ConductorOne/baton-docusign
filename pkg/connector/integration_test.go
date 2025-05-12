@@ -11,10 +11,11 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+// Define the parent resource and pagination token used across integration tests.
 var (
-	// Define the parent resource and pagination token used across integration tests.
 	parentResourceID = &v2.ResourceId{}
-	pToken           = &pagination.Token{Size: 50, Token: ""}
+	pToken           = &pagination.Token{Size: 50, Token: "page-1"}
+	pageToken        = &pagination.Token{Size: 50}
 )
 
 // initClient initializes a DocuSign client using environment variables.
@@ -32,72 +33,72 @@ func initClient(t *testing.T) *client.Client {
 		t.Skip("One or more required environment variables are missing. Skipping integration test.")
 	}
 
-	c, err := client.New(ctx, apiURL, accountID, clientID, clientSecret, redirectURI, "")
+	client, err := client.New(ctx, apiURL, accountID, clientID, clientSecret, redirectURI, "")
 	if err != nil {
 		t.Fatalf("Failed to create DocuSign client: %v", err)
 	}
-	return c
+	return client
 }
 
 // TestUserBuilderList verifies that users can be listed successfully from the DocuSign API.
 func TestUserBuilderList(t *testing.T) {
 	ctx := context.Background()
-	c := initClient(t)
+	client := initClient(t)
 
-	u := newUserBuilder(c)
-	res, nextToken, _, err := u.List(ctx, parentResourceID, pToken)
+	user := newUserBuilder(client)
+	resource, nextToken, _, err := user.List(ctx, parentResourceID, pToken)
 
 	assert.NoError(t, err)
-	assert.NotNil(t, res)
+	assert.NotNil(t, resource)
 
-	t.Logf("Users retrieved: %d, next token: %v", len(res), nextToken)
+	t.Logf("Users retrieved: %d, next token: %v", len(resource), nextToken)
 }
 
 // TestGroupBuilderList verifies that groups can be listed successfully from the DocuSign API.
 func TestGroupBuilderList(t *testing.T) {
 	ctx := context.Background()
-	c := initClient(t)
+	client := initClient(t)
 
-	g := newGroupBuilder(c)
-	res, nextToken, _, err := g.List(ctx, parentResourceID, pToken)
+	group := newGroupBuilder(client)
+	resource, nextToken, _, err := group.List(ctx, parentResourceID, pToken)
 
 	assert.NoError(t, err)
-	assert.NotNil(t, res)
+	assert.NotNil(t, resource)
 
-	t.Logf("Groups retrieved: %d, next token: %v", len(res), nextToken)
+	t.Logf("Groups retrieved: %d, next token: %v", len(resource), nextToken)
 }
 
 // TestPermissionBuilderList verifies that permission profiles can be listed successfully from the DocuSign API.
 func TestPermissionBuilderList(t *testing.T) {
 	ctx := context.Background()
-	c := initClient(t)
+	client := initClient(t)
 
-	p := newPermissionBuilder(c)
-	res, nextToken, _, err := p.List(ctx, parentResourceID, pToken)
+	permission := newPermissionBuilder(client)
+	resource, nextToken, _, err := permission.List(ctx, parentResourceID, pToken)
 
 	assert.NoError(t, err)
-	assert.NotNil(t, res)
+	assert.NotNil(t, resource)
 
-	t.Logf("Permission resources retrieved: %d, next token: %v", len(res), nextToken)
+	t.Logf("Permission resources retrieved: %d, next token: %v", len(resource), nextToken)
 }
 
 // TestPermissionBuilderGrants verifies that grants can be retrieved for a user based on permission profiles.
 // Skips the test if no users are available.
 func TestPermissionBuilderGrants(t *testing.T) {
 	ctx := context.Background()
-	c := initClient(t)
+	client := initClient(t)
 
-	p := newPermissionBuilder(c)
-	u := newUserBuilder(c)
+	permission := newPermissionBuilder(client)
+	user := newUserBuilder(client)
 
-	users, _, _, err := u.List(ctx, parentResourceID, pToken)
+	users, _, _, err := user.List(ctx, parentResourceID, pToken)
 	assert.NoError(t, err)
 
 	if len(users) == 0 {
 		t.Skip("No users available to test grants.")
 	}
 
-	grants, nextToken, _, err := p.Grants(ctx, users[0], pToken)
+	grants, nextToken, _, err := permission.Grants(ctx, users[0], pToken)
 
 	assert.NoError(t, err)
 	assert.NotNil(t, grants)

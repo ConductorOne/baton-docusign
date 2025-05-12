@@ -35,9 +35,9 @@ var (
 		field.WithDescription("Redirect URI registered in your DocuSign integration"),
 		field.WithRequired(true),
 	)
-	accessTokenField = field.StringField(
-		"access-token",
-		field.WithDescription("Optional. Access token."),
+	refreshTokenField = field.StringField(
+		"refresh-token",
+		field.WithDescription("Optional. Refresh token."),
 	)
 
 	ConfigurationFields = []field.SchemaField{
@@ -46,7 +46,7 @@ var (
 		clientIdField,
 		clientSecretField,
 		redirectURIField,
-		accessTokenField,
+		refreshTokenField,
 	}
 
 	FieldRelationships = []field.SchemaFieldRelationship{}

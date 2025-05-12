@@ -39,7 +39,7 @@ func TestPermissionBuilder_List(t *testing.T) {
 	assert.Len(t, resources, 1)
 	assert.Equal(t, permissionResourceID, resources[0].DisplayName)
 	assert.Equal(t, "", nextToken)
-	assert.Nil(t, annos)
+	assert.NotNil(t, annos)
 }
 
 // TestPermissionBuilder_Entitlements verifies that the permission builder returns the correct entitlements for a resource.

@@ -12,6 +12,16 @@ import (
 	"github.com/conductorone/baton-docusign/pkg/client"
 	"github.com/conductorone/baton-sdk/pkg/annotations"
 	"github.com/conductorone/baton-sdk/pkg/uhttp"
+	"golang.org/x/oauth2"
+)
+
+const (
+	MockAccountID    = "account123"
+	MockBaseURL      = "https://mock.api.docusign.net"
+	MockAccessToken  = "test-token"
+	MockRefreshToken = "test-refresh-token"
+	MockUserID       = "u1"
+	MockGroupID      = "g1"
 )
 
 // MockRoundTripper is a mock implementation of http.RoundTripper for testing.
@@ -31,41 +41,38 @@ func (m *MockRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) 
 
 // MockClient is a mock client used for unit tests that simulates the real client behavior.
 type MockClient struct {
-	GetUsersFunc      func(ctx context.Context, token string) ([]client.User, string, annotations.Annotations, error)
-	GetUserGroupsFunc func(ctx context.Context, userID string) ([]client.Group, annotations.Annotations, error)
-	GetGroupsFunc     func(ctx context.Context, token string) ([]client.Group, string, annotations.Annotations, error)
-	GetGroupUsersFunc func(ctx context.Context, groupID string, pageToken string) ([]client.User, string, annotations.Annotations, error)
+	GetUsersFunc      func(ctx context.Context, opts client.PageOptions) ([]client.User, string, annotations.Annotations, error)
+	GetGroupsFunc     func(ctx context.Context, opts client.PageOptions) ([]client.Group, string, annotations.Annotations, error)
+	GetGroupUsersFunc func(ctx context.Context, groupID string, opts client.PageOptions) ([]client.User, string, annotations.Annotations, error)
 	CreateUsersFunc   func(ctx context.Context, request client.CreateUsersRequest) (*client.UserCreationResponse, annotations.Annotations, error)
 }
 
+// ExtendedMockClient is an extended version of MockClient with additional functionality for user details.
+type ExtendedMockClient struct {
+	*MockClient
+	GetAllUsersWithDetailsFunc func(ctx context.Context) ([]*client.UserDetail, annotations.Annotations, error)
+}
+
 // GetUsers returns a list of users based on the mocked function.
-func (m *MockClient) GetUsers(ctx context.Context, token string) ([]client.User, string, annotations.Annotations, error) {
+func (m *MockClient) GetUsers(ctx context.Context, opts client.PageOptions) ([]client.User, string, annotations.Annotations, error) {
 	if m.GetUsersFunc != nil {
-		return m.GetUsersFunc(ctx, token)
+		return m.GetUsersFunc(ctx, opts)
 	}
 	return nil, "", nil, nil
 }
 
-// GetUserGroups returns a list of groups for a given user based on the mocked function.
-func (m *MockClient) GetUserGroups(ctx context.Context, userID string) ([]client.Group, annotations.Annotations, error) {
-	if m.GetUserGroupsFunc != nil {
-		return m.GetUserGroupsFunc(ctx, userID)
-	}
-	return nil, nil, nil
-}
-
 // GetGroups returns a list of groups based on the mocked function.
-func (m *MockClient) GetGroups(ctx context.Context, token string) ([]client.Group, string, annotations.Annotations, error) {
+func (m *MockClient) GetGroups(ctx context.Context, opts client.PageOptions) ([]client.Group, string, annotations.Annotations, error) {
 	if m.GetGroupsFunc != nil {
-		return m.GetGroupsFunc(ctx, token)
+		return m.GetGroupsFunc(ctx, opts)
 	}
 	return nil, "", nil, nil
 }
 
 // GetGroupUsers returns a list of users for a given group based on the mocked function.
-func (m *MockClient) GetGroupUsers(ctx context.Context, groupID string, pageToken string) ([]client.User, string, annotations.Annotations, error) {
+func (m *MockClient) GetGroupUsers(ctx context.Context, groupID string, opts client.PageOptions) ([]client.User, string, annotations.Annotations, error) {
 	if m.GetGroupUsersFunc != nil {
-		return m.GetGroupUsersFunc(ctx, groupID, pageToken)
+		return m.GetGroupUsersFunc(ctx, groupID, opts)
 	}
 	return nil, "", nil, nil
 }
@@ -76,12 +83,6 @@ func (m *MockClient) CreateUsers(ctx context.Context, request client.CreateUsers
 		return m.CreateUsersFunc(ctx, request)
 	}
 	return nil, nil, nil
-}
-
-// ExtendedMockClient is an extended version of MockClient with additional functionality for user details.
-type ExtendedMockClient struct {
-	*MockClient
-	GetAllUsersWithDetailsFunc func(ctx context.Context) ([]*client.UserDetail, annotations.Annotations, error)
 }
 
 // GetAllUsersWithDetails returns user details for all users, based on the mocked function.
@@ -119,23 +120,20 @@ func ReadFile(fileName string) string {
 	return string(data)
 }
 
-// NewTestClient creates a new test client with a mock HTTP response.
+// NewTestClient prepares a Client pointing to a mock endpoint.
 func NewTestClient(response *http.Response, err error) *client.Client {
-	mockTransport := &MockRoundTripper{
-		Response: response,
-		Err:      err,
-	}
-
-	httpClient := &http.Client{
-		Transport: mockTransport,
-	}
-
+	mockTransport := &MockRoundTripper{Response: response, Err: err}
+	httpClient := &http.Client{Transport: mockTransport}
 	baseHttpClient := uhttp.NewBaseHttpClient(httpClient)
+	staticTokenSource := oauth2.StaticTokenSource(&oauth2.Token{
+		AccessToken:  MockAccessToken,
+		RefreshToken: MockRefreshToken,
+	})
 	return client.NewClient(
 		context.Background(),
-		"https://mock.api.docusign.net",
-		"test-token",
-		"account123",
+		MockBaseURL,
+		MockAccountID,
+		staticTokenSource,
 		baseHttpClient,
 	)
 }

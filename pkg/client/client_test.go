@@ -11,6 +11,7 @@ import (
 	"github.com/conductorone/baton-sdk/pkg/uhttp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/oauth2"
 )
 
 const (
@@ -22,8 +23,7 @@ const (
 
 // Helper function to read mock responses from a file.
 func readMockResponse(filename string) string {
-	data := test.ReadFile(filename)
-	return data
+	return test.ReadFile(filename)
 }
 
 // Helper function to create a test server that returns a mock response.
@@ -40,9 +40,10 @@ func createTestServer(t *testing.T, mockResponse string, urlPath string, method 
 
 // Helper function to create a new client instance.
 func createClient(baseURL string) *client.Client {
-	httpClient := &http.Client{}
-	baseHttpClient := uhttp.NewBaseHttpClient(httpClient)
-	return client.NewClient(context.Background(), baseURL, "test-token", "account123", baseHttpClient)
+	ts := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: test.MockAccessToken})
+	oauthClient := oauth2.NewClient(context.Background(), ts)
+	baseHttpClient := uhttp.NewBaseHttpClient(oauthClient)
+	return client.NewClient(context.Background(), baseURL, test.MockAccountID, ts, baseHttpClient)
 }
 
 // Test case to verify successful retrieval of users without pagination.
@@ -54,7 +55,7 @@ func TestClient_GetUsers(t *testing.T) {
 		defer testServer.Close()
 
 		c := createClient(testServer.URL)
-		users, _, _, err := c.GetUsers(context.Background(), "")
+		users, _, _, err := c.GetUsers(context.Background(), client.PageOptions{})
 
 		require.NoError(t, err)
 		assert.Len(t, users, 2)
@@ -72,10 +73,10 @@ func TestClient_GetUserDetails(t *testing.T) {
 		defer testServer.Close()
 
 		c := createClient(testServer.URL)
-		userDetails, _, err := c.GetUserDetails(context.Background(), "u1")
+		userDetails, _, err := c.GetUserDetails(context.Background(), test.MockUserID)
 
 		require.NoError(t, err)
-		assert.Equal(t, "u1", userDetails.UserID)
+		assert.Equal(t, test.MockUserID, userDetails.UserID)
 		assert.Equal(t, "Alice", userDetails.UserName)
 	})
 }
@@ -89,7 +90,7 @@ func TestClient_GetGroups(t *testing.T) {
 		defer testServer.Close()
 
 		c := createClient(testServer.URL)
-		groups, _, _, err := c.GetGroups(context.Background(), "")
+		groups, _, _, err := c.GetGroups(context.Background(), client.PageOptions{})
 
 		require.NoError(t, err)
 		assert.Len(t, groups, 2)
@@ -106,7 +107,7 @@ func TestClient_GetGroupUsers(t *testing.T) {
 		defer testServer.Close()
 
 		c := createClient(testServer.URL)
-		users, _, _, err := c.GetGroupUsers(context.Background(), "g1", "")
+		users, _, _, err := c.GetGroupUsers(context.Background(), test.MockGroupID, client.PageOptions{})
 
 		require.NoError(t, err)
 		assert.Len(t, users, 1)

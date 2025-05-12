@@ -27,7 +27,7 @@ jobs:
       CLIENTID: ${{ secrets.CLIENTID }}
       CLIENTSECRET: ${{ secrets.CLIENTSECRET }}
       REDIRECTURI: ${{ secrets.REDIRECTURI }}
-      ACCESSTOKEN: ${{ secrets.ACCESSTOKEN }}
+      REFRESHTOKEN: ${{ secrets.REFRESHTOKEN }}
     steps:
       - name: Install Go
         uses: actions/setup-go@v5
@@ -51,7 +51,7 @@ jobs:
       CLIENTID: ${{ secrets.CLIENTID }}
       CLIENTSECRET: ${{ secrets.CLIENTSECRET }}
       REDIRECTURI: ${{ secrets.REDIRECTURI }}
-      ACCESSTOKEN: ${{ secrets.ACCESSTOKEN }}
+      REFRESHTOKEN: ${{ secrets.REFRESHTOKEN }}
     steps:
       - name: Install Go
         uses: actions/setup-go@v5
@@ -68,7 +68,7 @@ jobs:
             --clientId "$CLIENTID" \
             --clientSecret "$CLIENTSECRET" \
             --redirect-uri "$REDIRECTURI" \
-            --access-token "$ACCESSTOKEN" \
+            --refresh-token "$REFRESHTOKEN" \
           capabilities
       - name: Run basic sync test
         run: |
@@ -77,7 +77,7 @@ jobs:
             --clientId "$CLIENTID" \
             --clientSecret "$CLIENTSECRET" \
             --redirect-uri "$REDIRECTURI"\
-            --access-token "$ACCESSTOKEN"\
+            --refresh-token "$REFRESHTOKEN"\
             --log-level debug \
             --file sync.c1z
 

@@ -14,7 +14,7 @@ import (
 
 // UserClient defines the minimal interface for user-related API operations.
 type UserClient interface {
-	GetUsers(ctx context.Context, token string) ([]client.User, string, annotations.Annotations, error)
+	GetUsers(ctx context.Context, options client.PageOptions) ([]client.User, string, annotations.Annotations, error)
 	CreateUsers(ctx context.Context, request client.CreateUsersRequest) (*client.UserCreationResponse, annotations.Annotations, error)
 }
 
@@ -30,34 +30,45 @@ func (b *userBuilder) ResourceType(ctx context.Context) *v2.ResourceType {
 }
 
 // List fetches users from the API, converts them to Baton resources, and returns pagination info.
-func (b *userBuilder) List(ctx context.Context, parentResourceID *v2.ResourceId, pToken *pagination.Token) ([]*v2.Resource, string, annotations.Annotations, error) {
+func (b *userBuilder) List(
+	ctx context.Context,
+	parentResourceID *v2.ResourceId,
+	pToken *pagination.Token,
+) ([]*v2.Resource, string, annotations.Annotations, error) {
 	var resources []*v2.Resource
 	annos := annotations.Annotations{}
-
-	var token string
-	if pToken != nil {
-		token = pToken.Token
-	}
-
-	users, nextToken, newAnnos, err := b.client.GetUsers(ctx, token)
+	bag, pageToken, err := parsePageToken(pToken.Token, &v2.ResourceId{ResourceType: userResourceType.Id})
 	if err != nil {
 		return nil, "", nil, err
 	}
-
-	for _, a := range newAnnos {
-		annos.Append(a)
+	users, nextPageToken, newAnnos, err := b.client.GetUsers(ctx, client.PageOptions{
+		PageSize:  pToken.Size,
+		PageToken: pageToken,
+	})
+	if err != nil {
+		return nil, "", nil, err
 	}
-
+	for _, annon := range newAnnos {
+		annos.Append(annon)
+	}
 	for _, user := range users {
 		userCopy := user
 		userResource, err := parseIntoUserResource(&userCopy)
 		if err != nil {
 			return nil, "", nil, err
 		}
+
 		resources = append(resources, userResource)
 	}
+	var outToken string
+	if nextPageToken != "" {
+		outToken, err = bag.NextToken(nextPageToken)
+		if err != nil {
+			return nil, "", nil, err
+		}
+	}
 
-	return resources, nextToken, annos, nil
+	return resources, outToken, annos, nil
 }
 
 // Entitlements returns no entitlements for users (not supported).
@@ -92,6 +103,7 @@ func (b *userBuilder) CreateAccount(
 	error,
 ) {
 	pMap := accountInfo.Profile.AsMap()
+	annos := annotations.Annotations{}
 
 	email, ok := pMap["email"].(string)
 	if !ok || email == "" {
@@ -110,12 +122,16 @@ func (b *userBuilder) CreateAccount(
 		}},
 	}
 
-	createdUsers, _, err := b.client.CreateUsers(ctx, usersRequest)
+	createdUsers, newAnnos, err := b.client.CreateUsers(ctx, usersRequest)
 	if err != nil {
 		return nil, nil, nil, err
 	}
 	if len(createdUsers.NewUsers) == 0 {
 		return nil, nil, nil, fmt.Errorf("no user returned from API")
+	}
+
+	for _, annon := range newAnnos {
+		annos.Append(annon)
 	}
 
 	created := createdUsers.NewUsers[0]
@@ -136,7 +152,7 @@ func (b *userBuilder) CreateAccount(
 
 	return &v2.CreateAccountResponse_SuccessResult{
 		Resource: userRes,
-	}, nil, nil, nil
+	}, nil, annos, nil
 }
 
 // newUserBuilder constructs a userBuilder with the provided API client.

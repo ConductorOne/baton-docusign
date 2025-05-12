@@ -1,7 +1,6 @@
 package client
 
 import (
-	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -12,6 +11,8 @@ import (
 	"github.com/conductorone/baton-sdk/pkg/ratelimit"
 	"github.com/conductorone/baton-sdk/pkg/uhttp"
 )
+
+const DefaultPageSize = 50
 
 // BuildURL combines the base API URL with a formatted endpoint path.
 func BuildURL(base, path string, params ...interface{}) (*url.URL, error) {
@@ -46,19 +47,6 @@ func DoRequestCommon(wrapper *uhttp.BaseHttpClient, req *http.Request, res inter
 	return resp.Header, ann, nil
 }
 
-// PrepareRequest builds *http.Request with JSON headers and token.
-func PrepareRequest(ctx context.Context, wrapper *uhttp.BaseHttpClient, method string, u *url.URL, token string, body interface{}) (*http.Request, error) {
-	opts := []uhttp.RequestOption{
-		uhttp.WithContentTypeJSONHeader(),
-		uhttp.WithAcceptJSONHeader(),
-		uhttp.WithBearerToken(token),
-	}
-	if body != nil {
-		opts = append(opts, uhttp.WithJSONBody(body))
-	}
-	return wrapper.NewRequest(ctx, method, u, opts...)
-}
-
 // EncodePageToken serializes pageToken to a base64 string.
 func EncodePageToken(pt *pageToken) string {
 	b, _ := json.Marshal(pt)
@@ -79,4 +67,43 @@ func DecodePageToken(token string) (*pageToken, error) {
 		return nil, err
 	}
 	return &pt, nil
+}
+
+// PreparePagedRequest prepares the URL for a paged request.
+func PreparePagedRequest(baseURL *url.URL, endpoint string, options PageOptions) (*url.URL, error) {
+	endpointURL, err := url.Parse(endpoint)
+	if err != nil {
+		return nil, fmt.Errorf("invalid endpoint: %w", err)
+	}
+
+	fullURL := baseURL.ResolveReference(endpointURL)
+	q := fullURL.Query()
+	if options.PageToken != "" {
+		pt, err := DecodePageToken(options.PageToken)
+		if err != nil {
+			return nil, fmt.Errorf("invalid page token: %w", err)
+		}
+		q.Set("start_position", fmt.Sprintf("%d", pt.StartPosition))
+	} else {
+		q.Set("start_position", "0")
+	}
+
+	pageSize := options.PageSize
+	if pageSize <= 0 {
+		pageSize = DefaultPageSize
+	}
+	q.Set("count", fmt.Sprintf("%d", pageSize))
+
+	fullURL.RawQuery = q.Encode()
+	return fullURL, nil
+}
+
+// GetNextToken calculates the token for the next page based on the response.
+func GetNextToken(responsePage Page) string {
+	if responsePage.EndPosition < responsePage.TotalSetSize {
+		return EncodePageToken(&pageToken{
+			StartPosition: responsePage.EndPosition + 1,
+		})
+	}
+	return ""
 }

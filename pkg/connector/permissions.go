@@ -44,8 +44,8 @@ const (
 	permissionResourceID = "docusign-permissions"
 )
 
+// permissionDefinitions contains all possible DocuSign permissions with their metadata.
 var (
-	// permissionDefinitions contains all possible DocuSign permissions with their metadata.
 	permissionDefinitions = []permissionDefinition{
 		{"adminOnly", "Admin Only Actions", "Indicates some actions are exclusive for admins"},
 		{"canManageAccount", "Manage Account", "Can manage account settings"},
@@ -108,7 +108,8 @@ func (p *permissionBuilder) ResourceType(ctx context.Context) *v2.ResourceType {
 }
 
 // List returns the singleton permission resource that represents all DocuSign permissions.
-func (p *permissionBuilder) List(ctx context.Context, parentResourceID *v2.ResourceId, pToken *pagination.Token) ([]*v2.Resource, string, annotations.Annotations, error) {
+func (p *permissionBuilder) List(ctx context.Context, parentResourceID *v2.ResourceId, _ *pagination.Token) ([]*v2.Resource, string, annotations.Annotations, error) {
+	annos := annotations.Annotations{}
 	permissionResource, err := resource.NewRoleResource(
 		permissionResourceID,
 		permissionResourceType,
@@ -119,41 +120,36 @@ func (p *permissionBuilder) List(ctx context.Context, parentResourceID *v2.Resou
 		return nil, "", nil, fmt.Errorf("failed to create permission resource: %w", err)
 	}
 
-	return []*v2.Resource{permissionResource}, "", nil, nil
+	return []*v2.Resource{permissionResource}, "", annos, nil
 }
 
 // Entitlements generates all possible permission entitlements for the permission resource.
 func (p *permissionBuilder) Entitlements(ctx context.Context, resource *v2.Resource, _ *pagination.Token) ([]*v2.Entitlement, string, annotations.Annotations, error) {
 	entitlements := make([]*v2.Entitlement, 0, len(permissionDefinitions))
-
-	for _, perm := range permissionDefinitions {
+	annos := annotations.Annotations{}
+	for _, permission := range permissionDefinitions {
 		entitlements = append(entitlements, entitlement.NewPermissionEntitlement(
 			resource,
-			perm.ID,
-			entitlement.WithDisplayName(perm.DisplayName),
-			entitlement.WithDescription(perm.Description),
+			permission.ID,
+			entitlement.WithDisplayName(permission.DisplayName),
+			entitlement.WithDescription(permission.Description),
 			entitlement.WithGrantableTo(userResourceType),
 		))
 	}
 
-	return entitlements, "", nil, nil
+	return entitlements, "", annos, nil
 }
 
 // Grants fetches all users and generates grants for their actual permissions.
-func (p *permissionBuilder) Grants(ctx context.Context, resource *v2.Resource, pToken *pagination.Token) ([]*v2.Grant, string, annotations.Annotations, error) {
+func (p *permissionBuilder) Grants(ctx context.Context, permissionResource *v2.Resource, _ *pagination.Token) ([]*v2.Grant, string, annotations.Annotations, error) {
 	users, annos, err := p.client.GetAllUsersWithDetails(ctx)
 	if err != nil {
 		return nil, "", nil, fmt.Errorf("failed to get users with details: %w", err)
 	}
 
-	permissionResource, _, _, err := p.List(ctx, nil, nil)
-	if err != nil {
-		return nil, "", nil, fmt.Errorf("failed to get permission resource: %w", err)
-	}
-
-	grants := make([]*v2.Grant, 0)
+	var grants []*v2.Grant
 	for _, user := range users {
-		userGrants, err := p.createUserGrants(permissionResource[0], user)
+		userGrants, err := p.createUserGrants(permissionResource, user)
 		if err != nil {
 			return nil, "", nil, fmt.Errorf("failed to create grants for user %s: %w", user.UserID, err)
 		}
