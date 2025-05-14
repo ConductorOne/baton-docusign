@@ -7,7 +7,6 @@ import (
 	"net/url"
 
 	"github.com/conductorone/baton-sdk/pkg/annotations"
-	"github.com/conductorone/baton-sdk/pkg/ratelimit"
 	"github.com/conductorone/baton-sdk/pkg/uhttp"
 	"golang.org/x/oauth2"
 )
@@ -62,7 +61,6 @@ func NewClient(ctx context.Context, apiUrl, accountId string, tokenSource oauth2
 
 // GetUsers fetches a page of users and returns users, next page token, and annotations.
 func (c *Client) GetUsers(ctx context.Context, options PageOptions) ([]User, string, annotations.Annotations, error) {
-	annos := annotations.Annotations{}
 	var usersResponse UsersResponse
 
 	baseURL, err := url.Parse(c.apiUrl)
@@ -70,27 +68,22 @@ func (c *Client) GetUsers(ctx context.Context, options PageOptions) ([]User, str
 		return nil, "", nil, fmt.Errorf("invalid base URL: %w", err)
 	}
 
-	usersURL, err := PreparePagedRequest(baseURL, fmt.Sprintf(getUsers, c.accountId), options)
+	usersURL, err := preparePagedRequest(baseURL, fmt.Sprintf(getUsers, c.accountId), options)
 	if err != nil {
 		return nil, "", nil, err
 	}
 
-	headers, _, err := c.doRequest(ctx, http.MethodGet, usersURL.String(), &usersResponse)
+	_, annos, err := c.doRequest(ctx, http.MethodGet, usersURL, &usersResponse)
 	if err != nil {
 		return nil, "", nil, err
 	}
 
-	if desc, err := ratelimit.ExtractRateLimitData(http.StatusOK, &headers); err == nil {
-		annos.WithRateLimiting(desc)
-	}
-
-	nextToken := GetNextToken(usersResponse.Page)
+	nextToken := getNextToken(usersResponse.Page)
 	return usersResponse.Users, nextToken, annos, nil
 }
 
 // GetGroups fetches a page of groups and handles pagination and rate limit annotations.
 func (c *Client) GetGroups(ctx context.Context, options PageOptions) ([]Group, string, annotations.Annotations, error) {
-	annos := annotations.Annotations{}
 	var groupsResponse GroupsResponse
 
 	baseURL, err := url.Parse(c.apiUrl)
@@ -98,27 +91,22 @@ func (c *Client) GetGroups(ctx context.Context, options PageOptions) ([]Group, s
 		return nil, "", nil, fmt.Errorf("invalid base URL: %w", err)
 	}
 
-	groupsURL, err := PreparePagedRequest(baseURL, fmt.Sprintf(getGroups, c.accountId), options)
+	groupsURL, err := preparePagedRequest(baseURL, fmt.Sprintf(getGroups, c.accountId), options)
 	if err != nil {
 		return nil, "", nil, err
 	}
 
-	headers, _, err := c.doRequest(ctx, http.MethodGet, groupsURL.String(), &groupsResponse)
+	_, annos, err := c.doRequest(ctx, http.MethodGet, groupsURL, &groupsResponse)
 	if err != nil {
 		return nil, "", nil, err
 	}
 
-	if desc, err := ratelimit.ExtractRateLimitData(http.StatusOK, &headers); err == nil {
-		annos.WithRateLimiting(desc)
-	}
-
-	nextToken := GetNextToken(groupsResponse.Page)
+	nextToken := getNextToken(groupsResponse.Page)
 	return groupsResponse.Groups, nextToken, annos, nil
 }
 
 // GetGroupUsers fetches users for a group with pagination support.
 func (c *Client) GetGroupUsers(ctx context.Context, groupId string, options PageOptions) ([]User, string, annotations.Annotations, error) {
-	annos := annotations.Annotations{}
 	var usersResponse UsersResponse
 
 	baseURL, err := url.Parse(c.apiUrl)
@@ -126,77 +114,34 @@ func (c *Client) GetGroupUsers(ctx context.Context, groupId string, options Page
 		return nil, "", nil, fmt.Errorf("invalid base URL: %w", err)
 	}
 
-	groupUsersURL, err := PreparePagedRequest(baseURL, fmt.Sprintf(getGroupUsers, c.accountId, groupId), options)
+	groupUsersURL, err := preparePagedRequest(baseURL, fmt.Sprintf(getGroupUsers, c.accountId, groupId), options)
 	if err != nil {
 		return nil, "", nil, err
 	}
 
-	headers, _, err := c.doRequest(ctx, http.MethodGet, groupUsersURL.String(), &usersResponse)
+	_, annos, err := c.doRequest(ctx, http.MethodGet, groupUsersURL, &usersResponse)
 	if err != nil {
 		return nil, "", nil, err
 	}
 
-	if desc, err := ratelimit.ExtractRateLimitData(http.StatusOK, &headers); err == nil {
-		annos.WithRateLimiting(desc)
-	}
-
-	nextToken := GetNextToken(usersResponse.Page)
+	nextToken := getNextToken(usersResponse.Page)
 	return usersResponse.Users, nextToken, annos, nil
 }
 
 // GetUserDetails fetches detailed information for a specific user, including permissions.
 func (c *Client) GetUserDetails(ctx context.Context, userID string) (*UserDetail, annotations.Annotations, error) {
-	userURL, err := BuildURL(c.apiUrl, getPermissions, c.accountId, userID)
+	userURL, err := buildURL(c.apiUrl, getPermissions, c.accountId, userID)
 	if err != nil {
 		return nil, nil, err
 	}
 
 	var userDetail UserDetail
-	_, annos, err := c.doRequest(ctx, http.MethodGet, userURL.String(), &userDetail)
+	_, annos, err := c.doRequest(ctx, http.MethodGet, userURL, &userDetail)
 	if err != nil {
 		return nil, annos, fmt.Errorf("error fetching user details: %w", err)
 	}
 
 	return &userDetail, annos, nil
-}
-
-// GetAllUsersWithDetails retrieves every user and their permissions by paging through all users.
-func (c *Client) GetAllUsersWithDetails(
-	ctx context.Context,
-) ([]*UserDetail, annotations.Annotations, error) {
-	var allUserDetails []*UserDetail
-	annos := annotations.Annotations{}
-	nextToken := ""
-
-	for {
-		opts := PageOptions{
-			PageSize:  DefaultPageSize,
-			PageToken: nextToken,
-		}
-		users, newToken, newAnnos, err := c.GetUsers(ctx, opts)
-		if err != nil {
-			return nil, annos, fmt.Errorf("error fetching users page: %w", err)
-		}
-		for _, annon := range newAnnos {
-			annos.Append(annon)
-		}
-		for _, u := range users {
-			detail, detailAnnos, err := c.GetUserDetails(ctx, u.UserId)
-			if err != nil {
-				return nil, annos, fmt.Errorf("error fetching user details for %s: %w", u.UserId, err)
-			}
-			for _, annon := range detailAnnos {
-				annos.Append(annon)
-			}
-			allUserDetails = append(allUserDetails, detail)
-		}
-		if newToken == "" {
-			break
-		}
-		nextToken = newToken
-	}
-
-	return allUserDetails, annos, nil
 }
 
 // CreateUsers sends a bulk create request for new users in the account.
@@ -205,7 +150,7 @@ func (c *Client) CreateUsers(ctx context.Context, request CreateUsersRequest) (*
 		return nil, nil, fmt.Errorf("at least one user must be provided")
 	}
 
-	createUsersURL, err := BuildURL(c.apiUrl, createUsers, c.accountId)
+	createUsersURL, err := buildURL(c.apiUrl, createUsers, c.accountId)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -248,28 +193,20 @@ func (c *Client) doRequestWithBody(
 		return nil, nil, err
 	}
 
-	return DoRequestCommon(c.wrapper, req, res)
+	return doRequestCommon(c.wrapper, req, res)
 }
 
 // doRequest builds and executes an HTTP request without a body, decoding JSON response if provided.
-func (c *Client) doRequest(
-	ctx context.Context,
-	method string,
-	requestURL string,
-	res interface{},
-) (http.Header, annotations.Annotations, error) {
-	parsedURL, err := url.Parse(requestURL)
-	if err != nil {
-		return nil, nil, err
-	}
+func (c *Client) doRequest(ctx context.Context, method string, url *url.URL, response interface{}) (http.Header, annotations.Annotations, error) {
 	token, err := c.tokenSource.Token()
 	if err != nil {
 		return nil, nil, err
 	}
+
 	req, err := c.wrapper.NewRequest(
 		ctx,
 		method,
-		parsedURL,
+		url,
 		uhttp.WithContentTypeJSONHeader(),
 		uhttp.WithAcceptJSONHeader(),
 		uhttp.WithBearerToken(token.AccessToken),
@@ -278,5 +215,5 @@ func (c *Client) doRequest(
 		return nil, nil, err
 	}
 
-	return DoRequestCommon(c.wrapper, req, res)
+	return doRequestCommon(c.wrapper, req, response)
 }

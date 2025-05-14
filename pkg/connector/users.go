@@ -12,16 +12,18 @@ import (
 	"github.com/conductorone/baton-sdk/pkg/types/resource"
 )
 
-// UserClient defines the minimal interface for user-related API operations.
+// UserClient defines the interface for DocuSign user API operations.
 type UserClient interface {
 	GetUsers(ctx context.Context, options client.PageOptions) ([]client.User, string, annotations.Annotations, error)
+	GetUserDetails(ctx context.Context, userID string) (*client.UserDetail, annotations.Annotations, error)
 	CreateUsers(ctx context.Context, request client.CreateUsersRequest) (*client.UserCreationResponse, annotations.Annotations, error)
 }
 
-// userBuilder implements resource listing and provisioning for DocuSign users.
+// userBuilder handles user resource management and permission assignments.
 type userBuilder struct {
-	resourceType *v2.ResourceType
-	client       UserClient
+	resourceType      *v2.ResourceType
+	client            UserClient
+	permissionBuilder *permissionBuilder
 }
 
 // ResourceType returns the Baton resource type handled by this builder.
@@ -29,28 +31,26 @@ func (b *userBuilder) ResourceType(ctx context.Context) *v2.ResourceType {
 	return userResourceType
 }
 
-// List fetches users from the API, converts them to Baton resources, and returns pagination info.
+// List retrieves all users from DocuSign API and converts them to Baton resources.
+// Uses pagination to handle large datasets efficiently.
 func (b *userBuilder) List(
 	ctx context.Context,
 	parentResourceID *v2.ResourceId,
 	pToken *pagination.Token,
 ) ([]*v2.Resource, string, annotations.Annotations, error) {
 	var resources []*v2.Resource
-	annos := annotations.Annotations{}
 	bag, pageToken, err := parsePageToken(pToken.Token, &v2.ResourceId{ResourceType: userResourceType.Id})
 	if err != nil {
 		return nil, "", nil, err
 	}
-	users, nextPageToken, newAnnos, err := b.client.GetUsers(ctx, client.PageOptions{
+	users, nextPageToken, annotation, err := b.client.GetUsers(ctx, client.PageOptions{
 		PageSize:  pToken.Size,
 		PageToken: pageToken,
 	})
 	if err != nil {
 		return nil, "", nil, err
 	}
-	for _, annon := range newAnnos {
-		annos.Append(annon)
-	}
+
 	for _, user := range users {
 		userCopy := user
 		userResource, err := parseIntoUserResource(&userCopy)
@@ -68,17 +68,44 @@ func (b *userBuilder) List(
 		}
 	}
 
-	return resources, outToken, annos, nil
+	return resources, outToken, annotation, nil
 }
 
-// Entitlements returns no entitlements for users (not supported).
-func (b *userBuilder) Entitlements(_ context.Context, _ *v2.Resource, _ *pagination.Token) ([]*v2.Entitlement, string, annotations.Annotations, error) {
+// Entitlements returns empty as users don't have direct entitlements in this implementation.
+// Entitlements are managed separately by the permissionBuilder.
+func (b *userBuilder) Entitlements(ctx context.Context, resource *v2.Resource, _ *pagination.Token) ([]*v2.Entitlement, string, annotations.Annotations, error) {
 	return nil, "", nil, nil
 }
 
-// Grants returns no grants for users (not supported).
-func (b *userBuilder) Grants(ctx context.Context, resource *v2.Resource, _ *pagination.Token) ([]*v2.Grant, string, annotations.Annotations, error) {
-	return nil, "", nil, nil
+// Grants assigns permissions to users based on their DocuSign settings.
+// Uses permissionBuilder to ensure all grants reference the central permission resource.
+func (b *userBuilder) Grants(ctx context.Context, resource *v2.Resource, pToken *pagination.Token) ([]*v2.Grant, string, annotations.Annotations, error) {
+	annos := annotations.Annotations{}
+	userId := resource.Id.Resource
+
+	permissionResource, err := b.permissionBuilder.GetPermissionResource(ctx)
+	if err != nil {
+		return nil, "", nil, fmt.Errorf("failed to get permission resource: %w", err)
+	}
+
+	var grants []*v2.Grant
+
+	detail, annotation, err := b.client.GetUserDetails(ctx, userId)
+	if err != nil {
+		return nil, "", nil, fmt.Errorf("failed to fetch details for %s: %w", userId, err)
+	}
+
+	for _, annon := range annotation {
+		annos.Append(annon)
+	}
+
+	userGrants, err := createUserGrants(permissionResource, detail)
+	if err != nil {
+		return nil, "", nil, fmt.Errorf("failed to create grants for %s: %w", userId, err)
+	}
+	grants = append(grants, userGrants...)
+
+	return grants, "", annos, nil
 }
 
 // CreateAccountCapabilityDetails declares support for account provisioning without a password.
@@ -122,7 +149,7 @@ func (b *userBuilder) CreateAccount(
 		}},
 	}
 
-	createdUsers, newAnnos, err := b.client.CreateUsers(ctx, usersRequest)
+	createdUsers, annotation, err := b.client.CreateUsers(ctx, usersRequest)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -130,7 +157,7 @@ func (b *userBuilder) CreateAccount(
 		return nil, nil, nil, fmt.Errorf("no user returned from API")
 	}
 
-	for _, annon := range newAnnos {
+	for _, annon := range annotation {
 		annos.Append(annon)
 	}
 
@@ -156,10 +183,11 @@ func (b *userBuilder) CreateAccount(
 }
 
 // newUserBuilder constructs a userBuilder with the provided API client.
-func newUserBuilder(client *client.Client) *userBuilder {
+func newUserBuilder(client *client.Client, pb *permissionBuilder) *userBuilder {
 	return &userBuilder{
-		resourceType: userResourceType,
-		client:       client,
+		resourceType:      userResourceType,
+		client:            client,
+		permissionBuilder: pb,
 	}
 }
 

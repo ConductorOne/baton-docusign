@@ -45,7 +45,8 @@ func TestUserBuilderList(t *testing.T) {
 	ctx := context.Background()
 	client := initClient(t)
 
-	user := newUserBuilder(client)
+	pb := newPermissionBuilder(client)
+	user := newUserBuilder(client, pb)
 	resource, nextToken, _, err := user.List(ctx, parentResourceID, pToken)
 
 	assert.NoError(t, err)
@@ -82,14 +83,14 @@ func TestPermissionBuilderList(t *testing.T) {
 	t.Logf("Permission resources retrieved: %d, next token: %v", len(resource), nextToken)
 }
 
-// TestPermissionBuilderGrants verifies that grants can be retrieved for a user based on permission profiles.
+// TestUserBuilderGrants verifies that grants can be retrieved for a user based on permission profiles.
 // Skips the test if no users are available.
-func TestPermissionBuilderGrants(t *testing.T) {
+func TestUserBuilderGrants(t *testing.T) {
 	ctx := context.Background()
 	client := initClient(t)
 
-	permission := newPermissionBuilder(client)
-	user := newUserBuilder(client)
+	pb := newPermissionBuilder(client)
+	user := newUserBuilder(client, pb)
 
 	users, _, _, err := user.List(ctx, parentResourceID, pToken)
 	assert.NoError(t, err)
@@ -98,7 +99,7 @@ func TestPermissionBuilderGrants(t *testing.T) {
 		t.Skip("No users available to test grants.")
 	}
 
-	grants, nextToken, _, err := permission.Grants(ctx, users[0], pToken)
+	grants, nextToken, _, err := user.Grants(ctx, users[0], pToken)
 
 	assert.NoError(t, err)
 	assert.NotNil(t, grants)

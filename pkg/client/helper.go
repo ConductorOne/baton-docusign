@@ -15,7 +15,7 @@ import (
 const DefaultPageSize = 50
 
 // BuildURL combines the base API URL with a formatted endpoint path.
-func BuildURL(base, path string, params ...interface{}) (*url.URL, error) {
+func buildURL(base, path string, params ...interface{}) (*url.URL, error) {
 	baseURL, err := url.Parse(base)
 	if err != nil {
 		return nil, fmt.Errorf("invalid base URL: %w", err)
@@ -29,7 +29,7 @@ func BuildURL(base, path string, params ...interface{}) (*url.URL, error) {
 }
 
 // DoRequestCommon executes the HTTP request and handles rate limit annotations.
-func DoRequestCommon(wrapper *uhttp.BaseHttpClient, req *http.Request, res interface{}) (http.Header, annotations.Annotations, error) {
+func doRequestCommon(wrapper *uhttp.BaseHttpClient, req *http.Request, res interface{}) (http.Header, annotations.Annotations, error) {
 	opts := []uhttp.DoOption{}
 	if res != nil {
 		opts = append(opts, uhttp.WithJSONResponse(res))
@@ -48,13 +48,13 @@ func DoRequestCommon(wrapper *uhttp.BaseHttpClient, req *http.Request, res inter
 }
 
 // EncodePageToken serializes pageToken to a base64 string.
-func EncodePageToken(pt *pageToken) string {
+func encodePageToken(pt *pageToken) string {
 	b, _ := json.Marshal(pt)
 	return base64.StdEncoding.EncodeToString(b)
 }
 
 // DecodePageToken deserializes a base64 token string back into a pageToken struct.
-func DecodePageToken(token string) (*pageToken, error) {
+func decodePageToken(token string) (*pageToken, error) {
 	if token == "" {
 		return &pageToken{StartPosition: 0}, nil
 	}
@@ -70,7 +70,7 @@ func DecodePageToken(token string) (*pageToken, error) {
 }
 
 // PreparePagedRequest prepares the URL for a paged request.
-func PreparePagedRequest(baseURL *url.URL, endpoint string, options PageOptions) (*url.URL, error) {
+func preparePagedRequest(baseURL *url.URL, endpoint string, options PageOptions) (*url.URL, error) {
 	endpointURL, err := url.Parse(endpoint)
 	if err != nil {
 		return nil, fmt.Errorf("invalid endpoint: %w", err)
@@ -79,7 +79,7 @@ func PreparePagedRequest(baseURL *url.URL, endpoint string, options PageOptions)
 	fullURL := baseURL.ResolveReference(endpointURL)
 	q := fullURL.Query()
 	if options.PageToken != "" {
-		pt, err := DecodePageToken(options.PageToken)
+		pt, err := decodePageToken(options.PageToken)
 		if err != nil {
 			return nil, fmt.Errorf("invalid page token: %w", err)
 		}
@@ -99,9 +99,9 @@ func PreparePagedRequest(baseURL *url.URL, endpoint string, options PageOptions)
 }
 
 // GetNextToken calculates the token for the next page based on the response.
-func GetNextToken(responsePage Page) string {
+func getNextToken(responsePage Page) string {
 	if responsePage.EndPosition < responsePage.TotalSetSize {
-		return EncodePageToken(&pageToken{
+		return encodePageToken(&pageToken{
 			StartPosition: responsePage.EndPosition + 1,
 		})
 	}

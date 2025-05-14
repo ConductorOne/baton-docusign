@@ -17,10 +17,11 @@ type Connector struct {
 }
 
 func (d *Connector) ResourceSyncers(ctx context.Context) []connectorbuilder.ResourceSyncer {
+	pb := newPermissionBuilder(d.client)
 	return []connectorbuilder.ResourceSyncer{
-		newUserBuilder(d.client),
+		newUserBuilder(d.client, pb),
 		newGroupBuilder(d.client),
-		newPermissionBuilder(d.client),
+		pb,
 	}
 }
 
