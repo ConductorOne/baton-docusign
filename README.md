@@ -6,6 +6,39 @@
 
 Check out [Baton](https://github.com/conductorone/baton) to learn more the project in general.
 
+## Connector Capabilities
+
+1. **Resources synced**:
+
+   - Users
+   - Groups
+   - Permissions
+
+2. **Account provisioning**
+
+   - Users
+
+## Connector Credentials
+
+1. **ACCOUNT ID**
+2. **CLIENT ID**
+3. **CLIENT SECRET**
+4. **REDIRECT URI**
+
+### Obtaining Credentials
+
+1. Log in to [DocuSign Developer Account.](https://account-d.docusign.com/logout)
+2. Go to Admin → Apps and Keys.
+3. Copy The User ID.
+4. Click on Add App and Integration Key.
+5. Click in "Add App and integration Key"
+6. Configure the app:
+   - Enable User Application **User Application**
+   - Click **Add Secret Key** and copy it.
+   - Under **Additional Settings**, add your **Redirect URI** (e.g.,"http://example.com/callback")
+   - Under **CORS Settings** enable GET, POST, PUT, DELETE, and HEAD.
+7. Save the application.
+
 # Getting Started
 
 ## brew
@@ -37,7 +70,10 @@ baton resources
 # Data Model
 
 `baton-docusign` will pull down information about the following resources:
+
 - Users
+- Groups
+- Permissions
 
 # Contributing, Support and Issues
 
@@ -63,6 +99,10 @@ Available Commands:
   help               Help about any command
 
 Flags:
+      --account-id string            The API Account ID from DocuSign
+      --client-id string             The Integration Key (Client ID) ($BATON_CLIENT_ID)
+      --client-secret string         The Client Secret ($BATON_CLIENT_SECRET)
+      --redirect-uri string          The Redirect URI used in OAuth2
       --client-id string             The client ID used to authenticate with ConductorOne ($BATON_CLIENT_ID)
       --client-secret string         The client secret used to authenticate with ConductorOne ($BATON_CLIENT_SECRET)
   -f, --file string                  The path to the c1z file to sync with ($BATON_FILE) (default "sync.c1z")

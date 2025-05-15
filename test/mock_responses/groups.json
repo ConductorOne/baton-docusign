@@ -1,0 +1,17 @@
+{
+  "groups": [
+    {
+      "groupId": "1",
+      "groupName": "Admins",
+      "groupType": "adminGroup",
+      "usersCount": "5"
+    },
+    {
+      "groupId": "2",
+      "groupName": "Developers",
+      "groupType": "regularGroup",
+      "usersCount": "10"
+    }
+  ],
+  "nextPageToken": "eyJzdGFydF9wb3NpdGlvbiI6Mn0="
+}
