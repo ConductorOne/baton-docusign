@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sort"
+	"time"
 
 	"github.com/grpc-ecosystem/go-grpc-middleware/logging/zap/ctxzap"
 	"github.com/spf13/cobra"
@@ -24,6 +26,10 @@ import (
 	"github.com/conductorone/baton-sdk/pkg/field"
 	"github.com/conductorone/baton-sdk/pkg/logging"
 	"github.com/conductorone/baton-sdk/pkg/uotel"
+)
+
+const (
+	otelShutdownTimeout = 5 * time.Second
 )
 
 type ContrainstSetter func(*cobra.Command, field.Configuration) error
@@ -56,18 +62,24 @@ func MakeMainCommand[T field.Configurable](
 			return err
 		}
 
-		l := ctxzap.Extract(runCtx)
-
-		otelShutdown, err := uotel.InitOtel(context.Background(), v.GetString("otel-collector-endpoint"), name)
+		runCtx, otelShutdown, err := initOtel(runCtx, name, v, nil)
 		if err != nil {
 			return err
 		}
 		defer func() {
-			err := otelShutdown(context.Background())
+			if otelShutdown == nil {
+				return
+			}
+			shutdownCtx, cancel := context.WithDeadline(context.Background(), time.Now().Add(otelShutdownTimeout))
+			defer cancel()
+			err := otelShutdown(shutdownCtx)
 			if err != nil {
-				l.Error("error shutting down otel", zap.Error(err))
+				zap.L().Error("error shutting down otel", zap.Error(err))
 			}
 		}()
+
+		// NOTE: initOtel may do stuff with the logger
+		l := ctxzap.Extract(runCtx)
 
 		if isService() {
 			l.Debug("running as service", zap.String("name", name))
@@ -120,7 +132,7 @@ func MakeMainCommand[T field.Configurable](
 						v.GetString("revoke-grant"),
 					))
 			case v.GetBool("event-feed"):
-				opts = append(opts, connectorrunner.WithOnDemandEventStream())
+				opts = append(opts, connectorrunner.WithOnDemandEventStream(v.GetString("event-feed-id"), v.GetTime("event-feed-start-at")))
 			case v.GetString("create-account-profile") != "":
 				profileMap := v.GetStringMap("create-account-profile")
 				if profileMap == nil {
@@ -208,6 +220,28 @@ func MakeMainCommand[T field.Configurable](
 				opts = append(opts,
 					connectorrunner.WithTicketingEnabled(),
 					connectorrunner.WithGetTicket(v.GetString("ticket-id")))
+			case len(v.GetStringSlice("sync-resources")) > 0:
+				opts = append(opts,
+					connectorrunner.WithTargetedSyncResourceIDs(v.GetStringSlice("sync-resources")),
+					connectorrunner.WithOnDemandSync(v.GetString("file")),
+				)
+			case v.GetBool("diff-syncs"):
+				opts = append(opts,
+					connectorrunner.WithDiffSyncs(
+						v.GetString("file"),
+						v.GetString("base-sync-id"),
+						v.GetString("applied-sync-id"),
+					),
+				)
+			case v.GetBool("compact-syncs"):
+				opts = append(opts,
+					connectorrunner.WithSyncCompactor(
+						v.GetString("compact-output-path"),
+						v.GetStringSlice("compact-file-paths"),
+						v.GetStringSlice("compact-sync-ids"),
+					),
+				)
+
 			default:
 				opts = append(opts, connectorrunner.WithOnDemandSync(v.GetString("file")))
 			}
@@ -263,6 +297,39 @@ func MakeMainCommand[T field.Configurable](
 	}
 }
 
+func initOtel(ctx context.Context, name string, v *viper.Viper, initialLogFields map[string]interface{}) (context.Context, func(context.Context) error, error) {
+	otelEndpoint := v.GetString(field.OtelCollectorEndpointFieldName)
+	if otelEndpoint == "" {
+		return ctx, nil, nil
+	}
+
+	var otelOpts []uotel.Option
+	otelOpts = append(otelOpts, uotel.WithServiceName(fmt.Sprintf("%s-server", name)))
+
+	if len(initialLogFields) > 0 {
+		otelOpts = append(otelOpts, uotel.WithInitialLogFields(initialLogFields))
+	}
+
+	if v.GetBool(field.OtelTracingDisabledFieldName) {
+		otelOpts = append(otelOpts, uotel.WithTracingDisabled())
+	}
+
+	if v.GetBool(field.OtelLoggingDisabledFieldName) {
+		otelOpts = append(otelOpts, uotel.WithLoggingDisabled())
+	}
+
+	otelTLSInsecure := v.GetBool(field.OtelCollectorEndpointTLSInsecureFieldName)
+	if otelTLSInsecure {
+		otelOpts = append(otelOpts, uotel.WithInsecureOtelEndpoint(otelEndpoint))
+	} else {
+		otelTLSCert := v.GetString(field.OtelCollectorEndpointTLSCertFieldName)
+		otelTLSCertPath := v.GetString(field.OtelCollectorEndpointTLSCertPathFieldName)
+		otelOpts = append(otelOpts, uotel.WithOtelEndpoint(otelEndpoint, otelTLSCertPath, otelTLSCert))
+	}
+
+	return uotel.InitOtel(context.Background(), otelOpts...)
+}
+
 func MakeGRPCServerCommand[T field.Configurable](
 	ctx context.Context,
 	name string,
@@ -290,22 +357,24 @@ func MakeGRPCServerCommand[T field.Configurable](
 			return err
 		}
 
-		l := ctxzap.Extract(runCtx)
-
-		otelShutdown, err := uotel.InitOtel(
-			context.Background(),
-			v.GetString("otel-collector-endpoint"),
-			fmt.Sprintf("%s-server", name),
-		)
+		runCtx, otelShutdown, err := initOtel(runCtx, name, v, nil)
 		if err != nil {
 			return err
 		}
 		defer func() {
-			err := otelShutdown(context.Background())
+			if otelShutdown == nil {
+				return
+			}
+			shutdownCtx, cancel := context.WithDeadline(context.Background(), time.Now().Add(otelShutdownTimeout))
+			defer cancel()
+			err := otelShutdown(shutdownCtx)
 			if err != nil {
-				l.Error("error shutting down otel", zap.Error(err))
+				zap.L().Error("error shutting down otel", zap.Error(err))
 			}
 		}()
+
+		l := ctxzap.Extract(runCtx)
+		l.Debug("starting grpc server")
 
 		// validate required fields and relationship constraints
 		if err := field.Validate(confschema, v); err != nil {
@@ -355,6 +424,8 @@ func MakeGRPCServerCommand[T field.Configurable](
 			copts = append(copts, connector.WithTicketingEnabled())
 		case v.GetBool("get-ticket"):
 			copts = append(copts, connector.WithTicketingEnabled())
+		case len(v.GetStringSlice("sync-resources")) > 0:
+			copts = append(copts, connector.WithTargetedSyncResourceIDs(v.GetStringSlice("sync-resources")))
 		}
 
 		cw, err := connector.NewWrapper(runCtx, c, copts...)
@@ -486,7 +557,13 @@ func MakeConfigSchemaCommand[T field.Configurable](
 	getconnector GetConnectorFunc[T],
 ) func(*cobra.Command, []string) error {
 	return func(cmd *cobra.Command, args []string) error {
-		pb, err := json.Marshal(&confschema)
+		// Sort fields by FieldName
+		sort.Slice(confschema.Fields, func(i, j int) bool {
+			return confschema.Fields[i].FieldName < confschema.Fields[j].FieldName
+		})
+
+		// Use MarshalIndent for pretty printing
+		pb, err := json.MarshalIndent(&confschema, "", "  ")
 		if err != nil {
 			return err
 		}
