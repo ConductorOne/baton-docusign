@@ -7,11 +7,11 @@ jobs:
       - name: Install Go
         uses: actions/setup-go@v5
         with:
-          go-version: 1.22.x
+          go-version: 1.24.x
       - name: Checkout code
         uses: actions/checkout@v4
       - name: Run linters
-        uses: golangci/golangci-lint-action@v5
+        uses: golangci/golangci-lint-action@v8
         with:
           version: latest
           args: --timeout=3m
@@ -19,7 +19,7 @@ jobs:
   go-test:
     strategy:
       matrix:
-        go-version: [1.22.x]
+        go-version: [1.24.x]
         platform: [ubuntu-latest]
     runs-on: ${{ matrix.platform }}
     env:
@@ -56,7 +56,7 @@ jobs:
       - name: Install Go
         uses: actions/setup-go@v5
         with:
-          go-version: 1.22.x
+          go-version: 1.24.x
       - name: Checkout code
         uses: actions/checkout@v4
       - name: Build baton-docusign

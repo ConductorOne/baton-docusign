@@ -77,3 +77,9 @@ func New(ctx context.Context, apiUrl, accountId, clientId, clientSecret, redirec
 		client: docusignClient,
 	}, nil
 }
+
+func NewWithClient(client *client.Client) (*Connector, error) {
+	return &Connector{
+		client: client,
+	}, nil
+}
