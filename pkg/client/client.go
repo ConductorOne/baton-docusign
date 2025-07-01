@@ -214,7 +214,7 @@ func (c *Client) GetSigningGroupUsers(ctx context.Context, groupId string, optio
 	return groupMembersResponse.Users, nextToken, annos, nil
 }
 
-// GetUserByEmail retrieves a user filtering by the email and the user status 'Active' or 'Activation Sent'
+// GetUserByEmail retrieves a user filtering by the email and the user status 'Active' or 'Activation Sent'.
 func (c *Client) GetUserByEmail(ctx context.Context, userEmail string) (*User, annotations.Annotations, error) {
 	userURL, err := buildURL(c.apiUrl, getUsers, c.accountId)
 	if err != nil {
