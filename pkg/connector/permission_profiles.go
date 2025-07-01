@@ -2,7 +2,6 @@ package connector
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 
 	"github.com/conductorone/baton-docusign/pkg/client"
@@ -13,100 +12,96 @@ import (
 	"github.com/conductorone/baton-sdk/pkg/types/resource"
 )
 
-// permissionBuilder handles the construction of permission-related resources and grants.
-type permissionBuilder struct {
+const permissionProfileAssignedTag = "assigned"
+
+type permissionProfilesBuilder struct {
 	resourceType *v2.ResourceType
 	client       *client.Client
 }
 
-// ResourceType returns the resource type this builder manages (docusign-permissions).
-func (p *permissionBuilder) ResourceType(ctx context.Context) *v2.ResourceType {
-	return permissionResourceType
+func (p *permissionProfilesBuilder) ResourceType(_ context.Context) *v2.ResourceType {
+	return permissionProfilesResourceType
 }
 
-// List returns the singleton permission resource that represents all DocuSign permissions.
-func (p *permissionBuilder) List(ctx context.Context, parentResourceID *v2.ResourceId, _ *pagination.Token) ([]*v2.Resource, string, annotations.Annotations, error) {
-	annos := annotations.Annotations{}
-	permissionResource, err := resource.NewRoleResource(
-		permissionResourceID,
-		permissionResourceType,
-		permissionResourceID,
-		nil,
+func (p *permissionProfilesBuilder) List(ctx context.Context, _ *v2.ResourceId, pToken *pagination.Token) ([]*v2.Resource, string, annotations.Annotations, error) {
+	var (
+		pProfiles []*v2.Resource
+		anno      annotations.Annotations
 	)
+
+	bag, pageToken, err := parsePageToken(pToken.Token, &v2.ResourceId{ResourceType: signingGroupResourceType.Id})
 	if err != nil {
-		return nil, "", nil, fmt.Errorf("failed to create permission resource: %w", err)
+		return nil, "", nil, err
+	}
+	permissionProfiles, nextPageToken, newAnnos, err := p.client.GetPermissionProfiles(ctx, client.PageOptions{
+		PageSize:  pToken.Size,
+		PageToken: pageToken,
+	})
+	if err != nil {
+		return nil, "", nil, err
 	}
 
-	return []*v2.Resource{permissionResource}, "", annos, nil
+	for _, newAnnotation := range newAnnos {
+		anno.Append(newAnnotation)
+	}
+
+	for _, permissionProfile := range permissionProfiles {
+		if permissionProfile.PermissionProfileId == "" || permissionProfile.PermissionProfileName == "" {
+			continue
+		}
+
+		permissionProfileResource, err := parseIntoPermissionProfileResource(permissionProfile)
+		if err != nil {
+			return nil, "", nil, err
+		}
+		pProfiles = append(pProfiles, permissionProfileResource)
+	}
+
+	var outToken string
+	if nextPageToken != "" {
+		outToken, err = bag.NextToken(nextPageToken)
+		if err != nil {
+			return nil, "", nil, err
+		}
+	}
+
+	return pProfiles, outToken, anno, nil
 }
 
-// GetPermissionResource returns the singleton permission resource.
-func (p *permissionBuilder) GetPermissionResource(ctx context.Context) (*v2.Resource, error) {
-	permissionResource, err := resource.NewRoleResource(
-		permissionResourceID,
-		permissionResourceType,
-		permissionResourceID,
-		nil,
+func (p *permissionProfilesBuilder) Entitlements(_ context.Context, resource *v2.Resource, _ *pagination.Token) ([]*v2.Entitlement, string, annotations.Annotations, error) {
+	newEntitlement := entitlement.NewPermissionEntitlement(
+		resource,
+		permissionProfileAssignedTag,
+		entitlement.WithGrantableTo(userResourceType),
+		entitlement.WithDisplayName(resource.DisplayName),
+		entitlement.WithDescription(resource.Description),
 	)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create permission resource: %w", err)
-	}
-	return permissionResource, nil
-}
-
-// Entitlements generates all possible permission entitlements for the permission resource.
-func (p *permissionBuilder) Entitlements(ctx context.Context, resource *v2.Resource, _ *pagination.Token) ([]*v2.Entitlement, string, annotations.Annotations, error) {
-	entitlements := make([]*v2.Entitlement, 0, len(permissionDefinitions))
-	annos := annotations.Annotations{}
-	for _, permission := range permissionDefinitions {
-		entitlements = append(entitlements, entitlement.NewPermissionEntitlement(
-			resource,
-			permission.ID,
-			entitlement.WithDisplayName(permission.DisplayName),
-			entitlement.WithDescription(permission.Description),
-			entitlement.WithGrantableTo(userResourceType),
-		))
-	}
-
-	return entitlements, "", annos, nil
+	return []*v2.Entitlement{newEntitlement}, "", nil, nil
 }
 
 // Grants would assign permissions to users. This is intentionally left empty as grants are now handled by the userBuilder.
-func (p *permissionBuilder) Grants(
-	ctx context.Context,
-	permissionResource *v2.Resource,
-	pageToken *pagination.Token,
-) ([]*v2.Grant, string, annotations.Annotations, error) {
+func (p *permissionProfilesBuilder) Grants(_ context.Context, _ *v2.Resource, _ *pagination.Token) ([]*v2.Grant, string, annotations.Annotations, error) {
 	return nil, "", nil, nil
 }
 
-// makeUserSubjectID creates a ResourceId for a user based on their user ID.
-func makeUserSubjectID(userID string) *v2.ResourceId {
-	return &v2.ResourceId{
-		ResourceType: userResourceType.Id,
-		Resource:     userID,
-	}
-}
-
-// parseUserSettings converts user settings interface into a map for easier processing.
-func parseUserSettings(settings interface{}) (map[string]interface{}, error) {
-	settingsJSON, err := json.Marshal(settings)
+func parseIntoPermissionProfileResource(permissionProfile client.PermissionProfile) (*v2.Resource, error) {
+	permissionResource, err := resource.NewRoleResource(
+		permissionProfile.PermissionProfileName,
+		permissionProfilesResourceType,
+		permissionProfile.PermissionProfileId,
+		nil,
+	)
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal user settings: %w", err)
+		return nil, fmt.Errorf("failed to create permission profile resource: %w", err)
 	}
 
-	var settingsMap map[string]interface{}
-	if err := json.Unmarshal(settingsJSON, &settingsMap); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal user settings: %w", err)
-	}
-
-	return settingsMap, nil
+	return permissionResource, nil
 }
 
-// newPermissionBuilder creates a new permissionBuilder instance.
-func newPermissionBuilder(client *client.Client) *permissionBuilder {
-	return &permissionBuilder{
-		resourceType: permissionResourceType,
+// permissionProfilesBuilder creates a new permissionBuilder instance.
+func newPermissionProfilesBuilder(client *client.Client) *permissionProfilesBuilder {
+	return &permissionProfilesBuilder{
+		resourceType: permissionProfilesResourceType,
 		client:       client,
 	}
 }

@@ -1,5 +1,7 @@
 package client
 
+import "time"
+
 type TokenResponse struct {
 	AccessToken  string `json:"access_token"`
 	TokenType    string `json:"token_type"`
@@ -66,13 +68,6 @@ type SigningGroup struct {
 	Users          []SigningGroupUser `json:"users"`
 }
 
-/*
-ErrorDetails   struct {
-		ErrorCode string `json:"errorCode"`
-		Message   string `json:"message"`
-	} `json:"errorDetails"`
-*/
-
 // SigningGroupUser represents a user member of a SigningGroup.
 type SigningGroupUser struct {
 	UserID   string `json:"userId,omitempty"`
@@ -87,6 +82,7 @@ type UserDetail struct {
 	IsAdmin               string       `json:"isAdmin"`
 	UserStatus            string       `json:"userStatus"`
 	PermissionProfileName string       `json:"permissionProfileName"`
+	PermissionProfileID   string       `json:"permissionProfileId"`
 	UserSettings          UserSettings `json:"userSettings"`
 	GroupList             []Group      `json:"groupList"`
 }
@@ -155,4 +151,18 @@ type UserCreationResponse struct {
 			Message   string `json:"message"`
 		} `json:"errorDetails,omitempty"`
 	} `json:"newUsers"`
+}
+
+type PermissionProfilesResponse struct {
+	PermissionProfiles []PermissionProfile `json:"permissionProfiles"`
+	Page               Page
+}
+
+type PermissionProfile struct {
+	PermissionProfileId   string    `json:"permissionProfileId"`
+	PermissionProfileName string    `json:"permissionProfileName"`
+	IsDefault             string    `json:"isDefault"`
+	CreatedDateTime       time.Time `json:"createdDateTime"`
+	LastModifiedDateTime  time.Time `json:"lastModifiedDateTime"`
+	ModifiedByUserName    string    `json:"modifiedByUserName"`
 }

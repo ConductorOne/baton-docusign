@@ -8,7 +8,8 @@
    This connector syncs:  
    — Users  
    — Groups  
-   — Permissions
+   — Signing Groups
+   — Permissions Profile
 
 2. **Can the connector provision any resources? If so, which ones?**  
    The connector can provision:  
@@ -23,13 +24,15 @@
    — Account ID  
    — Client ID  
    — Client Secret  
-   — Redirect URI
+   — Redirect URI  
+   — Refresh Token
 
    **Args**:  
    `--account-id`  
    `--clientId`  
    `--clientSecret`  
    `--redirect-uri`
+   `--refresh-token`
 
 2. **For each item in the list above:**
 

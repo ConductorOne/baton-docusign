@@ -17,7 +17,7 @@ var (
 		Traits:      []v2.ResourceType_Trait{v2.ResourceType_TRAIT_GROUP},
 	}
 
-	permissionResourceType = &v2.ResourceType{
+	permissionProfilesResourceType = &v2.ResourceType{
 		Id:          "permissionProfile",
 		DisplayName: "Permission Profile",
 	}

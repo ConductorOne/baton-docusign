@@ -13,12 +13,13 @@ import (
 
 // API endpoint constants.
 const (
-	getUsers         = "/restapi/v2.1/accounts/%s/users"
-	getGroups        = "/restapi/v2.1/accounts/%s/groups"
-	getSigningGroups = "/restapi/v2.1/accounts/%s/signing_groups"
-	getPermissions   = "/restapi/v2.1/accounts/%s/users/%s"
-	getGroupUsers    = "/restapi/v2.1/accounts/%s/groups/%s/users"
-	createUsers      = "/restapi/v2.1/accounts/%s/users"
+	getUsers              = "/restapi/v2.1/accounts/%s/users"
+	getGroups             = "/restapi/v2.1/accounts/%s/groups"
+	getSigningGroups      = "/restapi/v2.1/accounts/%s/signing_groups"
+	getPermissions        = "/restapi/v2.1/accounts/%s/users/%s"
+	getGroupUsers         = "/restapi/v2.1/accounts/%s/groups/%s/users"
+	createUsers           = "/restapi/v2.1/accounts/%s/users"
+	getPermissionProfiles = "/restapi/v2.1/accounts/%s/permission_profiles"
 )
 
 // Client wraps HTTP interactions with the DocuSign API, handling auth and base URL.
@@ -235,6 +236,28 @@ func (c *Client) GetUserByEmail(ctx context.Context, userEmail string) (*User, a
 	user := usersResponse.Users[0]
 
 	return &user, annos, nil
+}
+
+func (c *Client) GetPermissionProfiles(ctx context.Context, options PageOptions) ([]PermissionProfile, string, annotations.Annotations, error) {
+	var permissionProfilesResponse PermissionProfilesResponse
+
+	baseURL, err := url.Parse(c.apiUrl)
+	if err != nil {
+		return nil, "", nil, fmt.Errorf("invalid base URL: %w", err)
+	}
+
+	permissionProfilesURL, err := preparePagedRequest(baseURL, fmt.Sprintf(getPermissionProfiles, c.accountId), options)
+	if err != nil {
+		return nil, "", nil, err
+	}
+
+	_, annos, err := c.doRequest(ctx, http.MethodGet, permissionProfilesURL, &permissionProfilesResponse)
+	if err != nil {
+		return nil, "", nil, err
+	}
+
+	nextToken := getNextToken(permissionProfilesResponse.Page)
+	return permissionProfilesResponse.PermissionProfiles, nextToken, annos, nil
 }
 
 // doRequestWithBody builds and executes a JSON POST/PUT request and decodes the response.

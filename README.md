@@ -12,7 +12,8 @@ Check out [Baton](https://github.com/conductorone/baton) to learn more the proje
 
    - Users
    - Groups
-   - Permissions
+   - Signing Groups
+   - Permissions Profile
 
 2. **Account provisioning**
 
@@ -24,6 +25,7 @@ Check out [Baton](https://github.com/conductorone/baton) to learn more the proje
 2. **CLIENT ID**
 3. **CLIENT SECRET**
 4. **REDIRECT URI**
+4. **REFRESH TOKEN**
 
 ### Obtaining Credentials
 
@@ -103,6 +105,7 @@ Flags:
       --client-id string             The Integration Key (Client ID) ($BATON_CLIENT_ID)
       --client-secret string         The Client Secret ($BATON_CLIENT_SECRET)
       --redirect-uri string          The Redirect URI used in OAuth2
+      --refresh-token string         The generated refresh token
       --client-id string             The client ID used to authenticate with ConductorOne ($BATON_CLIENT_ID)
       --client-secret string         The client secret used to authenticate with ConductorOne ($BATON_CLIENT_SECRET)
   -f, --file string                  The path to the c1z file to sync with ($BATON_FILE) (default "sync.c1z")

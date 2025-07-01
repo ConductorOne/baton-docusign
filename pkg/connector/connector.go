@@ -17,20 +17,19 @@ type Connector struct {
 }
 
 func (d *Connector) ResourceSyncers(_ context.Context) []connectorbuilder.ResourceSyncer {
-	pb := newPermissionBuilder(d.client)
 	return []connectorbuilder.ResourceSyncer{
-		newUserBuilder(d.client, pb),
+		newUserBuilder(d.client),
 		newGroupBuilder(d.client),
 		newSigningGroupBuilder(d.client),
-		pb,
+		newPermissionProfilesBuilder(d.client),
 	}
 }
 
-func (d *Connector) Asset(ctx context.Context, asset *v2.AssetRef) (string, io.ReadCloser, error) {
+func (d *Connector) Asset(_ context.Context, _ *v2.AssetRef) (string, io.ReadCloser, error) {
 	return "", nil, nil
 }
 
-func (d *Connector) Metadata(ctx context.Context) (*v2.ConnectorMetadata, error) {
+func (d *Connector) Metadata(_ context.Context) (*v2.ConnectorMetadata, error) {
 	return &v2.ConnectorMetadata{
 		DisplayName: "DocuSign",
 		Description: "Connector syncs data users, permissions, groups  and create users of DocuSign",
@@ -61,7 +60,7 @@ func (d *Connector) Metadata(ctx context.Context) (*v2.ConnectorMetadata, error)
 	}, nil
 }
 
-func (d *Connector) Validate(ctx context.Context) (annotations.Annotations, error) {
+func (d *Connector) Validate(_ context.Context) (annotations.Annotations, error) {
 	return nil, nil
 }
 

@@ -9,6 +9,7 @@ import (
 	"github.com/conductorone/baton-sdk/pkg/annotations"
 	"github.com/conductorone/baton-sdk/pkg/connectorbuilder"
 	"github.com/conductorone/baton-sdk/pkg/pagination"
+	"github.com/conductorone/baton-sdk/pkg/types/grant"
 	"github.com/conductorone/baton-sdk/pkg/types/resource"
 )
 
@@ -21,13 +22,12 @@ type UserClient interface {
 
 // userBuilder handles user resource management and permission assignments.
 type userBuilder struct {
-	resourceType      *v2.ResourceType
-	client            UserClient
-	permissionBuilder *permissionBuilder
+	resourceType *v2.ResourceType
+	client       UserClient
 }
 
 // ResourceType returns the Baton resource type handled by this builder.
-func (b *userBuilder) ResourceType(ctx context.Context) *v2.ResourceType {
+func (b *userBuilder) ResourceType(_ context.Context) *v2.ResourceType {
 	return userResourceType
 }
 
@@ -71,45 +71,46 @@ func (b *userBuilder) List(
 	return resources, outToken, annotation, nil
 }
 
-// Entitlements returns empty as users don't have direct entitlements in this implementation.
-// Entitlements are managed separately by the permissionBuilder.
-func (b *userBuilder) Entitlements(ctx context.Context, resource *v2.Resource, _ *pagination.Token) ([]*v2.Entitlement, string, annotations.Annotations, error) {
+func (b *userBuilder) Entitlements(_ context.Context, _ *v2.Resource, _ *pagination.Token) ([]*v2.Entitlement, string, annotations.Annotations, error) {
 	return nil, "", nil, nil
 }
 
 // Grants assigns permissions to users based on their DocuSign settings.
-// Uses permissionBuilder to ensure all grants reference the central permission resource.
-func (b *userBuilder) Grants(ctx context.Context, resource *v2.Resource, pToken *pagination.Token) ([]*v2.Grant, string, annotations.Annotations, error) {
-	annos := annotations.Annotations{}
-	userId := resource.Id.Resource
-
-	permissionResource, err := b.permissionBuilder.GetPermissionResource(ctx)
-	if err != nil {
-		return nil, "", nil, fmt.Errorf("failed to get permission resource: %w", err)
-	}
-
+func (b *userBuilder) Grants(ctx context.Context, resource *v2.Resource, _ *pagination.Token) ([]*v2.Grant, string, annotations.Annotations, error) {
 	var grants []*v2.Grant
+	var annos annotations.Annotations
+	userID := resource.Id
 
-	detail, annotation, err := b.client.GetUserDetails(ctx, userId)
+	userDetail, annotation, err := b.client.GetUserDetails(ctx, userID.Resource)
 	if err != nil {
-		return nil, "", nil, fmt.Errorf("failed to fetch details for %s: %w", userId, err)
+		return nil, "", nil, fmt.Errorf("failed to fetch details for %s: %w", userID.Resource, err)
 	}
 
 	for _, annon := range annotation {
 		annos.Append(annon)
 	}
 
-	userGrants, err := createUserGrants(permissionResource, detail)
-	if err != nil {
-		return nil, "", nil, fmt.Errorf("failed to create grants for %s: %w", userId, err)
+	permissionProfileID := userDetail.PermissionProfileID
+	// A non-active user will not have any PP assigned, so this field can be empty.
+	if permissionProfileID == "" {
+		return nil, "", nil, nil
 	}
-	grants = append(grants, userGrants...)
+
+	permissionProfileResource := &v2.Resource{
+		Id: &v2.ResourceId{
+			ResourceType: permissionProfilesResourceType.Id,
+			Resource:     permissionProfileID,
+		},
+	}
+
+	newGrant := grant.NewGrant(permissionProfileResource, permissionProfileAssignedTag, userID)
+	grants = append(grants, newGrant)
 
 	return grants, "", annos, nil
 }
 
 // CreateAccountCapabilityDetails declares support for account provisioning without a password.
-func (b *userBuilder) CreateAccountCapabilityDetails(ctx context.Context) (*v2.CredentialDetailsAccountProvisioning, annotations.Annotations, error) {
+func (b *userBuilder) CreateAccountCapabilityDetails(_ context.Context) (*v2.CredentialDetailsAccountProvisioning, annotations.Annotations, error) {
 	return &v2.CredentialDetailsAccountProvisioning{
 		SupportedCredentialOptions: []v2.CapabilityDetailCredentialOption{
 			v2.CapabilityDetailCredentialOption_CAPABILITY_DETAIL_CREDENTIAL_OPTION_NO_PASSWORD,
@@ -183,11 +184,10 @@ func (b *userBuilder) CreateAccount(
 }
 
 // newUserBuilder constructs a userBuilder with the provided API client.
-func newUserBuilder(client *client.Client, pb *permissionBuilder) *userBuilder {
+func newUserBuilder(client *client.Client) *userBuilder {
 	return &userBuilder{
-		resourceType:      userResourceType,
-		client:            client,
-		permissionBuilder: pb,
+		resourceType: userResourceType,
+		client:       client,
 	}
 }
 
