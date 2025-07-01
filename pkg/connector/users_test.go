@@ -8,7 +8,6 @@ import (
 	"testing"
 
 	"github.com/conductorone/baton-docusign/pkg/client"
-	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
 	"github.com/conductorone/baton-sdk/pkg/annotations"
 	"github.com/conductorone/baton-sdk/pkg/pagination"
 	"github.com/stretchr/testify/assert"
@@ -124,36 +123,4 @@ func TestParseIntoUserResource(t *testing.T) {
 			assert.Equal(t, tt.user.UserId, got.Id.Resource)
 		})
 	}
-}
-
-// TestUserBuilder_Grants tests the Grants method of userBuilder.
-// Verifies that grants are properly created based on user settings.
-func TestUserBuilder_Grants(t *testing.T) {
-	mockClient := &mockClient{
-		getUserDetailsFunc: func(ctx context.Context, userID string) (*client.UserDetail, annotations.Annotations, error) {
-			return &client.UserDetail{
-				UserID: userID,
-				UserSettings: client.UserSettings{
-					CanManageAccount: "true",
-				},
-			}, nil, nil
-		},
-	}
-
-	builder := &userBuilder{
-		resourceType: userResourceType,
-		client:       mockClient,
-	}
-
-	ctx := context.Background()
-	userRes := &v2.Resource{
-		Id: &v2.ResourceId{
-			ResourceType: userResourceType.Id,
-			Resource:     "test-user",
-		},
-	}
-
-	grants, _, _, err := builder.Grants(ctx, userRes, nil)
-	require.NoError(t, err)
-	assert.NotEmpty(t, grants)
 }

@@ -1,7 +1,5 @@
 # DocuSign Connector Setup Guide
 
-While developing the connector, please fill out this form. This information is needed to write docs and to help other users set up the connector.
-
 ---
 
 ## Connector capabilities
@@ -10,7 +8,8 @@ While developing the connector, please fill out this form. This information is n
    This connector syncs:  
    — Users  
    — Groups  
-   — Permissions
+   — Signing Groups
+   — Permissions Profile
 
 2. **Can the connector provision any resources? If so, which ones?**  
    The connector can provision:  
@@ -25,13 +24,15 @@ While developing the connector, please fill out this form. This information is n
    — Account ID  
    — Client ID  
    — Client Secret  
-   — Redirect URI
+   — Redirect URI  
+   — Refresh Token
 
    **Args**:  
    `--account-id`  
    `--clientId`  
    `--clientSecret`  
    `--redirect-uri`
+   `--refresh-token`
 
 2. **For each item in the list above:**
 

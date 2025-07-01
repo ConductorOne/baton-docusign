@@ -10,13 +10,21 @@ var (
 		DisplayName: "User",
 		Traits:      []v2.ResourceType_Trait{v2.ResourceType_TRAIT_USER},
 	}
+
 	groupResourceType = &v2.ResourceType{
 		Id:          "group",
 		DisplayName: "Group",
 		Traits:      []v2.ResourceType_Trait{v2.ResourceType_TRAIT_GROUP},
 	}
-	permissionResourceType = &v2.ResourceType{
-		Id:          "permission",
-		DisplayName: "Permission",
+
+	permissionProfilesResourceType = &v2.ResourceType{
+		Id:          "permission_profile",
+		DisplayName: "Permission Profile",
+	}
+
+	signingGroupResourceType = &v2.ResourceType{
+		Id:          "signing_group",
+		DisplayName: "Signing Group",
+		Traits:      []v2.ResourceType_Trait{v2.ResourceType_TRAIT_GROUP},
 	}
 )

@@ -1,5 +1,7 @@
 package client
 
+import "time"
+
 type TokenResponse struct {
 	AccessToken  string `json:"access_token"`
 	TokenType    string `json:"token_type"`
@@ -23,6 +25,11 @@ type pageToken struct {
 	StartPosition int `json:"start_position"`
 }
 
+type UsersResponse struct {
+	Users []User `json:"users"`
+	Page  Page
+}
+
 type User struct {
 	UserId     string `json:"userId"`
 	UserName   string `json:"userName"`
@@ -32,9 +39,9 @@ type User struct {
 	Permission string `json:"permissionProfileName"`
 }
 
-type UsersResponse struct {
-	Users []User `json:"users"`
-	Page  Page
+type GroupsResponse struct {
+	Groups []Group `json:"groups"`
+	Page   Page
 }
 
 type Group struct {
@@ -44,9 +51,28 @@ type Group struct {
 	UsersCount string `json:"usersCount"`
 }
 
-type GroupsResponse struct {
-	Groups []Group `json:"groups"`
-	Page   Page
+type SigningGroupResponse struct {
+	SigningGroups []SigningGroup `json:"groups"`
+	Page          Page
+}
+
+type SigningGroup struct {
+	SigningGroupId string             `json:"signingGroupId"`
+	GroupName      string             `json:"groupName"`
+	GroupType      string             `json:"groupType"`
+	GroupEmail     string             `json:"groupEmail"`
+	Created        string             `json:"created"`
+	CreatedBy      string             `json:"createdBy"`
+	Modified       string             `json:"modified"`
+	ModifiedBy     string             `json:"modifiedBy"`
+	Users          []SigningGroupUser `json:"users"`
+}
+
+// SigningGroupUser represents a user member of a SigningGroup.
+type SigningGroupUser struct {
+	UserID   string `json:"userId,omitempty"`
+	UserName string `json:"userName,omitempty"`
+	Email    string `json:"email,omitempty"`
 }
 
 type UserDetail struct {
@@ -56,6 +82,7 @@ type UserDetail struct {
 	IsAdmin               string       `json:"isAdmin"`
 	UserStatus            string       `json:"userStatus"`
 	PermissionProfileName string       `json:"permissionProfileName"`
+	PermissionProfileID   string       `json:"permissionProfileId"`
 	UserSettings          UserSettings `json:"userSettings"`
 	GroupList             []Group      `json:"groupList"`
 }
@@ -124,4 +151,18 @@ type UserCreationResponse struct {
 			Message   string `json:"message"`
 		} `json:"errorDetails,omitempty"`
 	} `json:"newUsers"`
+}
+
+type PermissionProfilesResponse struct {
+	PermissionProfiles []PermissionProfile `json:"permissionProfiles"`
+	Page               Page
+}
+
+type PermissionProfile struct {
+	PermissionProfileId   string    `json:"permissionProfileId"`
+	PermissionProfileName string    `json:"permissionProfileName"`
+	IsDefault             string    `json:"isDefault"`
+	CreatedDateTime       time.Time `json:"createdDateTime"`
+	LastModifiedDateTime  time.Time `json:"lastModifiedDateTime"`
+	ModifiedByUserName    string    `json:"modifiedByUserName"`
 }

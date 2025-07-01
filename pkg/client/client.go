@@ -13,11 +13,13 @@ import (
 
 // API endpoint constants.
 const (
-	getUsers       = "/restapi/v2.1/accounts/%s/users"
-	getGroups      = "/restapi/v2.1/accounts/%s/groups"
-	getPermissions = "/restapi/v2.1/accounts/%s/users/%s"
-	getGroupUsers  = "/restapi/v2.1/accounts/%s/groups/%s/users"
-	createUsers    = "/restapi/v2.1/accounts/%s/users"
+	getUsers              = "/restapi/v2.1/accounts/%s/users"
+	getGroups             = "/restapi/v2.1/accounts/%s/groups"
+	getSigningGroups      = "/restapi/v2.1/accounts/%s/signing_groups"
+	getPermissions        = "/restapi/v2.1/accounts/%s/users/%s"
+	getGroupUsers         = "/restapi/v2.1/accounts/%s/groups/%s/users"
+	createUsers           = "/restapi/v2.1/accounts/%s/users"
+	getPermissionProfiles = "/restapi/v2.1/accounts/%s/permission_profiles"
 )
 
 // Client wraps HTTP interactions with the DocuSign API, handling auth and base URL.
@@ -162,6 +164,100 @@ func (c *Client) CreateUsers(ctx context.Context, request CreateUsersRequest) (*
 	}
 
 	return &response, annon, nil
+}
+
+func (c *Client) GetSigningGroups(ctx context.Context, options PageOptions) ([]SigningGroup, string, annotations.Annotations, error) {
+	var signingGroupsResponse SigningGroupResponse
+
+	baseURL, err := url.Parse(c.apiUrl)
+	if err != nil {
+		return nil, "", nil, fmt.Errorf("invalid base URL: %w", err)
+	}
+
+	signingGroupsURL, err := preparePagedRequest(baseURL, fmt.Sprintf(getSigningGroups, c.accountId), options)
+	if err != nil {
+		return nil, "", nil, err
+	}
+
+	_, annos, err := c.doRequest(ctx, http.MethodGet, signingGroupsURL, &signingGroupsResponse)
+	if err != nil {
+		return nil, "", nil, err
+	}
+
+	nextToken := getNextToken(signingGroupsResponse.Page)
+	return signingGroupsResponse.SigningGroups, nextToken, annos, nil
+}
+
+func (c *Client) GetSigningGroupUsers(ctx context.Context, groupId string, options PageOptions) ([]User, string, annotations.Annotations, error) {
+	var groupMembersResponse UsersResponse
+
+	baseURL, err := url.Parse(c.apiUrl)
+	if err != nil {
+		return nil, "", nil, fmt.Errorf("invalid base URL: %w", err)
+	}
+
+	getSignedGroupDetailsURL, err := url.JoinPath(fmt.Sprintf(getSigningGroups, c.accountId), groupId)
+	if err != nil {
+		return nil, "", nil, err
+	}
+
+	signedGroupDetailsURL, err := preparePagedRequest(baseURL, getSignedGroupDetailsURL, options)
+	if err != nil {
+		return nil, "", nil, err
+	}
+
+	_, annos, err := c.doRequest(ctx, http.MethodGet, signedGroupDetailsURL, &groupMembersResponse)
+	if err != nil {
+		return nil, "", nil, err
+	}
+
+	nextToken := getNextToken(groupMembersResponse.Page)
+	return groupMembersResponse.Users, nextToken, annos, nil
+}
+
+// GetUserByEmail retrieves a user filtering by the email and the user status 'Active' or 'Activation Sent'.
+func (c *Client) GetUserByEmail(ctx context.Context, userEmail string) (*User, annotations.Annotations, error) {
+	userURL, err := buildURL(c.apiUrl, getUsers, c.accountId)
+	if err != nil {
+		return nil, nil, err
+	}
+	ApplyQueryParam(userURL, "status", "Active,ActivationSent")
+	ApplyQueryParam(userURL, "email", userEmail)
+
+	var usersResponse UsersResponse
+	_, annos, err := c.doRequest(ctx, http.MethodGet, userURL, &usersResponse)
+	if err != nil {
+		return nil, annos, fmt.Errorf("error fetching user details: %w", err)
+	}
+
+	if len(usersResponse.Users) != 1 {
+		return nil, annos, fmt.Errorf("error fetching user details. Got %d users with the email %s", len(usersResponse.Users), userEmail)
+	}
+	user := usersResponse.Users[0]
+
+	return &user, annos, nil
+}
+
+func (c *Client) GetPermissionProfiles(ctx context.Context, options PageOptions) ([]PermissionProfile, string, annotations.Annotations, error) {
+	var permissionProfilesResponse PermissionProfilesResponse
+
+	baseURL, err := url.Parse(c.apiUrl)
+	if err != nil {
+		return nil, "", nil, fmt.Errorf("invalid base URL: %w", err)
+	}
+
+	permissionProfilesURL, err := preparePagedRequest(baseURL, fmt.Sprintf(getPermissionProfiles, c.accountId), options)
+	if err != nil {
+		return nil, "", nil, err
+	}
+
+	_, annos, err := c.doRequest(ctx, http.MethodGet, permissionProfilesURL, &permissionProfilesResponse)
+	if err != nil {
+		return nil, "", nil, err
+	}
+
+	nextToken := getNextToken(permissionProfilesResponse.Page)
+	return permissionProfilesResponse.PermissionProfiles, nextToken, annos, nil
 }
 
 // doRequestWithBody builds and executes a JSON POST/PUT request and decodes the response.

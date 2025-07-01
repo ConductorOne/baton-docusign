@@ -37,7 +37,8 @@ var (
 	)
 	refreshTokenField = field.StringField(
 		"refresh-token",
-		field.WithDescription("Optional. Refresh token."),
+		field.WithDescription("Refresh token."),
+		field.WithRequired(true),
 	)
 
 	ConfigurationFields = []field.SchemaField{
