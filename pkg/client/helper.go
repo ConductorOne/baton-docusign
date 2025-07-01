@@ -107,3 +107,9 @@ func getNextToken(responsePage Page) string {
 	}
 	return ""
 }
+
+func ApplyQueryParam(reqURL *url.URL, key string, value string) {
+	q := reqURL.Query()
+	q.Set(key, value)
+	reqURL.RawQuery = q.Encode()
+}

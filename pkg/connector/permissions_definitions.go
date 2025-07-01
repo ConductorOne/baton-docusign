@@ -14,9 +14,7 @@ type permissionMapping struct {
 }
 
 // permissionResourceID is the singleton ID for the permissions resource.
-const (
-	permissionResourceID = "docusign-permissions"
-)
+const permissionResourceID = "docusign-permissions"
 
 // permissionDefinitions contains all possible DocuSign permissions with their metadata.
 var permissionDefinitions = []permissionDefinition{

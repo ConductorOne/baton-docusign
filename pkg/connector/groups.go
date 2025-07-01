@@ -14,9 +14,7 @@ import (
 )
 
 // Entitlement value representing group membership.
-const (
-	entitlementGroupMember = "member"
-)
+const entitlementGroupMember = "member"
 
 // groupsClientInterface defines the methods required for group-related API calls.
 type groupsClientInterface interface {

@@ -1,7 +1,5 @@
 # DocuSign Connector Setup Guide
 
-While developing the connector, please fill out this form. This information is needed to write docs and to help other users set up the connector.
-
 ---
 
 ## Connector capabilities

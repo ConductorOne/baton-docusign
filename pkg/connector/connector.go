@@ -16,11 +16,12 @@ type Connector struct {
 	client *client.Client
 }
 
-func (d *Connector) ResourceSyncers(ctx context.Context) []connectorbuilder.ResourceSyncer {
+func (d *Connector) ResourceSyncers(_ context.Context) []connectorbuilder.ResourceSyncer {
 	pb := newPermissionBuilder(d.client)
 	return []connectorbuilder.ResourceSyncer{
 		newUserBuilder(d.client, pb),
 		newGroupBuilder(d.client),
+		newSigningGroupBuilder(d.client),
 		pb,
 	}
 }

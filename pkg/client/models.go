@@ -23,6 +23,11 @@ type pageToken struct {
 	StartPosition int `json:"start_position"`
 }
 
+type UsersResponse struct {
+	Users []User `json:"users"`
+	Page  Page
+}
+
 type User struct {
 	UserId     string `json:"userId"`
 	UserName   string `json:"userName"`
@@ -32,9 +37,9 @@ type User struct {
 	Permission string `json:"permissionProfileName"`
 }
 
-type UsersResponse struct {
-	Users []User `json:"users"`
-	Page  Page
+type GroupsResponse struct {
+	Groups []Group `json:"groups"`
+	Page   Page
 }
 
 type Group struct {
@@ -44,9 +49,35 @@ type Group struct {
 	UsersCount string `json:"usersCount"`
 }
 
-type GroupsResponse struct {
-	Groups []Group `json:"groups"`
-	Page   Page
+type SigningGroupResponse struct {
+	SigningGroups []SigningGroup `json:"groups"`
+	Page          Page
+}
+
+type SigningGroup struct {
+	SigningGroupId string             `json:"signingGroupId"`
+	GroupName      string             `json:"groupName"`
+	GroupType      string             `json:"groupType"`
+	GroupEmail     string             `json:"groupEmail"`
+	Created        string             `json:"created"`
+	CreatedBy      string             `json:"createdBy"`
+	Modified       string             `json:"modified"`
+	ModifiedBy     string             `json:"modifiedBy"`
+	Users          []SigningGroupUser `json:"users"`
+}
+
+/*
+ErrorDetails   struct {
+		ErrorCode string `json:"errorCode"`
+		Message   string `json:"message"`
+	} `json:"errorDetails"`
+*/
+
+// SigningGroupUser represents a user member of a SigningGroup.
+type SigningGroupUser struct {
+	UserID   string `json:"userId,omitempty"`
+	UserName string `json:"userName,omitempty"`
+	Email    string `json:"email,omitempty"`
 }
 
 type UserDetail struct {
