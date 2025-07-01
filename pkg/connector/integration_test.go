@@ -45,8 +45,7 @@ func TestUserBuilderList(t *testing.T) {
 	ctx := context.Background()
 	client := initClient(t)
 
-	pb := newPermissionBuilder(client)
-	user := newUserBuilder(client, pb)
+	user := newUserBuilder(client)
 	resource, nextToken, _, err := user.List(ctx, parentResourceID, pToken)
 
 	assert.NoError(t, err)
@@ -74,7 +73,7 @@ func TestPermissionBuilderList(t *testing.T) {
 	ctx := context.Background()
 	client := initClient(t)
 
-	permission := newPermissionBuilder(client)
+	permission := newPermissionProfilesBuilder(client)
 	resource, nextToken, _, err := permission.List(ctx, parentResourceID, pToken)
 
 	assert.NoError(t, err)
@@ -89,8 +88,7 @@ func TestUserBuilderGrants(t *testing.T) {
 	ctx := context.Background()
 	client := initClient(t)
 
-	pb := newPermissionBuilder(client)
-	user := newUserBuilder(client, pb)
+	user := newUserBuilder(client)
 
 	users, _, _, err := user.List(ctx, parentResourceID, pToken)
 	assert.NoError(t, err)
