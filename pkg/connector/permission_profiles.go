@@ -20,7 +20,7 @@ type permissionProfilesBuilder struct {
 }
 
 func (p *permissionProfilesBuilder) ResourceType(_ context.Context) *v2.ResourceType {
-	return permissionProfilesResourceType
+	return p.resourceType
 }
 
 func (p *permissionProfilesBuilder) List(ctx context.Context, _ *v2.ResourceId, pToken *pagination.Token) ([]*v2.Resource, string, annotations.Annotations, error) {

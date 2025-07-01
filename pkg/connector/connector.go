@@ -32,7 +32,7 @@ func (d *Connector) Asset(_ context.Context, _ *v2.AssetRef) (string, io.ReadClo
 func (d *Connector) Metadata(_ context.Context) (*v2.ConnectorMetadata, error) {
 	return &v2.ConnectorMetadata{
 		DisplayName: "DocuSign",
-		Description: "Connector syncs data users, permissions, groups  and create users of DocuSign",
+		Description: "Connector syncs data from Users, Permissions Profiles, Groups and Signing Groups. It also allows the creation users of DocuSign",
 		AccountCreationSchema: &v2.ConnectorAccountCreationSchema{
 			FieldMap: map[string]*v2.ConnectorAccountCreationSchema_Field{
 				"email": {

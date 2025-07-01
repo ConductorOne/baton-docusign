@@ -18,12 +18,12 @@ var (
 	}
 
 	permissionProfilesResourceType = &v2.ResourceType{
-		Id:          "permissionProfile",
+		Id:          "permission_profile",
 		DisplayName: "Permission Profile",
 	}
 
 	signingGroupResourceType = &v2.ResourceType{
-		Id:          "signingGroup",
+		Id:          "signing_group",
 		DisplayName: "Signing Group",
 		Traits:      []v2.ResourceType_Trait{v2.ResourceType_TRAIT_GROUP},
 	}
