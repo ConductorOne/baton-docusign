@@ -35,14 +35,16 @@ func (b *userBuilder) ResourceType(_ context.Context) *v2.ResourceType {
 // Uses pagination to handle large datasets efficiently.
 func (b *userBuilder) List(
 	ctx context.Context,
-	parentResourceID *v2.ResourceId,
+	_ *v2.ResourceId,
 	pToken *pagination.Token,
 ) ([]*v2.Resource, string, annotations.Annotations, error) {
 	var resources []*v2.Resource
+
 	bag, pageToken, err := parsePageToken(pToken.Token, &v2.ResourceId{ResourceType: userResourceType.Id})
 	if err != nil {
 		return nil, "", nil, err
 	}
+
 	users, nextPageToken, annotation, err := b.client.GetUsers(ctx, client.PageOptions{
 		PageSize:  pToken.Size,
 		PageToken: pageToken,
@@ -52,8 +54,7 @@ func (b *userBuilder) List(
 	}
 
 	for _, user := range users {
-		userCopy := user
-		userResource, err := parseIntoUserResource(&userCopy)
+		userResource, err := parseIntoUserResource(&user)
 		if err != nil {
 			return nil, "", nil, err
 		}

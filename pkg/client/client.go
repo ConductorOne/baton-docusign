@@ -81,6 +81,7 @@ func (c *Client) GetUsers(ctx context.Context, options PageOptions) ([]User, str
 	}
 
 	nextToken := getNextToken(usersResponse.Page)
+
 	return usersResponse.Users, nextToken, annos, nil
 }
 
@@ -104,6 +105,7 @@ func (c *Client) GetGroups(ctx context.Context, options PageOptions) ([]Group, s
 	}
 
 	nextToken := getNextToken(groupsResponse.Page)
+
 	return groupsResponse.Groups, nextToken, annos, nil
 }
 
@@ -127,6 +129,7 @@ func (c *Client) GetGroupUsers(ctx context.Context, groupId string, options Page
 	}
 
 	nextToken := getNextToken(usersResponse.Page)
+
 	return usersResponse.Users, nextToken, annos, nil
 }
 
@@ -185,6 +188,7 @@ func (c *Client) GetSigningGroups(ctx context.Context, options PageOptions) ([]S
 	}
 
 	nextToken := getNextToken(signingGroupsResponse.Page)
+
 	return signingGroupsResponse.SigningGroups, nextToken, annos, nil
 }
 
@@ -212,6 +216,7 @@ func (c *Client) GetSigningGroupUsers(ctx context.Context, groupId string, optio
 	}
 
 	nextToken := getNextToken(groupMembersResponse.Page)
+
 	return groupMembersResponse.Users, nextToken, annos, nil
 }
 
@@ -257,6 +262,7 @@ func (c *Client) GetPermissionProfiles(ctx context.Context, options PageOptions)
 	}
 
 	nextToken := getNextToken(permissionProfilesResponse.Page)
+
 	return permissionProfilesResponse.PermissionProfiles, nextToken, annos, nil
 }
 

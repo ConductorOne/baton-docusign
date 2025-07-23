@@ -24,7 +24,7 @@ jobs:
         run: go build -o connector ./cmd/baton-docusign
 
       - name: Run and save output
-        run: ./connector capabilities > baton_capabilities.json
+        run: ./connector --api-url "API_URL" --account-id "ACCOUNT_ID" --clientId "CLIENT_ID" --clientSecret "CLIENT_SECRET" --redirect-uri "REDIRECT_URI" --refresh-token "REFRESH_TOKEN" capabilities > baton_capabilities.json
 
       - name: Commit changes
         uses: EndBug/add-and-commit@v9

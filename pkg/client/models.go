@@ -26,8 +26,8 @@ type pageToken struct {
 }
 
 type UsersResponse struct {
+	Page
 	Users []User `json:"users"`
-	Page  Page
 }
 
 type User struct {
@@ -40,8 +40,8 @@ type User struct {
 }
 
 type GroupsResponse struct {
+	Page
 	Groups []Group `json:"groups"`
-	Page   Page
 }
 
 type Group struct {
@@ -52,8 +52,8 @@ type Group struct {
 }
 
 type SigningGroupResponse struct {
+	Page
 	SigningGroups []SigningGroup `json:"groups"`
-	Page          Page
 }
 
 type SigningGroup struct {
@@ -154,8 +154,8 @@ type UserCreationResponse struct {
 }
 
 type PermissionProfilesResponse struct {
+	Page
 	PermissionProfiles []PermissionProfile `json:"permissionProfiles"`
-	Page               Page
 }
 
 type PermissionProfile struct {
