@@ -3,6 +3,39 @@
   "resourceTypeCapabilities": [
     {
       "resourceType": {
+        "id": "group",
+        "displayName": "Group",
+        "traits": [
+          "TRAIT_GROUP"
+        ]
+      },
+      "capabilities": [
+        "CAPABILITY_SYNC"
+      ]
+    },
+    {
+      "resourceType": {
+        "id": "permission_profile",
+        "displayName": "Permission Profile"
+      },
+      "capabilities": [
+        "CAPABILITY_SYNC"
+      ]
+    },
+    {
+      "resourceType": {
+        "id": "signing_group",
+        "displayName": "Signing Group",
+        "traits": [
+          "TRAIT_GROUP"
+        ]
+      },
+      "capabilities": [
+        "CAPABILITY_SYNC"
+      ]
+    },
+    {
+      "resourceType": {
         "id": "user",
         "displayName": "User",
         "traits": [
@@ -10,12 +43,21 @@
         ]
       },
       "capabilities": [
-        "CAPABILITY_SYNC"
+        "CAPABILITY_SYNC",
+        "CAPABILITY_ACCOUNT_PROVISIONING"
       ]
     }
   ],
   "connectorCapabilities": [
-    "CAPABILITY_SYNC"
+    "CAPABILITY_SYNC",
+    "CAPABILITY_ACCOUNT_PROVISIONING"
   ],
-  "credentialDetails": {}
+  "credentialDetails": {
+    "capabilityAccountProvisioning": {
+      "supportedCredentialOptions": [
+        "CAPABILITY_DETAIL_CREDENTIAL_OPTION_NO_PASSWORD"
+      ],
+      "preferredCredentialOption": "CAPABILITY_DETAIL_CREDENTIAL_OPTION_NO_PASSWORD"
+    }
+  }
 }
