@@ -33,6 +33,7 @@ func (p *permissionProfilesBuilder) List(ctx context.Context, _ *v2.ResourceId, 
 	if err != nil {
 		return nil, "", nil, err
 	}
+
 	permissionProfiles, nextPageToken, newAnnos, err := p.client.GetPermissionProfiles(ctx, client.PageOptions{
 		PageSize:  pToken.Size,
 		PageToken: pageToken,

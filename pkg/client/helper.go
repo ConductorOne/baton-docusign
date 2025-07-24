@@ -100,7 +100,9 @@ func preparePagedRequest(baseURL *url.URL, endpoint string, options PageOptions)
 
 // GetNextToken calculates the token for the next page based on the response.
 func getNextToken(responsePage Page) string {
-	if responsePage.EndPosition < responsePage.TotalSetSize {
+	// responsePage.EndPosition will always be 1 position behind the actual end of the list.
+	// So we must add 1 to validate if we are at the last value.
+	if responsePage.EndPosition+1 < responsePage.TotalSetSize {
 		return encodePageToken(&pageToken{
 			StartPosition: responsePage.EndPosition + 1,
 		})
