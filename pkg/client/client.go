@@ -70,10 +70,12 @@ func (c *Client) GetUsers(ctx context.Context, options PageOptions) ([]User, str
 		return nil, "", nil, fmt.Errorf("invalid base URL: %w", err)
 	}
 
-	usersURL, err := preparePagedRequest(baseURL, fmt.Sprintf(getUsers, c.accountId), options)
+	usersURL, err := url.Parse(fmt.Sprintf(getUsers, c.accountId))
 	if err != nil {
-		return nil, "", nil, err
+		return nil, "", nil, fmt.Errorf("invalid endpoint: %w", err)
 	}
+
+	usersURL = baseURL.ResolveReference(usersURL)
 
 	_, annos, err := c.doRequest(ctx, http.MethodGet, usersURL, &usersResponse)
 	if err != nil {
