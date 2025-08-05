@@ -23,21 +23,13 @@ func (p *permissionProfilesBuilder) ResourceType(_ context.Context) *v2.Resource
 	return p.resourceType
 }
 
-func (p *permissionProfilesBuilder) List(ctx context.Context, _ *v2.ResourceId, pToken *pagination.Token) ([]*v2.Resource, string, annotations.Annotations, error) {
+func (p *permissionProfilesBuilder) List(ctx context.Context, _ *v2.ResourceId, _ *pagination.Token) ([]*v2.Resource, string, annotations.Annotations, error) {
 	var (
 		pProfiles []*v2.Resource
 		anno      annotations.Annotations
 	)
 
-	bag, pageToken, err := parsePageToken(pToken.Token, &v2.ResourceId{ResourceType: signingGroupResourceType.Id})
-	if err != nil {
-		return nil, "", nil, err
-	}
-
-	permissionProfiles, nextPageToken, newAnnos, err := p.client.GetPermissionProfiles(ctx, client.PageOptions{
-		PageSize:  pToken.Size,
-		PageToken: pageToken,
-	})
+	permissionProfiles, newAnnos, err := p.client.GetPermissionProfiles(ctx)
 	if err != nil {
 		return nil, "", nil, err
 	}
@@ -58,15 +50,7 @@ func (p *permissionProfilesBuilder) List(ctx context.Context, _ *v2.ResourceId, 
 		pProfiles = append(pProfiles, permissionProfileResource)
 	}
 
-	var outToken string
-	if nextPageToken != "" {
-		outToken, err = bag.NextToken(nextPageToken)
-		if err != nil {
-			return nil, "", nil, err
-		}
-	}
-
-	return pProfiles, outToken, anno, nil
+	return pProfiles, "", anno, nil
 }
 
 func (p *permissionProfilesBuilder) Entitlements(_ context.Context, resource *v2.Resource, _ *pagination.Token) ([]*v2.Entitlement, string, annotations.Annotations, error) {
