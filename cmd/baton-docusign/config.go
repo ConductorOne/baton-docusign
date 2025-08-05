@@ -6,16 +6,10 @@ import (
 )
 
 var (
-	apiUrlField = field.StringField(
-		"api-url",
-		field.WithDescription("The base URL of the DocuSign API"),
-		field.WithDefaultValue("https://demo.docusign.net"),
-	)
-
-	accountField = field.StringField(
-		"account-id",
-		field.WithDescription("Your DocuSign account ID"),
-		field.WithRequired(true),
+	isDemoField = field.BoolField(
+		"demo",
+		field.WithDescription("Set to true for demo environment, false for production"),
+		field.WithDefaultValue(true),
 	)
 
 	clientIdField = field.StringField(
@@ -42,8 +36,7 @@ var (
 	)
 
 	ConfigurationFields = []field.SchemaField{
-		apiUrlField,
-		accountField,
+		isDemoField,
 		clientIdField,
 		clientSecretField,
 		redirectURIField,

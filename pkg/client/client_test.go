@@ -38,12 +38,29 @@ func createTestServer(t *testing.T, mockResponse string, urlPath string, method 
 	}))
 }
 
-// Helper function to create a new client instance.
-func createClient(baseURL string) *client.Client {
+// Helper function to create a new client instance with test server response.
+func createClient(baseURL string, mockResponse string, urlPath string) *client.Client {
+	// Create headers for JSON response
+	header := make(http.Header)
+	header.Set("Content-Type", "application/json")
+
+	// Create a mock transport that handles both User Info and API endpoints
+	mockTransport := &test.MultiEndpointMockTransport{
+		Responses: map[string]*http.Response{
+			baseURL + urlPath: &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     header,
+				Body:       test.CreateMockResponseBody(mockResponse),
+			},
+		},
+		Errors: map[string]error{},
+	}
+
+	httpClient := &http.Client{Transport: mockTransport}
+	baseHttpClient := uhttp.NewBaseHttpClient(httpClient)
 	ts := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: test.MockAccessToken})
-	oauthClient := oauth2.NewClient(context.Background(), ts)
-	baseHttpClient := uhttp.NewBaseHttpClient(oauthClient)
-	return client.NewClient(context.Background(), baseURL, test.MockAccountID, ts, baseHttpClient)
+
+	return client.NewClient(context.Background(), true, ts, baseHttpClient)
 }
 
 // Test case to verify successful retrieval of users without pagination.
@@ -54,7 +71,7 @@ func TestClient_GetUsers(t *testing.T) {
 
 		defer testServer.Close()
 
-		c := createClient(testServer.URL)
+		c := createClient(testServer.URL, "users_list.json", getUsersTest)
 		users, _, _, err := c.GetUsers(context.Background(), client.PageOptions{})
 
 		require.NoError(t, err)
@@ -72,7 +89,7 @@ func TestClient_GetUserDetails(t *testing.T) {
 
 		defer testServer.Close()
 
-		c := createClient(testServer.URL)
+		c := createClient(testServer.URL, "user_details.json", getUserDetailsTest)
 		userDetails, _, err := c.GetUserDetails(context.Background(), test.MockUserID)
 
 		require.NoError(t, err)
@@ -89,7 +106,7 @@ func TestClient_GetGroups(t *testing.T) {
 
 		defer testServer.Close()
 
-		c := createClient(testServer.URL)
+		c := createClient(testServer.URL, "groups.json", getGroupsTest)
 		groups, _, _, err := c.GetGroups(context.Background(), client.PageOptions{})
 
 		require.NoError(t, err)
@@ -106,7 +123,7 @@ func TestClient_GetGroupUsers(t *testing.T) {
 
 		defer testServer.Close()
 
-		c := createClient(testServer.URL)
+		c := createClient(testServer.URL, "group_users.json", getGroupUsersTest)
 		users, _, _, err := c.GetGroupUsers(context.Background(), test.MockGroupID, client.PageOptions{})
 
 		require.NoError(t, err)
@@ -122,7 +139,7 @@ func TestClient_CreateUsers(t *testing.T) {
 
 		defer testServer.Close()
 
-		c := createClient(testServer.URL)
+		c := createClient(testServer.URL, "create_users.json", getUsersTest)
 		req := client.CreateUsersRequest{
 			NewUsers: []client.NewUser{
 				{UserName: "newuser1", Email: "newuser1@test.com"},

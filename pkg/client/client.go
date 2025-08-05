@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"time"
 
 	"github.com/conductorone/baton-sdk/pkg/annotations"
 	"github.com/conductorone/baton-sdk/pkg/uhttp"
@@ -22,29 +23,39 @@ const (
 	getPermissionProfiles = "/restapi/v2.1/accounts/%s/permission_profiles"
 )
 
+// OAuth User Info endpoints.
+const (
+	userInfoEndpointDemo = "https://account-d.docusign.com/oauth/userinfo"
+	userInfoEndpointProd = "https://account.docusign.com/oauth/userinfo"
+)
+
 // Client wraps HTTP interactions with the DocuSign API, handling auth and base URL.
 type Client struct {
-	apiUrl      string
-	tokenSource oauth2.TokenSource
-	accountId   string
-	wrapper     *uhttp.BaseHttpClient
+	isDemo        bool
+	tokenSource   oauth2.TokenSource
+	wrapper       *uhttp.BaseHttpClient
+	userInfoCache *UserInfoCache
+	baseURI       string
+	accountId     string
+	initialized   bool
 }
 
-// New constructs a Client, choosing OAuth2 interactive flow or direct token based on accessToken.
-func New(ctx context.Context, apiUrl, accountId, clientID, clientSecret, redirectURI, refreshToken string) (*Client, error) {
+// New constructs a Client with OAuth2 flow, now using dynamic base URI resolution.
+func New(ctx context.Context, isDemo bool, clientID, clientSecret, redirectURI, refreshToken string) (*Client, error) {
 	tokenSource := getTokenSource(ctx, clientID, clientSecret, redirectURI, refreshToken)
 	baseClient := oauth2.NewClient(ctx, tokenSource)
 
 	return &Client{
-		apiUrl:      apiUrl,
-		tokenSource: tokenSource,
-		accountId:   accountId,
-		wrapper:     uhttp.NewBaseHttpClient(baseClient),
+		isDemo:        isDemo,
+		tokenSource:   tokenSource,
+		wrapper:       uhttp.NewBaseHttpClient(baseClient),
+		userInfoCache: NewUserInfoCache(),
+		initialized:   false,
 	}, nil
 }
 
 // NewClient initializes a Client with a fixed token and optional HTTP wrapper.
-func NewClient(ctx context.Context, apiUrl, accountId string, tokenSource oauth2.TokenSource, httpClient ...*uhttp.BaseHttpClient) *Client {
+func NewClient(ctx context.Context, isDemo bool, tokenSource oauth2.TokenSource, httpClient ...*uhttp.BaseHttpClient) *Client {
 	var wrapper *uhttp.BaseHttpClient
 	if len(httpClient) > 0 {
 		wrapper = httpClient[0]
@@ -54,18 +65,132 @@ func NewClient(ctx context.Context, apiUrl, accountId string, tokenSource oauth2
 	}
 
 	return &Client{
-		apiUrl:      apiUrl,
-		tokenSource: tokenSource,
-		accountId:   accountId,
-		wrapper:     wrapper,
+		isDemo:        isDemo,
+		tokenSource:   tokenSource,
+		wrapper:       wrapper,
+		userInfoCache: NewUserInfoCache(),
+		initialized:   false,
 	}
+}
+
+// fetchUserInfo calls the DocuSign OAuth User Info endpoint to get account details.
+func (c *Client) fetchUserInfo(ctx context.Context) (*UserInfoResponse, error) {
+	var userInfoEndpoint string
+	if c.isDemo {
+		userInfoEndpoint = userInfoEndpointDemo
+	} else {
+		userInfoEndpoint = userInfoEndpointProd
+	}
+
+	userInfoURL, err := url.Parse(userInfoEndpoint)
+	if err != nil {
+		return nil, NewUserInfoError("invalid user info endpoint", err)
+	}
+
+	// Retry logic for transient failures
+	maxRetries := 3
+	var lastErr error
+
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		var userInfo UserInfoResponse
+		_, _, err = c.doRequest(ctx, http.MethodGet, userInfoURL, &userInfo)
+		if err == nil {
+			// Success
+			if len(userInfo.Accounts) == 0 {
+				return nil, NewUserInfoError("no accounts found in user info response", nil)
+			}
+			return &userInfo, nil
+		}
+
+		lastErr = err
+
+		// If this is not the last attempt, wait before retrying
+		if attempt < maxRetries-1 {
+			select {
+			case <-ctx.Done():
+				return nil, NewUserInfoError("context cancelled during retry", ctx.Err())
+			case <-time.After(time.Duration(attempt+1) * time.Second):
+				// Continue to next attempt
+			}
+		}
+	}
+
+	return nil, NewUserInfoError("failed to fetch user info after retries", lastErr)
+}
+
+// ensureInitialized ensures the client has fetched user info and set base URI.
+func (c *Client) ensureInitialized(ctx context.Context) error {
+	if c.initialized {
+		return nil
+	}
+
+	// Create a cache key based on token (we'll use the token itself as key)
+	token, err := c.tokenSource.Token()
+	if err != nil {
+		return fmt.Errorf("failed to get token: %w", err)
+	}
+
+	// Use a safe substring for the cache key
+	accessToken := token.AccessToken
+	if len(accessToken) > 20 {
+		accessToken = accessToken[:20]
+	}
+	cacheKey := fmt.Sprintf("userinfo_%s", accessToken)
+
+	// Try to get cached user info
+	userInfo, found := c.userInfoCache.Get(cacheKey)
+	if !found {
+		// Fetch fresh user info
+		userInfo, err = c.fetchUserInfo(ctx)
+		if err != nil {
+			return err
+		}
+
+		// Calculate TTL based on token expiry (minus 5 minutes for safety)
+		ttl := time.Until(token.Expiry) - 5*time.Minute
+		if ttl <= 0 {
+			ttl = 5 * time.Minute // minimum cache time
+		}
+
+		// Cache the user info
+		c.userInfoCache.Set(cacheKey, userInfo, ttl)
+	}
+
+	// Find the appropriate account
+	var selectedAccount *AccountInfo
+	for _, account := range userInfo.Accounts {
+		if account.IsDefault {
+			selectedAccount = &account
+			break
+		}
+	}
+
+	// If no default account, use the first one
+	if selectedAccount == nil && len(userInfo.Accounts) > 0 {
+		selectedAccount = &userInfo.Accounts[0]
+	}
+
+	if selectedAccount == nil {
+		return NewUserInfoError("no valid account found in user info", nil)
+	}
+
+	// Set the base URI and account ID
+	c.baseURI = selectedAccount.BaseURI
+	c.accountId = selectedAccount.AccountId
+	c.initialized = true
+
+	return nil
 }
 
 // GetUsers fetches a page of users and returns users, next page token, and annotations.
 func (c *Client) GetUsers(ctx context.Context, options PageOptions) ([]User, string, annotations.Annotations, error) {
+	if err := c.ensureInitialized(ctx); err != nil {
+		return nil, "", nil, err
+	}
+
 	var usersResponse UsersResponse
 
-	baseURL, err := url.Parse(c.apiUrl)
+	baseURL, err := url.Parse(c.baseURI)
 	if err != nil {
 		return nil, "", nil, fmt.Errorf("invalid base URL: %w", err)
 	}
@@ -87,9 +212,13 @@ func (c *Client) GetUsers(ctx context.Context, options PageOptions) ([]User, str
 
 // GetGroups fetches a page of groups and handles pagination and rate limit annotations.
 func (c *Client) GetGroups(ctx context.Context, options PageOptions) ([]Group, string, annotations.Annotations, error) {
+	if err := c.ensureInitialized(ctx); err != nil {
+		return nil, "", nil, err
+	}
+
 	var groupsResponse GroupsResponse
 
-	baseURL, err := url.Parse(c.apiUrl)
+	baseURL, err := url.Parse(c.baseURI)
 	if err != nil {
 		return nil, "", nil, fmt.Errorf("invalid base URL: %w", err)
 	}
@@ -111,9 +240,13 @@ func (c *Client) GetGroups(ctx context.Context, options PageOptions) ([]Group, s
 
 // GetGroupUsers fetches users for a group with pagination support.
 func (c *Client) GetGroupUsers(ctx context.Context, groupId string, options PageOptions) ([]User, string, annotations.Annotations, error) {
+	if err := c.ensureInitialized(ctx); err != nil {
+		return nil, "", nil, err
+	}
+
 	var usersResponse UsersResponse
 
-	baseURL, err := url.Parse(c.apiUrl)
+	baseURL, err := url.Parse(c.baseURI)
 	if err != nil {
 		return nil, "", nil, fmt.Errorf("invalid base URL: %w", err)
 	}
@@ -135,7 +268,11 @@ func (c *Client) GetGroupUsers(ctx context.Context, groupId string, options Page
 
 // GetUserDetails fetches detailed information for a specific user, including permissions.
 func (c *Client) GetUserDetails(ctx context.Context, userID string) (*UserDetail, annotations.Annotations, error) {
-	userURL, err := buildURL(c.apiUrl, getPermissions, c.accountId, userID)
+	if err := c.ensureInitialized(ctx); err != nil {
+		return nil, nil, err
+	}
+
+	userURL, err := buildURL(c.baseURI, getPermissions, c.accountId, userID)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -151,11 +288,15 @@ func (c *Client) GetUserDetails(ctx context.Context, userID string) (*UserDetail
 
 // CreateUsers sends a bulk create request for new users in the account.
 func (c *Client) CreateUsers(ctx context.Context, request CreateUsersRequest) (*UserCreationResponse, annotations.Annotations, error) {
+	if err := c.ensureInitialized(ctx); err != nil {
+		return nil, nil, err
+	}
+
 	if len(request.NewUsers) == 0 {
 		return nil, nil, fmt.Errorf("at least one user must be provided")
 	}
 
-	createUsersURL, err := buildURL(c.apiUrl, createUsers, c.accountId)
+	createUsersURL, err := buildURL(c.baseURI, createUsers, c.accountId)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -170,9 +311,13 @@ func (c *Client) CreateUsers(ctx context.Context, request CreateUsersRequest) (*
 }
 
 func (c *Client) GetSigningGroups(ctx context.Context, options PageOptions) ([]SigningGroup, string, annotations.Annotations, error) {
+	if err := c.ensureInitialized(ctx); err != nil {
+		return nil, "", nil, err
+	}
+
 	var signingGroupsResponse SigningGroupResponse
 
-	baseURL, err := url.Parse(c.apiUrl)
+	baseURL, err := url.Parse(c.baseURI)
 	if err != nil {
 		return nil, "", nil, fmt.Errorf("invalid base URL: %w", err)
 	}
@@ -193,9 +338,13 @@ func (c *Client) GetSigningGroups(ctx context.Context, options PageOptions) ([]S
 }
 
 func (c *Client) GetSigningGroupUsers(ctx context.Context, groupId string, options PageOptions) ([]User, string, annotations.Annotations, error) {
+	if err := c.ensureInitialized(ctx); err != nil {
+		return nil, "", nil, err
+	}
+
 	var groupMembersResponse UsersResponse
 
-	baseURL, err := url.Parse(c.apiUrl)
+	baseURL, err := url.Parse(c.baseURI)
 	if err != nil {
 		return nil, "", nil, fmt.Errorf("invalid base URL: %w", err)
 	}
@@ -222,7 +371,11 @@ func (c *Client) GetSigningGroupUsers(ctx context.Context, groupId string, optio
 
 // GetUserByEmail retrieves a user filtering by the email and the user status 'Active' or 'Activation Sent'.
 func (c *Client) GetUserByEmail(ctx context.Context, userEmail string) (*User, annotations.Annotations, error) {
-	userURL, err := buildURL(c.apiUrl, getUsers, c.accountId)
+	if err := c.ensureInitialized(ctx); err != nil {
+		return nil, nil, err
+	}
+
+	userURL, err := buildURL(c.baseURI, getUsers, c.accountId)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -244,9 +397,13 @@ func (c *Client) GetUserByEmail(ctx context.Context, userEmail string) (*User, a
 }
 
 func (c *Client) GetPermissionProfiles(ctx context.Context) ([]PermissionProfile, annotations.Annotations, error) {
+	if err := c.ensureInitialized(ctx); err != nil {
+		return nil, nil, err
+	}
+
 	var permissionProfilesResponse PermissionProfilesResponse
 
-	baseURL, err := url.Parse(c.apiUrl)
+	baseURL, err := url.Parse(c.baseURI)
 	if err != nil {
 		return nil, nil, fmt.Errorf("invalid base URL: %w", err)
 	}

@@ -23,17 +23,17 @@ var (
 func initClient(t *testing.T) *client.Client {
 	ctx := context.Background()
 
-	apiURL, apiOK := os.LookupEnv("DOCUSIGN_API_URL")
-	accountID, accOK := os.LookupEnv("DOCUSIGN_ACCOUNT_ID")
+	isDemoStr, demoOK := os.LookupEnv("DOCUSIGN_IS_DEMO")
 	clientID, cliOK := os.LookupEnv("DOCUSIGN_CLIENT_ID")
 	clientSecret, secOK := os.LookupEnv("DOCUSIGN_CLIENT_SECRET")
 	redirectURI, redirOK := os.LookupEnv("DOCUSIGN_REDIRECT_URI")
 
-	if !apiOK || !accOK || !cliOK || !secOK || !redirOK {
+	if !demoOK || !cliOK || !secOK || !redirOK {
 		t.Skip("One or more required environment variables are missing. Skipping integration test.")
 	}
 
-	client, err := client.New(ctx, apiURL, accountID, clientID, clientSecret, redirectURI, "")
+	isDemo := isDemoStr == "true"
+	client, err := client.New(ctx, isDemo, clientID, clientSecret, redirectURI, "")
 	if err != nil {
 		t.Fatalf("Failed to create DocuSign client: %v", err)
 	}
