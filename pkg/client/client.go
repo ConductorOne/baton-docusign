@@ -251,10 +251,12 @@ func (c *Client) GetPermissionProfiles(ctx context.Context, options PageOptions)
 		return nil, "", nil, fmt.Errorf("invalid base URL: %w", err)
 	}
 
-	permissionProfilesURL, err := preparePagedRequest(baseURL, fmt.Sprintf(getPermissionProfiles, c.accountId), options)
+	permissionProfilesURL, err := url.Parse(fmt.Sprintf(getPermissionProfiles, c.accountId))
 	if err != nil {
-		return nil, "", nil, err
+		return nil, "", nil, fmt.Errorf("invalid endpoint: %w", err)
 	}
+
+	permissionProfilesURL = baseURL.ResolveReference(permissionProfilesURL)
 
 	_, annos, err := c.doRequest(ctx, http.MethodGet, permissionProfilesURL, &permissionProfilesResponse)
 	if err != nil {
