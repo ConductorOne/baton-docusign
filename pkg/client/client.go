@@ -243,27 +243,27 @@ func (c *Client) GetUserByEmail(ctx context.Context, userEmail string) (*User, a
 	return &user, annos, nil
 }
 
-func (c *Client) GetPermissionProfiles(ctx context.Context, options PageOptions) ([]PermissionProfile, string, annotations.Annotations, error) {
+func (c *Client) GetPermissionProfiles(ctx context.Context) ([]PermissionProfile, annotations.Annotations, error) {
 	var permissionProfilesResponse PermissionProfilesResponse
 
 	baseURL, err := url.Parse(c.apiUrl)
 	if err != nil {
-		return nil, "", nil, fmt.Errorf("invalid base URL: %w", err)
+		return nil, nil, fmt.Errorf("invalid base URL: %w", err)
 	}
 
-	permissionProfilesURL, err := preparePagedRequest(baseURL, fmt.Sprintf(getPermissionProfiles, c.accountId), options)
+	permissionProfilesURL, err := url.Parse(fmt.Sprintf(getPermissionProfiles, c.accountId))
 	if err != nil {
-		return nil, "", nil, err
+		return nil, nil, fmt.Errorf("invalid endpoint: %w", err)
 	}
+
+	permissionProfilesURL = baseURL.ResolveReference(permissionProfilesURL)
 
 	_, annos, err := c.doRequest(ctx, http.MethodGet, permissionProfilesURL, &permissionProfilesResponse)
 	if err != nil {
-		return nil, "", nil, err
+		return nil, nil, err
 	}
 
-	nextToken := getNextToken(permissionProfilesResponse.Page)
-
-	return permissionProfilesResponse.PermissionProfiles, nextToken, annos, nil
+	return permissionProfilesResponse.PermissionProfiles, annos, nil
 }
 
 // doRequestWithBody builds and executes a JSON POST/PUT request and decodes the response.

@@ -34,6 +34,7 @@ func doRequestCommon(wrapper *uhttp.BaseHttpClient, req *http.Request, res inter
 	if res != nil {
 		opts = append(opts, uhttp.WithJSONResponse(res))
 	}
+	opts = append(opts, uhttp.WithErrorResponse(&ErrorResponse{}))
 	resp, err := wrapper.Do(req, opts...)
 	if err != nil {
 		return nil, nil, err

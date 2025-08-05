@@ -1,6 +1,9 @@
 package client
 
-import "time"
+import (
+	"fmt"
+	"time"
+)
 
 type TokenResponse struct {
 	AccessToken  string `json:"access_token"`
@@ -19,6 +22,15 @@ type Page struct {
 	TotalSetSize  int `json:"totalSetSize,string"`
 	StartPosition int `json:"startPosition,string"`
 	EndPosition   int `json:"endPosition,string"`
+}
+
+type ErrorResponse struct {
+	ErrorCode    string `json:"errorCode"`
+	ErrorMessage string `json:"message"`
+}
+
+func (e *ErrorResponse) Message() string {
+	return fmt.Sprintf("message: %s, errorCode: %s", e.ErrorMessage, e.ErrorCode)
 }
 
 type pageToken struct {
