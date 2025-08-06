@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"sync"
 	"time"
 
 	"github.com/conductorone/baton-sdk/pkg/annotations"
@@ -31,12 +32,14 @@ const (
 
 // Client wraps HTTP interactions with the DocuSign API, handling auth and base URL.
 type Client struct {
-	isDemo        bool
-	tokenSource   oauth2.TokenSource
-	wrapper       *uhttp.BaseHttpClient
-	userInfoCache *UserInfoCache
-	baseURI       string
-	accountId     string
+	isDemo         bool
+	tokenSource    oauth2.TokenSource
+	wrapper        *uhttp.BaseHttpClient
+	baseURI        string
+	accountId      string
+	userInfo       *UserInfoResponse
+	userInfoExpiry time.Time
+	mutex          sync.RWMutex // protects baseURI, accountId, userInfo, and userInfoExpiry
 }
 
 // New constructs a Client with OAuth2 flow, now using dynamic base URI resolution.
@@ -45,10 +48,9 @@ func New(ctx context.Context, isDemo bool, clientID, clientSecret, redirectURI, 
 	baseClient := oauth2.NewClient(ctx, tokenSource)
 
 	return &Client{
-		isDemo:        isDemo,
-		tokenSource:   tokenSource,
-		wrapper:       uhttp.NewBaseHttpClient(baseClient),
-		userInfoCache: NewUserInfoCache(),
+		isDemo:      isDemo,
+		tokenSource: tokenSource,
+		wrapper:     uhttp.NewBaseHttpClient(baseClient),
 	}, nil
 }
 
@@ -63,10 +65,9 @@ func NewClient(ctx context.Context, isDemo bool, tokenSource oauth2.TokenSource,
 	}
 
 	return &Client{
-		isDemo:        isDemo,
-		tokenSource:   tokenSource,
-		wrapper:       wrapper,
-		userInfoCache: NewUserInfoCache(),
+		isDemo:      isDemo,
+		tokenSource: tokenSource,
+		wrapper:     wrapper,
 	}
 }
 
@@ -100,30 +101,16 @@ func (c *Client) fetchUserInfo(ctx context.Context) (*UserInfoResponse, error) {
 
 // ensureInitialized ensures the client has fetched user info and set base URI.
 func (c *Client) ensureInitialized(ctx context.Context) error {
-	// Get token for TTL calculation
-	token, err := c.tokenSource.Token()
-	if err != nil {
-		return fmt.Errorf("failed to get token: %w", err)
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+
+	// Check if we have valid cached user info
+	if c.userInfo != nil && time.Now().Before(c.userInfoExpiry) {
+		return nil
 	}
 
-	// Create fetch function
-	fetchFunc := func() (*UserInfoResponse, time.Duration, error) {
-		userInfo, err := c.fetchUserInfo(ctx)
-		if err != nil {
-			return nil, 0, err
-		}
-
-		// Calculate TTL based on token expiry (minus 5 minutes for safety)
-		ttl := time.Until(token.Expiry) - 5*time.Minute
-		if ttl <= 0 {
-			ttl = 5 * time.Minute // minimum cache time
-		}
-
-		return userInfo, ttl, nil
-	}
-
-	// Get or fetch user info
-	userInfo, err := c.userInfoCache.GetOrFetch(fetchFunc)
+	// Fetch fresh user info
+	userInfo, err := c.fetchUserInfo(ctx)
 	if err != nil {
 		return err
 	}
@@ -146,11 +133,41 @@ func (c *Client) ensureInitialized(ctx context.Context) error {
 		return fmt.Errorf("no valid account found in user info")
 	}
 
-	// Set the base URI and account ID (from the selected account)
+	// Update cached values with 1-hour expiry
+	c.userInfo = userInfo
+	c.userInfoExpiry = time.Now().Add(1 * time.Hour)
 	c.baseURI = selectedAccount.BaseURI
 	c.accountId = selectedAccount.AccountId
 
 	return nil
+}
+
+// getClientURL safely reads baseURI and accountId to build a URL.
+func (c *Client) getClientURL(path string, params ...interface{}) (*url.URL, error) {
+	c.mutex.RLock()
+	baseURI := c.baseURI
+	accountId := c.accountId
+	c.mutex.RUnlock()
+
+	return buildURL(baseURI, path, append([]interface{}{accountId}, params...)...)
+}
+
+// getClientBaseURL safely reads baseURI for URL parsing.
+func (c *Client) getClientBaseURL() (*url.URL, error) {
+	c.mutex.RLock()
+	baseURI := c.baseURI
+	c.mutex.RUnlock()
+
+	return url.Parse(baseURI)
+}
+
+// getClientAccountId safely reads accountId.
+func (c *Client) getClientAccountId() string {
+	c.mutex.RLock()
+	accountId := c.accountId
+	c.mutex.RUnlock()
+
+	return accountId
 }
 
 // GetUsers fetches a page of users and returns users, next page token, and annotations.
@@ -161,12 +178,12 @@ func (c *Client) GetUsers(ctx context.Context, options PageOptions) ([]User, str
 
 	var usersResponse UsersResponse
 
-	baseURL, err := url.Parse(c.baseURI)
+	baseURL, err := c.getClientBaseURL()
 	if err != nil {
 		return nil, "", nil, fmt.Errorf("invalid base URL: %w", err)
 	}
 
-	usersURL, err := preparePagedRequest(baseURL, fmt.Sprintf(getUsers, c.accountId), options)
+	usersURL, err := preparePagedRequest(baseURL, fmt.Sprintf(getUsers, c.getClientAccountId()), options)
 	if err != nil {
 		return nil, "", nil, err
 	}
@@ -189,12 +206,12 @@ func (c *Client) GetGroups(ctx context.Context, options PageOptions) ([]Group, s
 
 	var groupsResponse GroupsResponse
 
-	baseURL, err := url.Parse(c.baseURI)
+	baseURL, err := c.getClientBaseURL()
 	if err != nil {
 		return nil, "", nil, fmt.Errorf("invalid base URL: %w", err)
 	}
 
-	groupsURL, err := preparePagedRequest(baseURL, fmt.Sprintf(getGroups, c.accountId), options)
+	groupsURL, err := preparePagedRequest(baseURL, fmt.Sprintf(getGroups, c.getClientAccountId()), options)
 	if err != nil {
 		return nil, "", nil, err
 	}
@@ -217,12 +234,12 @@ func (c *Client) GetGroupUsers(ctx context.Context, groupId string, options Page
 
 	var usersResponse UsersResponse
 
-	baseURL, err := url.Parse(c.baseURI)
+	baseURL, err := c.getClientBaseURL()
 	if err != nil {
 		return nil, "", nil, fmt.Errorf("invalid base URL: %w", err)
 	}
 
-	groupUsersURL, err := preparePagedRequest(baseURL, fmt.Sprintf(getGroupUsers, c.accountId, groupId), options)
+	groupUsersURL, err := preparePagedRequest(baseURL, fmt.Sprintf(getGroupUsers, c.getClientAccountId(), groupId), options)
 	if err != nil {
 		return nil, "", nil, err
 	}
@@ -243,7 +260,7 @@ func (c *Client) GetUserDetails(ctx context.Context, userID string) (*UserDetail
 		return nil, nil, err
 	}
 
-	userURL, err := buildURL(c.baseURI, getPermissions, c.accountId, userID)
+	userURL, err := c.getClientURL(getPermissions, userID)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -267,7 +284,7 @@ func (c *Client) CreateUsers(ctx context.Context, request CreateUsersRequest) (*
 		return nil, nil, fmt.Errorf("at least one user must be provided")
 	}
 
-	createUsersURL, err := buildURL(c.baseURI, createUsers, c.accountId)
+	createUsersURL, err := c.getClientURL(createUsers)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -288,12 +305,12 @@ func (c *Client) GetSigningGroups(ctx context.Context, options PageOptions) ([]S
 
 	var signingGroupsResponse SigningGroupResponse
 
-	baseURL, err := url.Parse(c.baseURI)
+	baseURL, err := c.getClientBaseURL()
 	if err != nil {
 		return nil, "", nil, fmt.Errorf("invalid base URL: %w", err)
 	}
 
-	signingGroupsURL, err := preparePagedRequest(baseURL, fmt.Sprintf(getSigningGroups, c.accountId), options)
+	signingGroupsURL, err := preparePagedRequest(baseURL, fmt.Sprintf(getSigningGroups, c.getClientAccountId()), options)
 	if err != nil {
 		return nil, "", nil, err
 	}
@@ -315,12 +332,12 @@ func (c *Client) GetSigningGroupUsers(ctx context.Context, groupId string, optio
 
 	var groupMembersResponse UsersResponse
 
-	baseURL, err := url.Parse(c.baseURI)
+	baseURL, err := c.getClientBaseURL()
 	if err != nil {
 		return nil, "", nil, fmt.Errorf("invalid base URL: %w", err)
 	}
 
-	getSignedGroupDetailsURL, err := url.JoinPath(fmt.Sprintf(getSigningGroups, c.accountId), groupId)
+	getSignedGroupDetailsURL, err := url.JoinPath(fmt.Sprintf(getSigningGroups, c.getClientAccountId()), groupId)
 	if err != nil {
 		return nil, "", nil, err
 	}
@@ -346,7 +363,7 @@ func (c *Client) GetUserByEmail(ctx context.Context, userEmail string) (*User, a
 		return nil, nil, err
 	}
 
-	userURL, err := buildURL(c.baseURI, getUsers, c.accountId)
+	userURL, err := c.getClientURL(getUsers)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -374,12 +391,12 @@ func (c *Client) GetPermissionProfiles(ctx context.Context) ([]PermissionProfile
 
 	var permissionProfilesResponse PermissionProfilesResponse
 
-	baseURL, err := url.Parse(c.baseURI)
+	baseURL, err := c.getClientBaseURL()
 	if err != nil {
 		return nil, nil, fmt.Errorf("invalid base URL: %w", err)
 	}
 
-	permissionProfilesURL, err := url.Parse(fmt.Sprintf(getPermissionProfiles, c.accountId))
+	permissionProfilesURL, err := url.Parse(fmt.Sprintf(getPermissionProfiles, c.getClientAccountId()))
 	if err != nil {
 		return nil, nil, fmt.Errorf("invalid endpoint: %w", err)
 	}

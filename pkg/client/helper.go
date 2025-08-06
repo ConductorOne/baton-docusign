@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"sync"
-	"time"
 
 	"github.com/conductorone/baton-sdk/pkg/annotations"
 	"github.com/conductorone/baton-sdk/pkg/ratelimit"
@@ -117,62 +115,4 @@ func ApplyQueryParam(reqURL *url.URL, key string, value string) {
 	q := reqURL.Query()
 	q.Set(key, value)
 	reqURL.RawQuery = q.Encode()
-}
-
-// CacheItem holds cached User Info data with expiry time.
-type CacheItem struct {
-	UserInfo  *UserInfoResponse
-	ExpiresAt time.Time
-}
-
-// FetchFunc is a function type for fetching User Info data.
-type FetchFunc func() (*UserInfoResponse, time.Duration, error)
-
-// UserInfoCache provides thread-safe caching for User Info responses.
-type UserInfoCache struct {
-	item  *CacheItem
-	mutex sync.RWMutex
-}
-
-// NewUserInfoCache creates a new UserInfoCache instance.
-func NewUserInfoCache() *UserInfoCache {
-	return &UserInfoCache{}
-}
-
-// GetOrFetch retrieves User Info data from cache or fetches it if not present/expired.
-func (c *UserInfoCache) GetOrFetch(fetchFunc FetchFunc) (*UserInfoResponse, error) {
-	// First, try to get from cache with read lock
-	c.mutex.RLock()
-	if c.item != nil && time.Now().Before(c.item.ExpiresAt) {
-		// Cache hit and not expired
-		userInfo := c.item.UserInfo
-		c.mutex.RUnlock()
-		return userInfo, nil
-	}
-	c.mutex.RUnlock()
-
-	// Cache miss or expired - need to fetch with write lock
-	c.mutex.Lock()
-	defer c.mutex.Unlock()
-
-	// Double-check in case another goroutine fetched while we waited for write lock
-	if c.item != nil && time.Now().Before(c.item.ExpiresAt) {
-		return c.item.UserInfo, nil
-	}
-
-	// Fetch new data
-	userInfo, ttl, err := fetchFunc()
-	if err != nil {
-		// Clear expired item on fetch failure
-		c.item = nil
-		return nil, err
-	}
-
-	// Store in cache
-	c.item = &CacheItem{
-		UserInfo:  userInfo,
-		ExpiresAt: time.Now().Add(ttl),
-	}
-
-	return userInfo, nil
 }
