@@ -37,7 +37,6 @@ type Client struct {
 	userInfoCache *UserInfoCache
 	baseURI       string
 	accountId     string
-	initialized   bool
 }
 
 // New constructs a Client with OAuth2 flow, now using dynamic base URI resolution.
@@ -50,7 +49,6 @@ func New(ctx context.Context, isDemo bool, clientID, clientSecret, redirectURI, 
 		tokenSource:   tokenSource,
 		wrapper:       uhttp.NewBaseHttpClient(baseClient),
 		userInfoCache: NewUserInfoCache(),
-		initialized:   false,
 	}, nil
 }
 
@@ -69,7 +67,6 @@ func NewClient(ctx context.Context, isDemo bool, tokenSource oauth2.TokenSource,
 		tokenSource:   tokenSource,
 		wrapper:       wrapper,
 		userInfoCache: NewUserInfoCache(),
-		initialized:   false,
 	}
 }
 
@@ -103,10 +100,6 @@ func (c *Client) fetchUserInfo(ctx context.Context) (*UserInfoResponse, error) {
 
 // ensureInitialized ensures the client has fetched user info and set base URI.
 func (c *Client) ensureInitialized(ctx context.Context) error {
-	if c.initialized {
-		return nil
-	}
-
 	// Get token for TTL calculation
 	token, err := c.tokenSource.Token()
 	if err != nil {
@@ -156,7 +149,6 @@ func (c *Client) ensureInitialized(ctx context.Context) error {
 	// Set the base URI and account ID (from the selected account)
 	c.baseURI = selectedAccount.BaseURI
 	c.accountId = selectedAccount.AccountId
-	c.initialized = true
 
 	return nil
 }
