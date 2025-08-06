@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"sync"
+	"time"
 
 	"github.com/conductorone/baton-sdk/pkg/annotations"
 	"github.com/conductorone/baton-sdk/pkg/uhttp"
@@ -22,29 +24,38 @@ const (
 	getPermissionProfiles = "/restapi/v2.1/accounts/%s/permission_profiles"
 )
 
+// OAuth User Info endpoints.
+const (
+	userInfoEndpointDemo = "https://account-d.docusign.com/oauth/userinfo"
+	userInfoEndpointProd = "https://account.docusign.com/oauth/userinfo"
+)
+
 // Client wraps HTTP interactions with the DocuSign API, handling auth and base URL.
 type Client struct {
-	apiUrl      string
-	tokenSource oauth2.TokenSource
-	accountId   string
-	wrapper     *uhttp.BaseHttpClient
+	isDemo         bool
+	tokenSource    oauth2.TokenSource
+	wrapper        *uhttp.BaseHttpClient
+	baseURI        string
+	accountId      string
+	userInfo       *UserInfoResponse
+	userInfoExpiry time.Time
+	mutex          sync.RWMutex // protects baseURI, accountId, userInfo, and userInfoExpiry
 }
 
-// New constructs a Client, choosing OAuth2 interactive flow or direct token based on accessToken.
-func New(ctx context.Context, apiUrl, accountId, clientID, clientSecret, redirectURI, refreshToken string) (*Client, error) {
+// New constructs a Client with OAuth2 flow, now using dynamic base URI resolution.
+func New(ctx context.Context, isDemo bool, clientID, clientSecret, redirectURI, refreshToken string) (*Client, error) {
 	tokenSource := getTokenSource(ctx, clientID, clientSecret, redirectURI, refreshToken)
 	baseClient := oauth2.NewClient(ctx, tokenSource)
 
 	return &Client{
-		apiUrl:      apiUrl,
+		isDemo:      isDemo,
 		tokenSource: tokenSource,
-		accountId:   accountId,
 		wrapper:     uhttp.NewBaseHttpClient(baseClient),
 	}, nil
 }
 
 // NewClient initializes a Client with a fixed token and optional HTTP wrapper.
-func NewClient(ctx context.Context, apiUrl, accountId string, tokenSource oauth2.TokenSource, httpClient ...*uhttp.BaseHttpClient) *Client {
+func NewClient(ctx context.Context, isDemo bool, tokenSource oauth2.TokenSource, httpClient ...*uhttp.BaseHttpClient) *Client {
 	var wrapper *uhttp.BaseHttpClient
 	if len(httpClient) > 0 {
 		wrapper = httpClient[0]
@@ -54,23 +65,157 @@ func NewClient(ctx context.Context, apiUrl, accountId string, tokenSource oauth2
 	}
 
 	return &Client{
-		apiUrl:      apiUrl,
+		isDemo:      isDemo,
 		tokenSource: tokenSource,
-		accountId:   accountId,
 		wrapper:     wrapper,
 	}
 }
 
-// GetUsers fetches a page of users and returns users, next page token, and annotations.
-func (c *Client) GetUsers(ctx context.Context, options PageOptions) ([]User, string, annotations.Annotations, error) {
-	var usersResponse UsersResponse
-
-	baseURL, err := url.Parse(c.apiUrl)
-	if err != nil {
-		return nil, "", nil, fmt.Errorf("invalid base URL: %w", err)
+// fetchUserInfo calls the DocuSign OAuth User Info endpoint to get account details.
+func (c *Client) fetchUserInfo(ctx context.Context) (*UserInfoResponse, error) {
+	var userInfoEndpoint string
+	if c.isDemo {
+		userInfoEndpoint = userInfoEndpointDemo
+	} else {
+		userInfoEndpoint = userInfoEndpointProd
 	}
 
-	usersURL, err := preparePagedRequest(baseURL, fmt.Sprintf(getUsers, c.accountId), options)
+	userInfoURL, err := url.Parse(userInfoEndpoint)
+	if err != nil {
+		return nil, fmt.Errorf("invalid user info endpoint: %w", err)
+	}
+
+	var userInfo UserInfoResponse
+	_, _, err = c.doRequest(ctx, http.MethodGet, userInfoURL, &userInfo)
+	if err != nil {
+		// Wrap the error so baton-sdk can handle retries
+		return nil, fmt.Errorf("failed to fetch user info: %w", err)
+	}
+
+	if len(userInfo.Accounts) == 0 {
+		return nil, fmt.Errorf("no accounts found in user info response")
+	}
+
+	return &userInfo, nil
+}
+
+// ensureInitialized ensures the client has fetched user info and set base URI.
+func (c *Client) ensureInitialized(ctx context.Context) error {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+
+	// Check if we have valid cached user info
+	if c.userInfo != nil && time.Now().Before(c.userInfoExpiry) {
+		return nil
+	}
+
+	// Fetch fresh user info
+	userInfo, err := c.fetchUserInfo(ctx)
+	if err != nil {
+		return err
+	}
+
+	// Find the appropriate account
+	var selectedAccount *AccountInfo
+	for _, account := range userInfo.Accounts {
+		if account.IsDefault {
+			selectedAccount = &account
+			break
+		}
+	}
+
+	// If no default account, use the first one
+	if selectedAccount == nil && len(userInfo.Accounts) > 0 {
+		selectedAccount = &userInfo.Accounts[0]
+	}
+
+	if selectedAccount == nil {
+		return fmt.Errorf("no valid account found in user info")
+	}
+
+	// Update cached values with 1-hour expiry
+	c.userInfo = userInfo
+	c.userInfoExpiry = time.Now().Add(1 * time.Hour)
+	c.baseURI = selectedAccount.BaseURI
+	c.accountId = selectedAccount.AccountId
+
+	return nil
+}
+
+// buildClientURL safely reads baseURI and accountId to build a URL.
+func (c *Client) buildClientURL(path string, params ...interface{}) (*url.URL, error) {
+	c.mutex.RLock()
+	baseURI := c.baseURI
+	accountId := c.accountId
+	c.mutex.RUnlock()
+
+	return buildURL(baseURI, path, append([]interface{}{accountId}, params...)...)
+}
+
+// prepareClientPagedRequest safely prepares a paged request URL with client's baseURI and accountId.
+func (c *Client) prepareClientPagedRequest(endpoint string, options PageOptions) (*url.URL, error) {
+	c.mutex.RLock()
+	baseURI := c.baseURI
+	accountId := c.accountId
+	c.mutex.RUnlock()
+
+	baseURL, err := url.Parse(baseURI)
+	if err != nil {
+		return nil, fmt.Errorf("invalid base URL: %w", err)
+	}
+
+	return preparePagedRequest(baseURL, fmt.Sprintf(endpoint, accountId), options)
+}
+
+// prepareSigningGroupUsersRequest handles the special case for signing group users.
+func (c *Client) prepareSigningGroupUsersRequest(groupId string, options PageOptions) (*url.URL, error) {
+	c.mutex.RLock()
+	baseURI := c.baseURI
+	accountId := c.accountId
+	c.mutex.RUnlock()
+
+	baseURL, err := url.Parse(baseURI)
+	if err != nil {
+		return nil, fmt.Errorf("invalid base URL: %w", err)
+	}
+
+	getSignedGroupDetailsURL, err := url.JoinPath(fmt.Sprintf(getSigningGroups, accountId), groupId)
+	if err != nil {
+		return nil, err
+	}
+
+	return preparePagedRequest(baseURL, getSignedGroupDetailsURL, options)
+}
+
+// buildPermissionProfilesURL handles the special case for permission profiles.
+func (c *Client) buildPermissionProfilesURL() (*url.URL, *url.URL, error) {
+	c.mutex.RLock()
+	baseURI := c.baseURI
+	accountId := c.accountId
+	c.mutex.RUnlock()
+
+	baseURL, err := url.Parse(baseURI)
+	if err != nil {
+		return nil, nil, fmt.Errorf("invalid base URL: %w", err)
+	}
+
+	permissionProfilesURL, err := url.Parse(fmt.Sprintf(getPermissionProfiles, accountId))
+	if err != nil {
+		return nil, nil, fmt.Errorf("invalid endpoint: %w", err)
+	}
+
+	return baseURL, permissionProfilesURL, nil
+}
+
+// GetUsers fetches a page of users and returns users, next page token, and annotations.
+func (c *Client) GetUsers(ctx context.Context, options PageOptions) ([]User, string, annotations.Annotations, error) {
+	if err := c.ensureInitialized(ctx); err != nil {
+		return nil, "", nil, err
+	}
+
+	var usersResponse UsersResponse
+
+	usersURL, err := c.prepareClientPagedRequest(getUsers, options)
 	if err != nil {
 		return nil, "", nil, err
 	}
@@ -87,14 +232,13 @@ func (c *Client) GetUsers(ctx context.Context, options PageOptions) ([]User, str
 
 // GetGroups fetches a page of groups and handles pagination and rate limit annotations.
 func (c *Client) GetGroups(ctx context.Context, options PageOptions) ([]Group, string, annotations.Annotations, error) {
-	var groupsResponse GroupsResponse
-
-	baseURL, err := url.Parse(c.apiUrl)
-	if err != nil {
-		return nil, "", nil, fmt.Errorf("invalid base URL: %w", err)
+	if err := c.ensureInitialized(ctx); err != nil {
+		return nil, "", nil, err
 	}
 
-	groupsURL, err := preparePagedRequest(baseURL, fmt.Sprintf(getGroups, c.accountId), options)
+	var groupsResponse GroupsResponse
+
+	groupsURL, err := c.prepareClientPagedRequest(getGroups, options)
 	if err != nil {
 		return nil, "", nil, err
 	}
@@ -111,14 +255,13 @@ func (c *Client) GetGroups(ctx context.Context, options PageOptions) ([]Group, s
 
 // GetGroupUsers fetches users for a group with pagination support.
 func (c *Client) GetGroupUsers(ctx context.Context, groupId string, options PageOptions) ([]User, string, annotations.Annotations, error) {
-	var usersResponse UsersResponse
-
-	baseURL, err := url.Parse(c.apiUrl)
-	if err != nil {
-		return nil, "", nil, fmt.Errorf("invalid base URL: %w", err)
+	if err := c.ensureInitialized(ctx); err != nil {
+		return nil, "", nil, err
 	}
 
-	groupUsersURL, err := preparePagedRequest(baseURL, fmt.Sprintf(getGroupUsers, c.accountId, groupId), options)
+	var usersResponse UsersResponse
+
+	groupUsersURL, err := c.prepareClientPagedRequest(fmt.Sprintf(getGroupUsers, "%s", groupId), options)
 	if err != nil {
 		return nil, "", nil, err
 	}
@@ -135,7 +278,11 @@ func (c *Client) GetGroupUsers(ctx context.Context, groupId string, options Page
 
 // GetUserDetails fetches detailed information for a specific user, including permissions.
 func (c *Client) GetUserDetails(ctx context.Context, userID string) (*UserDetail, annotations.Annotations, error) {
-	userURL, err := buildURL(c.apiUrl, getPermissions, c.accountId, userID)
+	if err := c.ensureInitialized(ctx); err != nil {
+		return nil, nil, err
+	}
+
+	userURL, err := c.buildClientURL(getPermissions, userID)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -151,11 +298,15 @@ func (c *Client) GetUserDetails(ctx context.Context, userID string) (*UserDetail
 
 // CreateUsers sends a bulk create request for new users in the account.
 func (c *Client) CreateUsers(ctx context.Context, request CreateUsersRequest) (*UserCreationResponse, annotations.Annotations, error) {
+	if err := c.ensureInitialized(ctx); err != nil {
+		return nil, nil, err
+	}
+
 	if len(request.NewUsers) == 0 {
 		return nil, nil, fmt.Errorf("at least one user must be provided")
 	}
 
-	createUsersURL, err := buildURL(c.apiUrl, createUsers, c.accountId)
+	createUsersURL, err := c.buildClientURL(createUsers)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -170,14 +321,13 @@ func (c *Client) CreateUsers(ctx context.Context, request CreateUsersRequest) (*
 }
 
 func (c *Client) GetSigningGroups(ctx context.Context, options PageOptions) ([]SigningGroup, string, annotations.Annotations, error) {
-	var signingGroupsResponse SigningGroupResponse
-
-	baseURL, err := url.Parse(c.apiUrl)
-	if err != nil {
-		return nil, "", nil, fmt.Errorf("invalid base URL: %w", err)
+	if err := c.ensureInitialized(ctx); err != nil {
+		return nil, "", nil, err
 	}
 
-	signingGroupsURL, err := preparePagedRequest(baseURL, fmt.Sprintf(getSigningGroups, c.accountId), options)
+	var signingGroupsResponse SigningGroupResponse
+
+	signingGroupsURL, err := c.prepareClientPagedRequest(getSigningGroups, options)
 	if err != nil {
 		return nil, "", nil, err
 	}
@@ -193,19 +343,13 @@ func (c *Client) GetSigningGroups(ctx context.Context, options PageOptions) ([]S
 }
 
 func (c *Client) GetSigningGroupUsers(ctx context.Context, groupId string, options PageOptions) ([]User, string, annotations.Annotations, error) {
-	var groupMembersResponse UsersResponse
-
-	baseURL, err := url.Parse(c.apiUrl)
-	if err != nil {
-		return nil, "", nil, fmt.Errorf("invalid base URL: %w", err)
-	}
-
-	getSignedGroupDetailsURL, err := url.JoinPath(fmt.Sprintf(getSigningGroups, c.accountId), groupId)
-	if err != nil {
+	if err := c.ensureInitialized(ctx); err != nil {
 		return nil, "", nil, err
 	}
 
-	signedGroupDetailsURL, err := preparePagedRequest(baseURL, getSignedGroupDetailsURL, options)
+	var groupMembersResponse UsersResponse
+
+	signedGroupDetailsURL, err := c.prepareSigningGroupUsersRequest(groupId, options)
 	if err != nil {
 		return nil, "", nil, err
 	}
@@ -222,7 +366,11 @@ func (c *Client) GetSigningGroupUsers(ctx context.Context, groupId string, optio
 
 // GetUserByEmail retrieves a user filtering by the email and the user status 'Active' or 'Activation Sent'.
 func (c *Client) GetUserByEmail(ctx context.Context, userEmail string) (*User, annotations.Annotations, error) {
-	userURL, err := buildURL(c.apiUrl, getUsers, c.accountId)
+	if err := c.ensureInitialized(ctx); err != nil {
+		return nil, nil, err
+	}
+
+	userURL, err := c.buildClientURL(getUsers)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -244,16 +392,15 @@ func (c *Client) GetUserByEmail(ctx context.Context, userEmail string) (*User, a
 }
 
 func (c *Client) GetPermissionProfiles(ctx context.Context) ([]PermissionProfile, annotations.Annotations, error) {
-	var permissionProfilesResponse PermissionProfilesResponse
-
-	baseURL, err := url.Parse(c.apiUrl)
-	if err != nil {
-		return nil, nil, fmt.Errorf("invalid base URL: %w", err)
+	if err := c.ensureInitialized(ctx); err != nil {
+		return nil, nil, err
 	}
 
-	permissionProfilesURL, err := url.Parse(fmt.Sprintf(getPermissionProfiles, c.accountId))
+	var permissionProfilesResponse PermissionProfilesResponse
+
+	baseURL, permissionProfilesURL, err := c.buildPermissionProfilesURL()
 	if err != nil {
-		return nil, nil, fmt.Errorf("invalid endpoint: %w", err)
+		return nil, nil, err
 	}
 
 	permissionProfilesURL = baseURL.ResolveReference(permissionProfilesURL)

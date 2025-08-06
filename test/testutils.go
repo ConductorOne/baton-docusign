@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -120,9 +121,76 @@ func ReadFile(fileName string) string {
 	return string(data)
 }
 
+// MultiEndpointMockTransport handles multiple endpoints with different responses.
+type MultiEndpointMockTransport struct {
+	Responses map[string]*http.Response
+	Errors    map[string]error
+}
+
+func (m *MultiEndpointMockTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	reqURL := req.URL.String()
+
+	// Check for User Info endpoint first
+	if strings.Contains(reqURL, "account-d.docusign.com/oauth/userinfo") || strings.Contains(reqURL, "account.docusign.com/oauth/userinfo") {
+		return createUserInfoResponse(), nil
+	}
+
+	// For other endpoints, match by path only since baseURL in test varies
+	requestPath := req.URL.Path
+	for responseURL, resp := range m.Responses {
+		parsedURL, err := url.Parse(responseURL)
+		if err != nil {
+			continue
+		}
+		if parsedURL.Path == requestPath {
+			return resp, m.Errors[responseURL]
+		}
+	}
+
+	// Default fallback with proper headers
+	header := make(http.Header)
+	header.Set("Content-Type", "application/json")
+
+	return &http.Response{
+		StatusCode: http.StatusNotFound,
+		Header:     header,
+		Body:       io.NopCloser(strings.NewReader(`{"error": "not found"}`)),
+	}, nil
+}
+
+func createUserInfoResponse() *http.Response {
+	userInfoJSON := `{
+		"sub": "test-user-id",
+		"name": "Test User",
+		"email": "test@example.com",
+		"accounts": [
+			{
+				"account_id": "` + MockAccountID + `",
+				"is_default": true,
+				"account_name": "Test Account",
+				"base_uri": "` + MockBaseURL + `",
+				"organization_id": "test-org-id"
+			}
+		]
+	}`
+
+	header := make(http.Header)
+	header.Set("Content-Type", "application/json")
+
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     header,
+		Body:       io.NopCloser(strings.NewReader(userInfoJSON)),
+	}
+}
+
 // NewTestClient prepares a Client pointing to a mock endpoint.
 func NewTestClient(response *http.Response, err error) *client.Client {
-	mockTransport := &MockRoundTripper{Response: response, Err: err}
+	mockTransport := &MultiEndpointMockTransport{
+		Responses: map[string]*http.Response{},
+		Errors:    map[string]error{},
+	}
+
 	httpClient := &http.Client{Transport: mockTransport}
 	baseHttpClient := uhttp.NewBaseHttpClient(httpClient)
 	staticTokenSource := oauth2.StaticTokenSource(&oauth2.Token{
@@ -131,8 +199,7 @@ func NewTestClient(response *http.Response, err error) *client.Client {
 	})
 	return client.NewClient(
 		context.Background(),
-		MockBaseURL,
-		MockAccountID,
+		true, // isDemo
 		staticTokenSource,
 		baseHttpClient,
 	)

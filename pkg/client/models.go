@@ -178,3 +178,20 @@ type PermissionProfile struct {
 	LastModifiedDateTime  time.Time `json:"lastModifiedDateTime"`
 	ModifiedByUserName    string    `json:"modifiedByUserName"`
 }
+
+// UserInfoResponse represents the response from DocuSign's OAuth User Info endpoint.
+type UserInfoResponse struct {
+	Sub      string        `json:"sub"`
+	Name     string        `json:"name"`
+	Email    string        `json:"email"`
+	Accounts []AccountInfo `json:"accounts"`
+}
+
+// AccountInfo represents account information from the User Info response.
+type AccountInfo struct {
+	AccountId      string `json:"account_id"`
+	IsDefault      bool   `json:"is_default"`
+	AccountName    string `json:"account_name"`
+	BaseURI        string `json:"base_uri"`
+	OrganizationId string `json:"organization_id"`
+}
