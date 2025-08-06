@@ -142,8 +142,8 @@ func (c *Client) ensureInitialized(ctx context.Context) error {
 	return nil
 }
 
-// getClientURL safely reads baseURI and accountId to build a URL.
-func (c *Client) getClientURL(path string, params ...interface{}) (*url.URL, error) {
+// buildClientURL safely reads baseURI and accountId to build a URL.
+func (c *Client) buildClientURL(path string, params ...interface{}) (*url.URL, error) {
 	c.mutex.RLock()
 	baseURI := c.baseURI
 	accountId := c.accountId
@@ -152,22 +152,59 @@ func (c *Client) getClientURL(path string, params ...interface{}) (*url.URL, err
 	return buildURL(baseURI, path, append([]interface{}{accountId}, params...)...)
 }
 
-// getClientBaseURL safely reads baseURI for URL parsing.
-func (c *Client) getClientBaseURL() (*url.URL, error) {
+// prepareClientPagedRequest safely prepares a paged request URL with client's baseURI and accountId.
+func (c *Client) prepareClientPagedRequest(endpoint string, options PageOptions) (*url.URL, error) {
 	c.mutex.RLock()
 	baseURI := c.baseURI
-	c.mutex.RUnlock()
-
-	return url.Parse(baseURI)
-}
-
-// getClientAccountId safely reads accountId.
-func (c *Client) getClientAccountId() string {
-	c.mutex.RLock()
 	accountId := c.accountId
 	c.mutex.RUnlock()
 
-	return accountId
+	baseURL, err := url.Parse(baseURI)
+	if err != nil {
+		return nil, fmt.Errorf("invalid base URL: %w", err)
+	}
+
+	return preparePagedRequest(baseURL, fmt.Sprintf(endpoint, accountId), options)
+}
+
+// prepareSigningGroupUsersRequest handles the special case for signing group users.
+func (c *Client) prepareSigningGroupUsersRequest(groupId string, options PageOptions) (*url.URL, error) {
+	c.mutex.RLock()
+	baseURI := c.baseURI
+	accountId := c.accountId
+	c.mutex.RUnlock()
+
+	baseURL, err := url.Parse(baseURI)
+	if err != nil {
+		return nil, fmt.Errorf("invalid base URL: %w", err)
+	}
+
+	getSignedGroupDetailsURL, err := url.JoinPath(fmt.Sprintf(getSigningGroups, accountId), groupId)
+	if err != nil {
+		return nil, err
+	}
+
+	return preparePagedRequest(baseURL, getSignedGroupDetailsURL, options)
+}
+
+// buildPermissionProfilesURL handles the special case for permission profiles.
+func (c *Client) buildPermissionProfilesURL() (*url.URL, *url.URL, error) {
+	c.mutex.RLock()
+	baseURI := c.baseURI
+	accountId := c.accountId
+	c.mutex.RUnlock()
+
+	baseURL, err := url.Parse(baseURI)
+	if err != nil {
+		return nil, nil, fmt.Errorf("invalid base URL: %w", err)
+	}
+
+	permissionProfilesURL, err := url.Parse(fmt.Sprintf(getPermissionProfiles, accountId))
+	if err != nil {
+		return nil, nil, fmt.Errorf("invalid endpoint: %w", err)
+	}
+
+	return baseURL, permissionProfilesURL, nil
 }
 
 // GetUsers fetches a page of users and returns users, next page token, and annotations.
@@ -178,12 +215,7 @@ func (c *Client) GetUsers(ctx context.Context, options PageOptions) ([]User, str
 
 	var usersResponse UsersResponse
 
-	baseURL, err := c.getClientBaseURL()
-	if err != nil {
-		return nil, "", nil, fmt.Errorf("invalid base URL: %w", err)
-	}
-
-	usersURL, err := preparePagedRequest(baseURL, fmt.Sprintf(getUsers, c.getClientAccountId()), options)
+	usersURL, err := c.prepareClientPagedRequest(getUsers, options)
 	if err != nil {
 		return nil, "", nil, err
 	}
@@ -206,12 +238,7 @@ func (c *Client) GetGroups(ctx context.Context, options PageOptions) ([]Group, s
 
 	var groupsResponse GroupsResponse
 
-	baseURL, err := c.getClientBaseURL()
-	if err != nil {
-		return nil, "", nil, fmt.Errorf("invalid base URL: %w", err)
-	}
-
-	groupsURL, err := preparePagedRequest(baseURL, fmt.Sprintf(getGroups, c.getClientAccountId()), options)
+	groupsURL, err := c.prepareClientPagedRequest(getGroups, options)
 	if err != nil {
 		return nil, "", nil, err
 	}
@@ -234,12 +261,7 @@ func (c *Client) GetGroupUsers(ctx context.Context, groupId string, options Page
 
 	var usersResponse UsersResponse
 
-	baseURL, err := c.getClientBaseURL()
-	if err != nil {
-		return nil, "", nil, fmt.Errorf("invalid base URL: %w", err)
-	}
-
-	groupUsersURL, err := preparePagedRequest(baseURL, fmt.Sprintf(getGroupUsers, c.getClientAccountId(), groupId), options)
+	groupUsersURL, err := c.prepareClientPagedRequest(fmt.Sprintf(getGroupUsers, "%s", groupId), options)
 	if err != nil {
 		return nil, "", nil, err
 	}
@@ -260,7 +282,7 @@ func (c *Client) GetUserDetails(ctx context.Context, userID string) (*UserDetail
 		return nil, nil, err
 	}
 
-	userURL, err := c.getClientURL(getPermissions, userID)
+	userURL, err := c.buildClientURL(getPermissions, userID)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -284,7 +306,7 @@ func (c *Client) CreateUsers(ctx context.Context, request CreateUsersRequest) (*
 		return nil, nil, fmt.Errorf("at least one user must be provided")
 	}
 
-	createUsersURL, err := c.getClientURL(createUsers)
+	createUsersURL, err := c.buildClientURL(createUsers)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -305,12 +327,7 @@ func (c *Client) GetSigningGroups(ctx context.Context, options PageOptions) ([]S
 
 	var signingGroupsResponse SigningGroupResponse
 
-	baseURL, err := c.getClientBaseURL()
-	if err != nil {
-		return nil, "", nil, fmt.Errorf("invalid base URL: %w", err)
-	}
-
-	signingGroupsURL, err := preparePagedRequest(baseURL, fmt.Sprintf(getSigningGroups, c.getClientAccountId()), options)
+	signingGroupsURL, err := c.prepareClientPagedRequest(getSigningGroups, options)
 	if err != nil {
 		return nil, "", nil, err
 	}
@@ -332,17 +349,7 @@ func (c *Client) GetSigningGroupUsers(ctx context.Context, groupId string, optio
 
 	var groupMembersResponse UsersResponse
 
-	baseURL, err := c.getClientBaseURL()
-	if err != nil {
-		return nil, "", nil, fmt.Errorf("invalid base URL: %w", err)
-	}
-
-	getSignedGroupDetailsURL, err := url.JoinPath(fmt.Sprintf(getSigningGroups, c.getClientAccountId()), groupId)
-	if err != nil {
-		return nil, "", nil, err
-	}
-
-	signedGroupDetailsURL, err := preparePagedRequest(baseURL, getSignedGroupDetailsURL, options)
+	signedGroupDetailsURL, err := c.prepareSigningGroupUsersRequest(groupId, options)
 	if err != nil {
 		return nil, "", nil, err
 	}
@@ -363,7 +370,7 @@ func (c *Client) GetUserByEmail(ctx context.Context, userEmail string) (*User, a
 		return nil, nil, err
 	}
 
-	userURL, err := c.getClientURL(getUsers)
+	userURL, err := c.buildClientURL(getUsers)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -391,14 +398,9 @@ func (c *Client) GetPermissionProfiles(ctx context.Context) ([]PermissionProfile
 
 	var permissionProfilesResponse PermissionProfilesResponse
 
-	baseURL, err := c.getClientBaseURL()
+	baseURL, permissionProfilesURL, err := c.buildPermissionProfilesURL()
 	if err != nil {
-		return nil, nil, fmt.Errorf("invalid base URL: %w", err)
-	}
-
-	permissionProfilesURL, err := url.Parse(fmt.Sprintf(getPermissionProfiles, c.getClientAccountId()))
-	if err != nil {
-		return nil, nil, fmt.Errorf("invalid endpoint: %w", err)
+		return nil, nil, err
 	}
 
 	permissionProfilesURL = baseURL.ResolveReference(permissionProfilesURL)
