@@ -33,26 +33,6 @@ func (e *ErrorResponse) Message() string {
 	return fmt.Sprintf("message: %s, errorCode: %s", e.ErrorMessage, e.ErrorCode)
 }
 
-// UserInfoError represents errors from User Info endpoint failures.
-type UserInfoError struct {
-	Message string
-	Cause   error
-}
-
-func (e *UserInfoError) Error() string {
-	if e.Cause != nil {
-		return fmt.Sprintf("user info error: %s (caused by: %v)", e.Message, e.Cause)
-	}
-	return fmt.Sprintf("user info error: %s", e.Message)
-}
-
-func NewUserInfoError(message string, cause error) *UserInfoError {
-	return &UserInfoError{
-		Message: message,
-		Cause:   cause,
-	}
-}
-
 type pageToken struct {
 	StartPosition int `json:"start_position"`
 }

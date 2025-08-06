@@ -84,18 +84,18 @@ func (c *Client) fetchUserInfo(ctx context.Context) (*UserInfoResponse, error) {
 
 	userInfoURL, err := url.Parse(userInfoEndpoint)
 	if err != nil {
-		return nil, NewUserInfoError("invalid user info endpoint", err)
+		return nil, fmt.Errorf("invalid user info endpoint: %w", err)
 	}
 
 	var userInfo UserInfoResponse
 	_, _, err = c.doRequest(ctx, http.MethodGet, userInfoURL, &userInfo)
 	if err != nil {
 		// Wrap the error so baton-sdk can handle retries
-		return nil, NewUserInfoError("failed to fetch user info", err)
+		return nil, fmt.Errorf("failed to fetch user info: %w", err)
 	}
 
 	if len(userInfo.Accounts) == 0 {
-		return nil, NewUserInfoError("no accounts found in user info response", nil)
+		return nil, fmt.Errorf("no accounts found in user info response")
 	}
 
 	return &userInfo, nil
@@ -150,7 +150,7 @@ func (c *Client) ensureInitialized(ctx context.Context) error {
 	}
 
 	if selectedAccount == nil {
-		return NewUserInfoError("no valid account found in user info", nil)
+		return fmt.Errorf("no valid account found in user info")
 	}
 
 	// Set the base URI and account ID (from the selected account)
