@@ -35,12 +35,19 @@ var (
 		field.WithRequired(true),
 	)
 
+	skipSigningGroupsField = field.BoolField(
+		"skip-signing-groups",
+		field.WithDescription("Set to true to skip syncing signing groups (for customers without signing groups feature enabled)"),
+		field.WithDefaultValue(false),
+	)
+
 	ConfigurationFields = []field.SchemaField{
 		isDemoField,
 		clientIdField,
 		clientSecretField,
 		redirectURIField,
 		refreshTokenField,
+		skipSigningGroupsField,
 	}
 
 	FieldRelationships = []field.SchemaFieldRelationship{}

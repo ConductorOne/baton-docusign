@@ -13,16 +13,23 @@ import (
 )
 
 type Connector struct {
-	client *client.Client
+	client            *client.Client
+	skipSigningGroups bool
 }
 
 func (d *Connector) ResourceSyncers(_ context.Context) []connectorbuilder.ResourceSyncer {
-	return []connectorbuilder.ResourceSyncer{
+	syncers := []connectorbuilder.ResourceSyncer{
 		newUserBuilder(d.client),
 		newGroupBuilder(d.client),
-		newSigningGroupBuilder(d.client),
 		newPermissionProfilesBuilder(d.client),
 	}
+
+	// Only include signing groups if not skipped
+	if !d.skipSigningGroups {
+		syncers = append(syncers, newSigningGroupBuilder(d.client))
+	}
+
+	return syncers
 }
 
 func (d *Connector) Asset(_ context.Context, _ *v2.AssetRef) (string, io.ReadCloser, error) {
@@ -30,9 +37,14 @@ func (d *Connector) Asset(_ context.Context, _ *v2.AssetRef) (string, io.ReadClo
 }
 
 func (d *Connector) Metadata(_ context.Context) (*v2.ConnectorMetadata, error) {
+	description := "Connector syncs data from Users, Permission Profiles, and Groups. It also allows the creation of users in DocuSign"
+	if !d.skipSigningGroups {
+		description = "Connector syncs data from Users, Permission Profiles, Groups, and Signing Groups. It also allows the creation of users in DocuSign"
+	}
+
 	return &v2.ConnectorMetadata{
 		DisplayName: "DocuSign",
-		Description: "Connector syncs data from Users, Permissions Profiles, Groups and Signing Groups. It also allows the creation users of DocuSign",
+		Description: description,
 		AccountCreationSchema: &v2.ConnectorAccountCreationSchema{
 			FieldMap: map[string]*v2.ConnectorAccountCreationSchema_Field{
 				"email": {
@@ -64,7 +76,7 @@ func (d *Connector) Validate(_ context.Context) (annotations.Annotations, error)
 	return nil, nil
 }
 
-func New(ctx context.Context, isDemo bool, clientId, clientSecret, redirectURI, refreshToken string) (*Connector, error) {
+func New(ctx context.Context, isDemo bool, clientId, clientSecret, redirectURI, refreshToken string, skipSigningGroups bool) (*Connector, error) {
 	l := ctxzap.Extract(ctx)
 
 	docusignClient, err := client.New(ctx, isDemo, clientId, clientSecret, redirectURI, refreshToken)
@@ -74,7 +86,8 @@ func New(ctx context.Context, isDemo bool, clientId, clientSecret, redirectURI, 
 	}
 
 	return &Connector{
-		client: docusignClient,
+		client:            docusignClient,
+		skipSigningGroups: skipSigningGroups,
 	}, nil
 }
 
