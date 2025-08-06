@@ -137,13 +137,11 @@ func (c *Client) ensureInitialized(ctx context.Context) error {
 	}
 	cacheKey := fmt.Sprintf("userinfo_%s", accessToken)
 
-	// Try to get cached user info
-	userInfo, found := c.userInfoCache.Get(cacheKey)
-	if !found {
-		// Fetch fresh user info
-		userInfo, err = c.fetchUserInfo(ctx)
+	// Create fetch function that captures the context and token
+	fetchFunc := func() (*UserInfoResponse, time.Duration, error) {
+		userInfo, err := c.fetchUserInfo(ctx)
 		if err != nil {
-			return err
+			return nil, 0, err
 		}
 
 		// Calculate TTL based on token expiry (minus 5 minutes for safety)
@@ -152,8 +150,13 @@ func (c *Client) ensureInitialized(ctx context.Context) error {
 			ttl = 5 * time.Minute // minimum cache time
 		}
 
-		// Cache the user info
-		c.userInfoCache.Set(cacheKey, userInfo, ttl)
+		return userInfo, ttl, nil
+	}
+
+	// Get or fetch user info
+	userInfo, err := c.userInfoCache.GetOrFetch(cacheKey, fetchFunc)
+	if err != nil {
+		return err
 	}
 
 	// Find the appropriate account

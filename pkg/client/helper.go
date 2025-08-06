@@ -125,6 +125,9 @@ type CacheItem struct {
 	ExpiresAt time.Time
 }
 
+// FetchFunc is a function type for fetching User Info data.
+type FetchFunc func() (*UserInfoResponse, time.Duration, error)
+
 // UserInfoCache provides thread-safe caching for User Info responses.
 type UserInfoCache struct {
 	cache map[string]*CacheItem
@@ -133,63 +136,47 @@ type UserInfoCache struct {
 
 // NewUserInfoCache creates a new UserInfoCache instance.
 func NewUserInfoCache() *UserInfoCache {
-	cache := &UserInfoCache{
+	return &UserInfoCache{
 		cache: make(map[string]*CacheItem),
 	}
-
-	// Start cleanup goroutine to remove expired entries
-	go cache.cleanup()
-
-	return cache
 }
 
-// Set stores User Info data in the cache with TTL.
-func (c *UserInfoCache) Set(key string, userInfo *UserInfoResponse, ttl time.Duration) {
+// GetOrFetch retrieves User Info data from cache or fetches it if not present/expired.
+func (c *UserInfoCache) GetOrFetch(key string, fetchFunc FetchFunc) (*UserInfoResponse, error) {
+	// First, try to get from cache with read lock
+	c.mutex.RLock()
+	item, exists := c.cache[key]
+	if exists && time.Now().Before(item.ExpiresAt) {
+		// Cache hit and not expired
+		userInfo := item.UserInfo
+		c.mutex.RUnlock()
+		return userInfo, nil
+	}
+	c.mutex.RUnlock()
+
+	// Cache miss or expired - need to fetch with write lock
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 
+	// Double-check in case another goroutine fetched while we waited for write lock
+	item, exists = c.cache[key]
+	if exists && time.Now().Before(item.ExpiresAt) {
+		return item.UserInfo, nil
+	}
+
+	// Fetch new data
+	userInfo, ttl, err := fetchFunc()
+	if err != nil {
+		// Remove expired item on fetch failure
+		delete(c.cache, key)
+		return nil, err
+	}
+
+	// Store in cache
 	c.cache[key] = &CacheItem{
 		UserInfo:  userInfo,
 		ExpiresAt: time.Now().Add(ttl),
 	}
-}
 
-// Get retrieves User Info data from the cache if not expired.
-func (c *UserInfoCache) Get(key string) (*UserInfoResponse, bool) {
-	c.mutex.RLock()
-	defer c.mutex.RUnlock()
-
-	item, exists := c.cache[key]
-	if !exists {
-		return nil, false
-	}
-
-	if time.Now().After(item.ExpiresAt) {
-		// Item expired, clean it up
-		go func() {
-			c.mutex.Lock()
-			defer c.mutex.Unlock()
-			delete(c.cache, key)
-		}()
-		return nil, false
-	}
-
-	return item.UserInfo, true
-}
-
-// cleanup removes expired entries from the cache periodically.
-func (c *UserInfoCache) cleanup() {
-	ticker := time.NewTicker(5 * time.Minute)
-	defer ticker.Stop()
-
-	for range ticker.C {
-		c.mutex.Lock()
-		now := time.Now()
-		for key, item := range c.cache {
-			if now.After(item.ExpiresAt) {
-				delete(c.cache, key)
-			}
-		}
-		c.mutex.Unlock()
-	}
+	return userInfo, nil
 }
