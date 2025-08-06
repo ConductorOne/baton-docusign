@@ -107,20 +107,13 @@ func (c *Client) ensureInitialized(ctx context.Context) error {
 		return nil
 	}
 
-	// Create a cache key based on token (we'll use the token itself as key)
+	// Get token for TTL calculation
 	token, err := c.tokenSource.Token()
 	if err != nil {
 		return fmt.Errorf("failed to get token: %w", err)
 	}
 
-	// Use a safe substring for the cache key
-	accessToken := token.AccessToken
-	if len(accessToken) > 20 {
-		accessToken = accessToken[:20]
-	}
-	cacheKey := fmt.Sprintf("userinfo_%s", accessToken)
-
-	// Create fetch function that captures the context and token
+	// Create fetch function
 	fetchFunc := func() (*UserInfoResponse, time.Duration, error) {
 		userInfo, err := c.fetchUserInfo(ctx)
 		if err != nil {
@@ -137,7 +130,7 @@ func (c *Client) ensureInitialized(ctx context.Context) error {
 	}
 
 	// Get or fetch user info
-	userInfo, err := c.userInfoCache.GetOrFetch(cacheKey, fetchFunc)
+	userInfo, err := c.userInfoCache.GetOrFetch(fetchFunc)
 	if err != nil {
 		return err
 	}
@@ -160,7 +153,7 @@ func (c *Client) ensureInitialized(ctx context.Context) error {
 		return NewUserInfoError("no valid account found in user info", nil)
 	}
 
-	// Set the base URI and account ID
+	// Set the base URI and account ID (from the selected account)
 	c.baseURI = selectedAccount.BaseURI
 	c.accountId = selectedAccount.AccountId
 	c.initialized = true

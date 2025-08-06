@@ -130,25 +130,22 @@ type FetchFunc func() (*UserInfoResponse, time.Duration, error)
 
 // UserInfoCache provides thread-safe caching for User Info responses.
 type UserInfoCache struct {
-	cache map[string]*CacheItem
+	item  *CacheItem
 	mutex sync.RWMutex
 }
 
 // NewUserInfoCache creates a new UserInfoCache instance.
 func NewUserInfoCache() *UserInfoCache {
-	return &UserInfoCache{
-		cache: make(map[string]*CacheItem),
-	}
+	return &UserInfoCache{}
 }
 
 // GetOrFetch retrieves User Info data from cache or fetches it if not present/expired.
-func (c *UserInfoCache) GetOrFetch(key string, fetchFunc FetchFunc) (*UserInfoResponse, error) {
+func (c *UserInfoCache) GetOrFetch(fetchFunc FetchFunc) (*UserInfoResponse, error) {
 	// First, try to get from cache with read lock
 	c.mutex.RLock()
-	item, exists := c.cache[key]
-	if exists && time.Now().Before(item.ExpiresAt) {
+	if c.item != nil && time.Now().Before(c.item.ExpiresAt) {
 		// Cache hit and not expired
-		userInfo := item.UserInfo
+		userInfo := c.item.UserInfo
 		c.mutex.RUnlock()
 		return userInfo, nil
 	}
@@ -159,21 +156,20 @@ func (c *UserInfoCache) GetOrFetch(key string, fetchFunc FetchFunc) (*UserInfoRe
 	defer c.mutex.Unlock()
 
 	// Double-check in case another goroutine fetched while we waited for write lock
-	item, exists = c.cache[key]
-	if exists && time.Now().Before(item.ExpiresAt) {
-		return item.UserInfo, nil
+	if c.item != nil && time.Now().Before(c.item.ExpiresAt) {
+		return c.item.UserInfo, nil
 	}
 
 	// Fetch new data
 	userInfo, ttl, err := fetchFunc()
 	if err != nil {
-		// Remove expired item on fetch failure
-		delete(c.cache, key)
+		// Clear expired item on fetch failure
+		c.item = nil
 		return nil, err
 	}
 
 	// Store in cache
-	c.cache[key] = &CacheItem{
+	c.item = &CacheItem{
 		UserInfo:  userInfo,
 		ExpiresAt: time.Now().Add(ttl),
 	}
