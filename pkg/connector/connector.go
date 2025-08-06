@@ -91,8 +91,9 @@ func New(ctx context.Context, isDemo bool, clientId, clientSecret, redirectURI, 
 	}, nil
 }
 
-func NewWithClient(client *client.Client) (*Connector, error) {
+func NewWithClient(client *client.Client, skipSigningGroups bool) (*Connector, error) {
 	return &Connector{
-		client: client,
+		client:            client,
+		skipSigningGroups: skipSigningGroups,
 	}, nil
 }
