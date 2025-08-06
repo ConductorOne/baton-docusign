@@ -87,35 +87,18 @@ func (c *Client) fetchUserInfo(ctx context.Context) (*UserInfoResponse, error) {
 		return nil, NewUserInfoError("invalid user info endpoint", err)
 	}
 
-	// Retry logic for transient failures
-	maxRetries := 3
-	var lastErr error
-
-	for attempt := 0; attempt < maxRetries; attempt++ {
-		var userInfo UserInfoResponse
-		_, _, err = c.doRequest(ctx, http.MethodGet, userInfoURL, &userInfo)
-		if err == nil {
-			// Success
-			if len(userInfo.Accounts) == 0 {
-				return nil, NewUserInfoError("no accounts found in user info response", nil)
-			}
-			return &userInfo, nil
-		}
-
-		lastErr = err
-
-		// If this is not the last attempt, wait before retrying
-		if attempt < maxRetries-1 {
-			select {
-			case <-ctx.Done():
-				return nil, NewUserInfoError("context cancelled during retry", ctx.Err())
-			case <-time.After(time.Duration(attempt+1) * time.Second):
-				// Continue to next attempt
-			}
-		}
+	var userInfo UserInfoResponse
+	_, _, err = c.doRequest(ctx, http.MethodGet, userInfoURL, &userInfo)
+	if err != nil {
+		// Wrap the error so baton-sdk can handle retries
+		return nil, NewUserInfoError("failed to fetch user info", err)
 	}
 
-	return nil, NewUserInfoError("failed to fetch user info after retries", lastErr)
+	if len(userInfo.Accounts) == 0 {
+		return nil, NewUserInfoError("no accounts found in user info response", nil)
+	}
+
+	return &userInfo, nil
 }
 
 // ensureInitialized ensures the client has fetched user info and set base URI.
