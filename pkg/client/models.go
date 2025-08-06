@@ -2,7 +2,6 @@ package client
 
 import (
 	"fmt"
-	"sync"
 	"time"
 )
 
@@ -215,79 +214,4 @@ type AccountInfo struct {
 	AccountName    string `json:"account_name"`
 	BaseURI        string `json:"base_uri"`
 	OrganizationId string `json:"organization_id"`
-}
-
-// CacheItem holds cached User Info data with expiry time.
-type CacheItem struct {
-	UserInfo  *UserInfoResponse
-	ExpiresAt time.Time
-}
-
-// UserInfoCache provides thread-safe caching for User Info responses.
-type UserInfoCache struct {
-	cache map[string]*CacheItem
-	mutex sync.RWMutex
-}
-
-// NewUserInfoCache creates a new UserInfoCache instance.
-func NewUserInfoCache() *UserInfoCache {
-	cache := &UserInfoCache{
-		cache: make(map[string]*CacheItem),
-	}
-
-	// Start cleanup goroutine to remove expired entries
-	go cache.cleanup()
-
-	return cache
-}
-
-// Set stores User Info data in the cache with TTL.
-func (c *UserInfoCache) Set(key string, userInfo *UserInfoResponse, ttl time.Duration) {
-	c.mutex.Lock()
-	defer c.mutex.Unlock()
-
-	c.cache[key] = &CacheItem{
-		UserInfo:  userInfo,
-		ExpiresAt: time.Now().Add(ttl),
-	}
-}
-
-// Get retrieves User Info data from the cache if not expired.
-func (c *UserInfoCache) Get(key string) (*UserInfoResponse, bool) {
-	c.mutex.RLock()
-	defer c.mutex.RUnlock()
-
-	item, exists := c.cache[key]
-	if !exists {
-		return nil, false
-	}
-
-	if time.Now().After(item.ExpiresAt) {
-		// Item expired, clean it up
-		go func() {
-			c.mutex.Lock()
-			defer c.mutex.Unlock()
-			delete(c.cache, key)
-		}()
-		return nil, false
-	}
-
-	return item.UserInfo, true
-}
-
-// cleanup removes expired entries from the cache periodically.
-func (c *UserInfoCache) cleanup() {
-	ticker := time.NewTicker(5 * time.Minute)
-	defer ticker.Stop()
-
-	for range ticker.C {
-		c.mutex.Lock()
-		now := time.Now()
-		for key, item := range c.cache {
-			if now.After(item.ExpiresAt) {
-				delete(c.cache, key)
-			}
-		}
-		c.mutex.Unlock()
-	}
 }
