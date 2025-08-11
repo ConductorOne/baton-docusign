@@ -118,7 +118,7 @@ Flags:
       --redirect-uri string                              required: Redirect URI registered in your DocuSign integration ($BATON_REDIRECT_URI)
       --refresh-token string                             required: Refresh token. ($BATON_REFRESH_TOKEN)
       --skip-full-sync                                   This must be set to skip a full sync ($BATON_SKIP_FULL_SYNC)
-      --skip-signing-groups                              Set to true to skip syncing signing groups (for customers without signing groups feature enabled) ($BATON_SKIP_SIGNING_GROUPS)
+      --include-signing-groups                           Set to true to include syncing signing groups (for customers with signing groups feature enabled) ($BATON_INCLUDE_SIGNING_GROUPS)
       --ticketing                                        This must be set to enable ticketing support ($BATON_TICKETING)
   -v, --version                                          version for baton-docusign
 

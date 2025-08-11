@@ -13,8 +13,8 @@ import (
 )
 
 type Connector struct {
-	client            *client.Client
-	skipSigningGroups bool
+	client               *client.Client
+	includeSigningGroups bool
 }
 
 func (d *Connector) ResourceSyncers(_ context.Context) []connectorbuilder.ResourceSyncer {
@@ -24,8 +24,8 @@ func (d *Connector) ResourceSyncers(_ context.Context) []connectorbuilder.Resour
 		newPermissionProfilesBuilder(d.client),
 	}
 
-	// Only include signing groups if not skipped
-	if !d.skipSigningGroups {
+	// Only include signing groups if opted in
+	if d.includeSigningGroups {
 		syncers = append(syncers, newSigningGroupBuilder(d.client))
 	}
 
@@ -38,7 +38,7 @@ func (d *Connector) Asset(_ context.Context, _ *v2.AssetRef) (string, io.ReadClo
 
 func (d *Connector) Metadata(_ context.Context) (*v2.ConnectorMetadata, error) {
 	description := "Connector syncs data from Users, Permission Profiles, and Groups. It also allows the creation of users in DocuSign"
-	if !d.skipSigningGroups {
+	if d.includeSigningGroups {
 		description = "Connector syncs data from Users, Permission Profiles, Groups, and Signing Groups. It also allows the creation of users in DocuSign"
 	}
 
@@ -76,7 +76,7 @@ func (d *Connector) Validate(_ context.Context) (annotations.Annotations, error)
 	return nil, nil
 }
 
-func New(ctx context.Context, isDemo bool, clientId, clientSecret, redirectURI, refreshToken string, skipSigningGroups bool) (*Connector, error) {
+func New(ctx context.Context, isDemo bool, clientId, clientSecret, redirectURI, refreshToken string, includeSigningGroups bool) (*Connector, error) {
 	l := ctxzap.Extract(ctx)
 
 	docusignClient, err := client.New(ctx, isDemo, clientId, clientSecret, redirectURI, refreshToken)
@@ -86,14 +86,14 @@ func New(ctx context.Context, isDemo bool, clientId, clientSecret, redirectURI, 
 	}
 
 	return &Connector{
-		client:            docusignClient,
-		skipSigningGroups: skipSigningGroups,
+		client:               docusignClient,
+		includeSigningGroups: includeSigningGroups,
 	}, nil
 }
 
-func NewWithClient(client *client.Client, skipSigningGroups bool) (*Connector, error) {
+func NewWithClient(client *client.Client, includeSigningGroups bool) (*Connector, error) {
 	return &Connector{
-		client:            client,
-		skipSigningGroups: skipSigningGroups,
+		client:               client,
+		includeSigningGroups: includeSigningGroups,
 	}, nil
 }
