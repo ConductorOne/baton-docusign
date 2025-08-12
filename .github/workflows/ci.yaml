@@ -64,7 +64,6 @@ jobs:
       - name: Validate capabilities
         run: |
           ./baton-docusign \
-            --account-id "$ACCOUNTID" \
             --clientId "$CLIENTID" \
             --clientSecret "$CLIENTSECRET" \
             --redirect-uri "$REDIRECTURI" \
@@ -73,7 +72,6 @@ jobs:
       - name: Run basic sync test
         run: |
           ./baton-docusign \
-            --account-id "$ACCOUNTID" \
             --clientId "$CLIENTID" \
             --clientSecret "$CLIENTSECRET" \
             --redirect-uri "$REDIRECTURI"\
