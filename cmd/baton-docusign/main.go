@@ -53,9 +53,9 @@ func getConnector(ctx context.Context, v *viper.Viper) (types.ConnectorServer, e
 	docusignClientSecret := v.GetString(clientSecretField.FieldName)
 	docusignRedirectURI := v.GetString(redirectURIField.FieldName)
 	docusignRefreshToken := v.GetString(refreshTokenField.FieldName)
-	skipSigningGroups := v.GetBool(skipSigningGroupsField.FieldName)
+	includeSigningGroups := v.GetBool(includeSigningGroupsField.FieldName)
 
-	cb, err := connectorSchema.New(ctx, isDemo, docusignClientId, docusignClientSecret, docusignRedirectURI, docusignRefreshToken, skipSigningGroups)
+	cb, err := connectorSchema.New(ctx, isDemo, docusignClientId, docusignClientSecret, docusignRedirectURI, docusignRefreshToken, includeSigningGroups)
 	if err != nil {
 		l.Error("error creating connector", zap.Error(err))
 		return nil, err
