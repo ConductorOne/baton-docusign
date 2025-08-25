@@ -7,6 +7,8 @@ import (
 	"crypto/ed25519"
 	"encoding/json"
 	"fmt"
+	"os"
+	"time"
 
 	aws_lambda "github.com/aws/aws-lambda-go/lambda"
 	"github.com/conductorone/baton-sdk/pkg/crypto/providers/jwk"
@@ -14,6 +16,7 @@ import (
 	"github.com/mitchellh/mapstructure"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
+	"go.uber.org/zap"
 	"google.golang.org/protobuf/types/known/structpb"
 
 	"github.com/conductorone/baton-sdk/internal/connector"
@@ -33,7 +36,7 @@ func OptionallyAddLambdaCommand[T field.Configurable](
 	connectorSchema field.Configuration,
 	mainCmd *cobra.Command,
 ) error {
-	lambdaSchema := field.NewConfiguration(field.LambdaServerFields(), field.LambdaServerRelationships...)
+	lambdaSchema := field.NewConfiguration(field.LambdaServerFields(), field.WithConstraints(field.LambdaServerRelationships...))
 
 	lambdaCmd, err := AddCommand(mainCmd, v, &lambdaSchema, &cobra.Command{
 		Use:           "lambda",
@@ -52,22 +55,54 @@ func OptionallyAddLambdaCommand[T field.Configurable](
 			return err
 		}
 
+		logLevel := v.GetString("log-level")
+		// Downgrade log level to "info" if debug mode has expired
+		debugModeExpiresAt := v.GetTime("log-level-debug-expires-at")
+		if logLevel == "debug" && !debugModeExpiresAt.IsZero() && time.Now().After(debugModeExpiresAt) {
+			logLevel = "info"
+		}
+
+		initalLogFields := map[string]interface{}{
+			"tenant":       os.Getenv("tenant"),
+			"connector":    os.Getenv("connector"),
+			"installation": os.Getenv("installation"),
+			"app":          os.Getenv("app"),
+			"version":      os.Getenv("version"),
+		}
+
 		runCtx, err := initLogger(
 			ctx,
 			name,
 			logging.WithLogFormat(v.GetString("log-format")),
-			logging.WithLogLevel(v.GetString("log-level")),
+			logging.WithLogLevel(logLevel),
+			logging.WithInitialFields(initalLogFields),
 		)
 		if err != nil {
 			return err
 		}
+
+		runCtx, otelShutdown, err := initOtel(runCtx, name, v, initalLogFields)
+		if err != nil {
+			return err
+		}
+		defer func() {
+			if otelShutdown == nil {
+				return
+			}
+			shutdownCtx, cancel := context.WithDeadline(context.Background(), time.Now().Add(otelShutdownTimeout))
+			defer cancel()
+			err := otelShutdown(shutdownCtx)
+			if err != nil {
+				zap.L().Error("error shutting down otel", zap.Error(err))
+			}
+		}()
 
 		if err := field.Validate(lambdaSchema, v); err != nil {
 			return err
 		}
 
 		client, webKey, err := c1_lambda_config.GetConnectorConfigServiceClient(
-			ctx,
+			runCtx,
 			v.GetString(field.LambdaServerClientIDField.GetName()),
 			v.GetString(field.LambdaServerClientSecretField.GetName()),
 		)
@@ -76,7 +111,7 @@ func OptionallyAddLambdaCommand[T field.Configurable](
 		}
 
 		// Get configuration, convert it to viper flag values, then proceed.
-		config, err := client.GetConnectorConfig(ctx, &pb_connector_api.GetConnectorConfigRequest{})
+		config, err := client.GetConnectorConfig(runCtx, &pb_connector_api.GetConnectorConfigRequest{})
 		if err != nil {
 			return fmt.Errorf("lambda-run: failed to get connector config: %w", err)
 		}
@@ -150,11 +185,10 @@ func OptionallyAddLambdaCommand[T field.Configurable](
 		}
 
 		s := c1_lambda_grpc.NewServer(authOpt)
-		connector.Register(ctx, s, c, opts)
+		connector.Register(runCtx, s, c, opts)
 
-		aws_lambda.Start(s.Handler)
+		aws_lambda.StartWithOptions(s.Handler, aws_lambda.WithContext(runCtx))
 		return nil
 	}
 	return nil
-
 }
