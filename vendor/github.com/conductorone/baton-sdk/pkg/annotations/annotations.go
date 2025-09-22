@@ -85,6 +85,22 @@ func (a *Annotations) Contains(msg proto.Message) bool {
 	return false
 }
 
+func (a *Annotations) ContainsAny(msgs ...proto.Message) bool {
+	if len(msgs) == 0 {
+		return false
+	}
+
+	for _, v := range *a {
+		for _, msg := range msgs {
+			if v.MessageIs(msg) {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
 // Pick checks if the message is in the annotations slice.
 func (a *Annotations) Pick(needle proto.Message) (bool, error) {
 	if needle == nil {
@@ -108,6 +124,7 @@ func (a *Annotations) WithRateLimiting(rateLimit *v2.RateLimitDescription) *Anno
 	return a
 }
 
+// NOTE: the store is the only usage of this.
 func GetSyncIdFromAnnotations(annos Annotations) (string, error) {
 	syncDetails := &c1zpb.SyncDetails{}
 	ok, err := annos.Pick(syncDetails)
@@ -119,4 +136,14 @@ func GetSyncIdFromAnnotations(annos Annotations) (string, error) {
 	}
 
 	return "", nil
+}
+
+// NOTE: this is used to communicate the active sync to the connector proper, for session storage.
+func GetActiveSyncIdFromAnnotations(annos Annotations) (string, error) {
+	v2SyncId := &v2.ActiveSync{}
+	_, err := annos.Pick(v2SyncId)
+	if err != nil {
+		return "", err
+	}
+	return v2SyncId.GetId(), nil
 }
