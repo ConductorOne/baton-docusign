@@ -21,12 +21,6 @@ jobs:
       matrix:
         platform: [ubuntu-latest]
     runs-on: ${{ matrix.platform }}
-    env:
-      ACCOUNTID: ${{ secrets.ACCOUNTID }}
-      CLIENTID: ${{ secrets.CLIENTID }}
-      CLIENTSECRET: ${{ secrets.CLIENTSECRET }}
-      REDIRECTURI: ${{ secrets.REDIRECTURI }}
-      REFRESHTOKEN: ${{ secrets.REFRESHTOKEN }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -46,11 +40,10 @@ jobs:
     runs-on: ubuntu-latest
     env:
       BATON_LOG_LEVEL: debug
-      ACCOUNTID: ${{ secrets.ACCOUNTID }}
-      CLIENTID: ${{ secrets.CLIENTID }}
-      CLIENTSECRET: ${{ secrets.CLIENTSECRET }}
-      REDIRECTURI: ${{ secrets.REDIRECTURI }}
-      REFRESHTOKEN: ${{ secrets.REFRESHTOKEN }}
+      BATON_CLIENTID: ${{ secrets.CLIENTID }}
+      BATON_CLIENTSECRET: ${{ secrets.CLIENTSECRET }}
+      BATON_REDIRECT_URI: ${{ secrets.REDIRECTURI }}
+      BATON_REFRESH_TOKEN: ${{ secrets.REFRESHTOKEN }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -62,21 +55,11 @@ jobs:
         run: go build -o baton-docusign ./cmd/baton-docusign
       - name: Validate capabilities
         run: |
-          ./baton-docusign \
-            --clientId "$CLIENTID" \
-            --clientSecret "$CLIENTSECRET" \
-            --redirect-uri "$REDIRECTURI" \
-            --refresh-token "$REFRESHTOKEN" \
-          capabilities
+          ./baton-docusign capabilities
       - name: Run basic sync test
         run: |
           ./baton-docusign \
-            --clientId "$CLIENTID" \
-            --clientSecret "$CLIENTSECRET" \
-            --redirect-uri "$REDIRECTURI"\
-            --refresh-token "$REFRESHTOKEN"\
-            --log-level debug \
-            --file sync.c1z
+            --log-level debug
 
           if [ ! -f "sync.c1z" ]; then
             echo "Error: File sync.c1z was not generated."
