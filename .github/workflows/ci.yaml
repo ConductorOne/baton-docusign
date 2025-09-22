@@ -4,12 +4,12 @@ jobs:
   go-lint:
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
       - name: Install Go
         uses: actions/setup-go@v5
         with:
-          go-version: 1.24.x
-      - name: Checkout code
-        uses: actions/checkout@v4
+          go-version-file: go.mod
       - name: Run linters
         uses: golangci/golangci-lint-action@v8
         with:
@@ -19,7 +19,6 @@ jobs:
   go-test:
     strategy:
       matrix:
-        go-version: [1.24.x]
         platform: [ubuntu-latest]
     runs-on: ${{ matrix.platform }}
     env:
@@ -29,12 +28,12 @@ jobs:
       REDIRECTURI: ${{ secrets.REDIRECTURI }}
       REFRESHTOKEN: ${{ secrets.REFRESHTOKEN }}
     steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
       - name: Install Go
         uses: actions/setup-go@v5
         with:
-          go-version: ${{ matrix.go-version }}
-      - name: Checkout code
-        uses: actions/checkout@v4
+          go-version-file: go.mod
       - name: Run go tests
         run: (set -o pipefail && go test -v -covermode=atomic -json -race ./... | tee test.json)
       - name: Annotate go tests
@@ -53,12 +52,12 @@ jobs:
       REDIRECTURI: ${{ secrets.REDIRECTURI }}
       REFRESHTOKEN: ${{ secrets.REFRESHTOKEN }}
     steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
       - name: Install Go
         uses: actions/setup-go@v5
         with:
-          go-version: 1.24.x
-      - name: Checkout code
-        uses: actions/checkout@v4
+          go-version-file: go.mod
       - name: Build baton-docusign
         run: go build -o baton-docusign ./cmd/baton-docusign
       - name: Validate capabilities

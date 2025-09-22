@@ -20,6 +20,8 @@ type UserClient interface {
 	CreateUsers(ctx context.Context, request client.CreateUsersRequest) (*client.UserCreationResponse, annotations.Annotations, error)
 }
 
+var _ connectorbuilder.AccountManager = &userBuilder{}
+
 // userBuilder handles user resource management and permission assignments.
 type userBuilder struct {
 	resourceType *v2.ResourceType
@@ -124,7 +126,7 @@ func (b *userBuilder) CreateAccountCapabilityDetails(_ context.Context) (*v2.Cre
 func (b *userBuilder) CreateAccount(
 	ctx context.Context,
 	accountInfo *v2.AccountInfo,
-	credentialOptions *v2.CredentialOptions,
+	credentialOptions *v2.LocalCredentialOptions,
 ) (
 	connectorbuilder.CreateAccountResponse,
 	[]*v2.PlaintextData,
