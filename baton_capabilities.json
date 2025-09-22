@@ -24,18 +24,6 @@
     },
     {
       "resourceType":  {
-        "id":  "signing_group",
-        "displayName":  "Signing Group",
-        "traits":  [
-          "TRAIT_GROUP"
-        ]
-      },
-      "capabilities":  [
-        "CAPABILITY_SYNC"
-      ]
-    },
-    {
-      "resourceType":  {
         "id":  "user",
         "displayName":  "User",
         "traits":  [
