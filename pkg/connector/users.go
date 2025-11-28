@@ -18,6 +18,7 @@ type UserClient interface {
 	GetUsers(ctx context.Context, options client.PageOptions) ([]client.User, string, annotations.Annotations, error)
 	GetUserDetails(ctx context.Context, userID string) (*client.UserDetail, annotations.Annotations, error)
 	CreateUsers(ctx context.Context, request client.CreateUsersRequest) (*client.UserCreationResponse, annotations.Annotations, error)
+	DeleteUsers(ctx context.Context, request client.DeleteUsersRequest) (*client.DeleteUsersResponse, annotations.Annotations, error)
 }
 
 var _ connectorbuilder.AccountManager = &userBuilder{}
@@ -186,6 +187,39 @@ func (b *userBuilder) CreateAccount(
 	}, nil, annos, nil
 }
 
+// Delete implements account deprovisioning for users.
+func (b *userBuilder) Delete(ctx context.Context, resourceId *v2.ResourceId) (annotations.Annotations, error) {
+	if resourceId.ResourceType != userResourceType.Id {
+		return nil, fmt.Errorf("invalid resource type: expected %s, got %s", userResourceType.Id, resourceId.ResourceType)
+	}
+
+	userId := resourceId.Resource
+	deleteRequest := client.DeleteUsersRequest{
+		Users: []client.UserIdentifier{
+			{UserId: userId},
+		},
+	}
+
+	response, annotation, err := b.client.DeleteUsers(ctx, deleteRequest)
+	if err != nil {
+		return annotation, fmt.Errorf("error deleting user: %w", err)
+	}
+
+	if response == nil {
+		return annotation, fmt.Errorf("unexpected nil response when deleting user %s", userId)
+	}
+
+	if len(response.Users) > 0 {
+		deletedUser := response.Users[0]
+		if deletedUser.ErrorDetails != nil {
+			return annotation, fmt.Errorf("failed to delete user %s: %s - %s",
+				userId, deletedUser.ErrorDetails.ErrorCode, deletedUser.ErrorDetails.Message)
+		}
+	}
+
+	return annotation, nil
+}
+
 // newUserBuilder constructs a userBuilder with the provided API client.
 func newUserBuilder(client *client.Client) *userBuilder {
 	return &userBuilder{
@@ -200,13 +234,15 @@ func parseIntoUserResource(user *client.User) (*v2.Resource, error) {
 	switch user.UserStatus {
 	case "Active":
 		userStatus = v2.UserTrait_Status_STATUS_ENABLED
-	case "Disabled", "Closed", "ActivationRequired", "ActivationSent":
+	case "Disabled", "ActivationRequired", "ActivationSent":
 		userStatus = v2.UserTrait_Status_STATUS_DISABLED
+	case "Closed": // When you delete a user, their status changes to closed. We will treat this as deleted.
+		userStatus = v2.UserTrait_Status_STATUS_DELETED
 	default:
 		userStatus = v2.UserTrait_Status_STATUS_UNSPECIFIED
 	}
 
-	profile := map[string]interface{}{
+	profile := map[string]any{
 		"userName":   user.UserName,
 		"email":      user.Email,
 		"isAdmin":    user.IsAdmin,

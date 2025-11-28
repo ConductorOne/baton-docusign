@@ -156,7 +156,7 @@ func TestGroupBuilder_Entitlements(t *testing.T) {
 		"testgroup",
 		groupResourceType,
 		"123",
-		[]resource.GroupTraitOption{resource.WithGroupProfile(map[string]interface{}{"group_name": "testgroup"})},
+		[]resource.GroupTraitOption{resource.WithGroupProfile(map[string]any{"group_name": "testgroup"})},
 	)
 	require.NoError(t, err)
 	ctx := context.Background()
@@ -193,7 +193,7 @@ func TestGroupBuilder_Grants(t *testing.T) {
 		groupResourceType,
 		"123",
 		[]resource.GroupTraitOption{
-			resource.WithGroupProfile(map[string]interface{}{"group_name": "testgroup"}),
+			resource.WithGroupProfile(map[string]any{"group_name": "testgroup"}),
 		},
 	)
 	require.NoError(t, err)

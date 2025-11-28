@@ -173,10 +173,87 @@ type PermissionProfilesResponse struct {
 type PermissionProfile struct {
 	PermissionProfileId   string    `json:"permissionProfileId"`
 	PermissionProfileName string    `json:"permissionProfileName"`
-	IsDefault             string    `json:"isDefault"`
-	CreatedDateTime       time.Time `json:"createdDateTime"`
-	LastModifiedDateTime  time.Time `json:"lastModifiedDateTime"`
-	ModifiedByUserName    string    `json:"modifiedByUserName"`
+	ModifiedDateTime      time.Time `json:"modifiedDateTime"`
+	ModifiedByUserName    string    `json:"modifiedByUsername"`
+}
+
+// DeleteUsersRequest represents a request to delete users from an account.
+type DeleteUsersRequest struct {
+	Users []UserIdentifier `json:"users"`
+}
+
+// UserIdentifier represents a user identifier for deletion operations.
+type UserIdentifier struct {
+	UserId string `json:"userId"`
+}
+
+// DeleteUsersResponse represents the response from a user deletion request.
+type DeleteUsersResponse struct {
+	Users []struct {
+		UserId       string `json:"userId"`
+		UserName     string `json:"userName"`
+		Email        string `json:"email"`
+		UserStatus   string `json:"userStatus"`
+		Success      string `json:"success"`
+		ErrorDetails *struct {
+			ErrorCode string `json:"errorCode"`
+			Message   string `json:"message"`
+		} `json:"errorDetails,omitempty"`
+	} `json:"users"`
+}
+
+// UpdateGroupUsersRequest represents a request to add users to a group.
+type UpdateGroupUsersRequest struct {
+	Users []GroupUserIdentifier `json:"users"`
+}
+
+// GroupUserIdentifier represents a user identifier for group operations.
+type GroupUserIdentifier struct {
+	UserId string `json:"userId"`
+}
+
+// UpdateGroupUsersResponse represents the response from updating group users.
+type UpdateGroupUsersResponse struct {
+	Users []struct {
+		UserName   string `json:"userName"`
+		UserId     string `json:"userId"`
+		UserType   string `json:"userType"`
+		UserStatus string `json:"userStatus"`
+		URI        string `json:"uri"`
+	} `json:"users"`
+}
+
+// UpdateSigningGroupRequest represents a request to update a signing group.
+type UpdateSigningGroupRequest struct {
+	Users []SigningGroupUserIdentifier `json:"users"`
+}
+
+// SigningGroupUserIdentifier represents a user identifier for signing group operations.
+type SigningGroupUserIdentifier struct {
+	UserName string `json:"userName"`
+	Email    string `json:"email"`
+}
+
+// UpdateSigningGroupResponse represents the response from updating a signing group.
+type UpdateSigningGroupResponse struct {
+	SigningGroupId string `json:"signingGroupId"`
+	GroupName      string `json:"groupName"`
+	GroupType      string `json:"groupType"`
+	Created        string `json:"created"`
+	CreatedBy      string `json:"createdBy"`
+	Modified       string `json:"modified"`
+	ModifiedBy     string `json:"modifiedBy"`
+	Users          []struct {
+		UserName string `json:"userName"`
+		Email    string `json:"email"`
+	} `json:"users"`
+}
+
+// UpdateUserProfileRequest represents a request to update a user's permission profile.
+type UpdateUserProfileRequest struct {
+	UserDetails struct {
+		PermissionProfileId string `json:"permissionProfileId"`
+	} `json:"userDetails"`
 }
 
 // UserInfoResponse represents the response from DocuSign's OAuth User Info endpoint.

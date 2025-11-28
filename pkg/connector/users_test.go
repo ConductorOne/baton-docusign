@@ -38,6 +38,10 @@ func (m *mockClient) CreateUsers(ctx context.Context, request client.CreateUsers
 	return nil, nil, errors.New("not implemented")
 }
 
+func (m *mockClient) DeleteUsers(ctx context.Context, request client.DeleteUsersRequest) (*client.DeleteUsersResponse, annotations.Annotations, error) {
+	return nil, nil, errors.New("not implemented")
+}
+
 // TestUserBuilder_List tests the List method of userBuilder with different scenarios:.
 // - When users exist in the response.
 // - When the user list is empty.

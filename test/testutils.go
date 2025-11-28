@@ -42,16 +42,28 @@ func (m *MockRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) 
 
 // MockClient is a mock client used for unit tests that simulates the real client behavior.
 type MockClient struct {
-	GetUsersFunc      func(ctx context.Context, opts client.PageOptions) ([]client.User, string, annotations.Annotations, error)
-	GetGroupsFunc     func(ctx context.Context, opts client.PageOptions) ([]client.Group, string, annotations.Annotations, error)
-	GetGroupUsersFunc func(ctx context.Context, groupID string, opts client.PageOptions) ([]client.User, string, annotations.Annotations, error)
-	CreateUsersFunc   func(ctx context.Context, request client.CreateUsersRequest) (*client.UserCreationResponse, annotations.Annotations, error)
+	GetUsersFunc                func(ctx context.Context, opts client.PageOptions) ([]client.User, string, annotations.Annotations, error)
+	GetGroupsFunc               func(ctx context.Context, opts client.PageOptions) ([]client.Group, string, annotations.Annotations, error)
+	GetGroupUsersFunc           func(ctx context.Context, groupID string, opts client.PageOptions) ([]client.User, string, annotations.Annotations, error)
+	IsUserInGroupFunc           func(ctx context.Context, groupID, userID string) (bool, annotations.Annotations, error)
+	CreateUsersFunc             func(ctx context.Context, request client.CreateUsersRequest) (*client.UserCreationResponse, annotations.Annotations, error)
+	UpdateGroupUsersFunc        func(ctx context.Context, groupID string, request client.UpdateGroupUsersRequest) (*client.UpdateGroupUsersResponse, annotations.Annotations, error)
+	UpdateSigningGroupFunc      func(ctx context.Context, signingGroupID string, request client.UpdateSigningGroupRequest) (*client.UpdateSigningGroupResponse, annotations.Annotations, error)
+	UpdateUserProfileFunc       func(ctx context.Context, userID string, request client.UpdateUserProfileRequest) (annotations.Annotations, error)
+	DeleteGroupUsersFunc        func(ctx context.Context, groupID string, request client.UpdateGroupUsersRequest) (*client.UpdateGroupUsersResponse, annotations.Annotations, error)
+	DeleteSigningGroupUsersFunc func(ctx context.Context, signingGroupID string, request client.UpdateSigningGroupRequest) (*client.UpdateSigningGroupResponse, annotations.Annotations, error)
+	GetUserDetailsFunc          func(ctx context.Context, userID string) (*client.UserDetail, annotations.Annotations, error)
+	GetUserByEmailFunc          func(ctx context.Context, userEmail string) (*client.User, annotations.Annotations, error)
 }
 
 // ExtendedMockClient is an extended version of MockClient with additional functionality for user details.
 type ExtendedMockClient struct {
 	*MockClient
 	GetAllUsersWithDetailsFunc func(ctx context.Context) ([]*client.UserDetail, annotations.Annotations, error)
+	GetSigningGroupsFunc       func(ctx context.Context, opts client.PageOptions) ([]client.SigningGroup, string, annotations.Annotations, error)
+	GetSigningGroupUsersFunc   func(ctx context.Context, groupID string, opts client.PageOptions) ([]client.User, string, annotations.Annotations, error)
+	IsUserInSigningGroupFunc   func(ctx context.Context, groupID, userEmail string) (bool, annotations.Annotations, error)
+	GetPermissionProfilesFunc  func(ctx context.Context) ([]client.PermissionProfile, annotations.Annotations, error)
 }
 
 // GetUsers returns a list of users based on the mocked function.
@@ -78,6 +90,14 @@ func (m *MockClient) GetGroupUsers(ctx context.Context, groupID string, opts cli
 	return nil, "", nil, nil
 }
 
+// IsUserInGroup checks if a user is in a group based on the mocked function.
+func (m *MockClient) IsUserInGroup(ctx context.Context, groupID, userID string) (bool, annotations.Annotations, error) {
+	if m.IsUserInGroupFunc != nil {
+		return m.IsUserInGroupFunc(ctx, groupID, userID)
+	}
+	return false, nil, nil
+}
+
 // CreateUsers creates users based on the mocked function.
 func (m *MockClient) CreateUsers(ctx context.Context, request client.CreateUsersRequest) (*client.UserCreationResponse, annotations.Annotations, error) {
 	if m.CreateUsersFunc != nil {
@@ -86,10 +106,100 @@ func (m *MockClient) CreateUsers(ctx context.Context, request client.CreateUsers
 	return nil, nil, nil
 }
 
+// UpdateGroupUsers updates group users based on the mocked function.
+func (m *MockClient) UpdateGroupUsers(ctx context.Context, groupID string, request client.UpdateGroupUsersRequest) (*client.UpdateGroupUsersResponse, annotations.Annotations, error) {
+	if m.UpdateGroupUsersFunc != nil {
+		return m.UpdateGroupUsersFunc(ctx, groupID, request)
+	}
+	return nil, nil, nil
+}
+
+// UpdateSigningGroup updates a signing group based on the mocked function.
+func (m *MockClient) UpdateSigningGroup(ctx context.Context, signingGroupID string, request client.UpdateSigningGroupRequest) (*client.UpdateSigningGroupResponse, annotations.Annotations, error) {
+	if m.UpdateSigningGroupFunc != nil {
+		return m.UpdateSigningGroupFunc(ctx, signingGroupID, request)
+	}
+	return nil, nil, nil
+}
+
+// UpdateUserProfile updates a user's profile based on the mocked function.
+func (m *MockClient) UpdateUserProfile(ctx context.Context, userID string, request client.UpdateUserProfileRequest) (annotations.Annotations, error) {
+	if m.UpdateUserProfileFunc != nil {
+		return m.UpdateUserProfileFunc(ctx, userID, request)
+	}
+	return nil, nil
+}
+
+func (m *MockClient) DeleteGroupUsers(ctx context.Context, groupID string, request client.UpdateGroupUsersRequest) (*client.UpdateGroupUsersResponse, annotations.Annotations, error) {
+	if m.DeleteGroupUsersFunc != nil {
+		return m.DeleteGroupUsersFunc(ctx, groupID, request)
+	}
+	return nil, nil, nil
+}
+
+func (m *MockClient) DeleteSigningGroupUsers(
+	ctx context.Context,
+	signingGroupID string,
+	request client.UpdateSigningGroupRequest,
+) (*client.UpdateSigningGroupResponse, annotations.Annotations, error) {
+	if m.DeleteSigningGroupUsersFunc != nil {
+		return m.DeleteSigningGroupUsersFunc(ctx, signingGroupID, request)
+	}
+	return nil, nil, nil
+}
+
+// GetUserDetails returns user details based on the mocked function.
+func (m *MockClient) GetUserDetails(ctx context.Context, userID string) (*client.UserDetail, annotations.Annotations, error) {
+	if m.GetUserDetailsFunc != nil {
+		return m.GetUserDetailsFunc(ctx, userID)
+	}
+	return nil, nil, nil
+}
+
+// GetUserByEmail returns a user by email based on the mocked function.
+func (m *MockClient) GetUserByEmail(ctx context.Context, userEmail string) (*client.User, annotations.Annotations, error) {
+	if m.GetUserByEmailFunc != nil {
+		return m.GetUserByEmailFunc(ctx, userEmail)
+	}
+	return nil, nil, nil
+}
+
 // GetAllUsersWithDetails returns user details for all users, based on the mocked function.
 func (m *ExtendedMockClient) GetAllUsersWithDetails(ctx context.Context) ([]*client.UserDetail, annotations.Annotations, error) {
 	if m.GetAllUsersWithDetailsFunc != nil {
 		return m.GetAllUsersWithDetailsFunc(ctx)
+	}
+	return nil, nil, nil
+}
+
+// GetSigningGroups returns a list of signing groups based on the mocked function.
+func (m *ExtendedMockClient) GetSigningGroups(ctx context.Context, opts client.PageOptions) ([]client.SigningGroup, string, annotations.Annotations, error) {
+	if m.GetSigningGroupsFunc != nil {
+		return m.GetSigningGroupsFunc(ctx, opts)
+	}
+	return nil, "", nil, nil
+}
+
+// GetSigningGroupUsers returns a list of users for a given signing group based on the mocked function.
+func (m *ExtendedMockClient) GetSigningGroupUsers(ctx context.Context, groupID string, opts client.PageOptions) ([]client.User, string, annotations.Annotations, error) {
+	if m.GetSigningGroupUsersFunc != nil {
+		return m.GetSigningGroupUsersFunc(ctx, groupID, opts)
+	}
+	return nil, "", nil, nil
+}
+
+// IsUserInSigningGroup checks if a user is in a signing group based on the mocked function.
+func (m *ExtendedMockClient) IsUserInSigningGroup(ctx context.Context, groupID, userEmail string) (bool, annotations.Annotations, error) {
+	if m.IsUserInSigningGroupFunc != nil {
+		return m.IsUserInSigningGroupFunc(ctx, groupID, userEmail)
+	}
+	return false, nil, nil
+}
+
+// GetPermissionProfiles returns a list of permission profiles based on the mocked function.
+func (m *ExtendedMockClient) GetPermissionProfiles(ctx context.Context) ([]client.PermissionProfile, annotations.Annotations, error) {
+	if m.GetPermissionProfilesFunc != nil {
+		return m.GetPermissionProfilesFunc(ctx)
 	}
 	return nil, nil, nil
 }
