@@ -74,12 +74,13 @@ const (
 	getUsers                = "/restapi/v2.1/accounts/%s/users"
 	getGroups               = "/restapi/v2.1/accounts/%s/groups"
 	getSigningGroups        = "/restapi/v2.1/accounts/%s/signing_groups"
-	getPermissions          = "/restapi/v2.1/accounts/%s/users/%s"
+	getUserDetails          = "/restapi/v2.1/accounts/%s/users/%s"
 	getGroupUsers           = "/restapi/v2.1/accounts/%s/groups/%s/users"
 	createUsers             = "/restapi/v2.1/accounts/%s/users"
 	deleteUsers             = "/restapi/v2.1/accounts/%s/users"
 	getPermissionProfiles   = "/restapi/v2.1/accounts/%s/permission_profiles"
 	updateGroupUsers        = "/restapi/v2.1/accounts/%s/groups/%s/users"
+	deleteGroupUsers        = "/restapi/v2.1/accounts/%s/groups/%s/users"
 	updateSigningGroupUsers = "/restapi/v2.1/accounts/%s/signing_groups/%s"
 	deleteSigningGroupUsers = "/restapi/v2.1/accounts/%s/signing_groups/%s/users"
 	updateUserProfile       = "/restapi/v2.1/accounts/%s/users/%s/profile"
@@ -268,6 +269,23 @@ func (c *Client) buildPermissionProfilesURL() (*url.URL, *url.URL, error) {
 	return baseURL, permissionProfilesURL, nil
 }
 
+// prepareGroupUsersRequest handles paged requests for group users.
+func (c *Client) prepareGroupUsersRequest(groupId string, options PageOptions) (*url.URL, error) {
+	c.mutex.RLock()
+	baseURI := c.baseURI
+	accountId := c.accountId
+	c.mutex.RUnlock()
+
+	baseURL, err := url.Parse(baseURI)
+	if err != nil {
+		return nil, fmt.Errorf("invalid base URL: %w", err)
+	}
+
+	// Build the endpoint with both accountId and groupId
+	endpoint := fmt.Sprintf(getGroupUsers, accountId, groupId)
+	return preparePagedRequest(baseURL, endpoint, options)
+}
+
 // GetUsers fetches a page of users from the DocuSign account.
 //
 // Pagination: This endpoint supports cursor-based pagination using start_position and count parameters.
@@ -340,7 +358,7 @@ func (c *Client) GetGroupUsers(ctx context.Context, groupId string, options Page
 
 	var usersResponse UsersResponse
 
-	groupUsersURL, err := c.prepareClientPagedRequest(fmt.Sprintf(getGroupUsers, "%s", groupId), options)
+	groupUsersURL, err := c.prepareGroupUsersRequest(groupId, options)
 	if err != nil {
 		return nil, "", nil, err
 	}
@@ -355,57 +373,13 @@ func (c *Client) GetGroupUsers(ctx context.Context, groupId string, options Page
 	return usersResponse.Users, nextToken, annos, nil
 }
 
-// IsUserInGroup checks if a specific user is a member of a group.
-//
-// Pagination: This function automatically pages through ALL group members until the user is found
-// or all pages are exhausted. Uses DefaultPageSize (100) per page for optimal performance.
-// This ensures users are found regardless of their position in the membership list.
-//
-// Returns: true if user is a member, false otherwise; accumulated annotations; error.
-func (c *Client) IsUserInGroup(ctx context.Context, groupId, userId string) (bool, annotations.Annotations, error) {
-	if err := c.ensureInitialized(ctx); err != nil {
-		return false, nil, err
-	}
-
-	allAnnos := annotations.Annotations{}
-	pageToken := ""
-
-	for {
-		users, nextToken, annos, err := c.GetGroupUsers(ctx, groupId, PageOptions{
-			PageSize:  DefaultPageSize,
-			PageToken: pageToken,
-		})
-		if err != nil {
-			return false, allAnnos, fmt.Errorf("failed to fetch group users page: %w", err)
-		}
-
-		for _, anno := range annos {
-			allAnnos.Append(anno)
-		}
-
-		// Check if user is in current page
-		for _, user := range users {
-			if user.UserId == userId {
-				return true, allAnnos, nil
-			}
-		}
-
-		if nextToken == "" {
-			break // User not found in any page
-		}
-		pageToken = nextToken
-	}
-
-	return false, allAnnos, nil
-}
-
 // GetUserDetails fetches detailed information for a specific user, including permissions.
 func (c *Client) GetUserDetails(ctx context.Context, userID string) (*UserDetail, annotations.Annotations, error) {
 	if err := c.ensureInitialized(ctx); err != nil {
 		return nil, nil, err
 	}
 
-	userURL, err := c.buildClientURL(getPermissions, userID)
+	userURL, err := c.buildClientURL(getUserDetails, userID)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -525,50 +499,6 @@ func (c *Client) GetSigningGroupUsers(ctx context.Context, groupId string, optio
 	return groupMembersResponse.Users, nextToken, annos, nil
 }
 
-// IsUserInSigningGroup checks if a specific user is a member of a signing group.
-//
-// Pagination: This function automatically pages through ALL signing group members until the user is found
-// or all pages are exhausted. Uses DefaultPageSize (100) per page for optimal performance.
-// Note: Signing groups use EMAIL for membership lookup, not userId.
-//
-// Returns: true if user is a member, false otherwise; accumulated annotations; error.
-func (c *Client) IsUserInSigningGroup(ctx context.Context, groupId, userEmail string) (bool, annotations.Annotations, error) {
-	if err := c.ensureInitialized(ctx); err != nil {
-		return false, nil, err
-	}
-
-	allAnnos := annotations.Annotations{}
-	pageToken := ""
-
-	for {
-		users, nextToken, annos, err := c.GetSigningGroupUsers(ctx, groupId, PageOptions{
-			PageSize:  DefaultPageSize,
-			PageToken: pageToken,
-		})
-		if err != nil {
-			return false, allAnnos, fmt.Errorf("failed to fetch signing group users page: %w", err)
-		}
-
-		for _, anno := range annos {
-			allAnnos.Append(anno)
-		}
-
-		// Check if user is in current page (by email for signing groups)
-		for _, user := range users {
-			if user.Email == userEmail {
-				return true, allAnnos, nil
-			}
-		}
-
-		if nextToken == "" {
-			break
-		}
-		pageToken = nextToken
-	}
-
-	return false, allAnnos, nil
-}
-
 // GetUserByEmail retrieves a user filtering by the email and the user status 'Active' or 'Activation Sent'.
 func (c *Client) GetUserByEmail(ctx context.Context, userEmail string) (*User, annotations.Annotations, error) {
 	if err := c.ensureInitialized(ctx); err != nil {
@@ -626,7 +556,7 @@ func (c *Client) GetPermissionProfiles(ctx context.Context) ([]PermissionProfile
 
 // UpdateGroupUsers adds users to a group using the DocuSign API.
 // Based on API: PUT /restapi/v2.1/accounts/{accountId}/groups/{groupId}/users.
-func (c *Client) UpdateGroupUsers(ctx context.Context, groupID string, request UpdateGroupUsersRequest) (*UpdateGroupUsersResponse, annotations.Annotations, error) {
+func (c *Client) UpdateGroupUsers(ctx context.Context, groupID string, request GroupUsersRequest) (*GroupUsersResponse, annotations.Annotations, error) {
 	if err := c.ensureInitialized(ctx); err != nil {
 		return nil, nil, err
 	}
@@ -640,7 +570,7 @@ func (c *Client) UpdateGroupUsers(ctx context.Context, groupID string, request U
 		return nil, nil, err
 	}
 
-	var response UpdateGroupUsersResponse
+	var response GroupUsersResponse
 	_, annon, err := c.doRequest(ctx, http.MethodPut, updateGroupUsersURL, request, &response)
 	if err != nil {
 		return nil, annon, fmt.Errorf("error updating group users: %w", err)
@@ -651,7 +581,7 @@ func (c *Client) UpdateGroupUsers(ctx context.Context, groupID string, request U
 
 // UpdateSigningGroup updates a signing group by adding users to it.
 // Based on API: PUT /restapi/v2.1/accounts/{accountId}/signing_groups/{signingGroupId}.
-func (c *Client) UpdateSigningGroup(ctx context.Context, signingGroupID string, request UpdateSigningGroupRequest) (*UpdateSigningGroupResponse, annotations.Annotations, error) {
+func (c *Client) UpdateSigningGroup(ctx context.Context, signingGroupID string, request SigningGroupUsersRequest) (*SigningGroupUsersResponse, annotations.Annotations, error) {
 	if err := c.ensureInitialized(ctx); err != nil {
 		return nil, nil, err
 	}
@@ -665,7 +595,7 @@ func (c *Client) UpdateSigningGroup(ctx context.Context, signingGroupID string, 
 		return nil, nil, err
 	}
 
-	var response UpdateSigningGroupResponse
+	var response SigningGroupUsersResponse
 	_, annon, err := c.doRequest(ctx, http.MethodPut, updateSigningGroupUsersURL, request, &response)
 	if err != nil {
 		return nil, annon, fmt.Errorf("error updating signing group: %w", err)
@@ -696,7 +626,7 @@ func (c *Client) UpdateUserProfile(ctx context.Context, userID string, request U
 
 // DeleteGroupUsers removes users from a group using the DocuSign API.
 // Based on API: DELETE /restapi/v2.1/accounts/{accountId}/groups/{groupId}/users.
-func (c *Client) DeleteGroupUsers(ctx context.Context, groupID string, request UpdateGroupUsersRequest) (*UpdateGroupUsersResponse, annotations.Annotations, error) {
+func (c *Client) DeleteGroupUsers(ctx context.Context, groupID string, request GroupUsersRequest) (*GroupUsersResponse, annotations.Annotations, error) {
 	if err := c.ensureInitialized(ctx); err != nil {
 		return nil, nil, err
 	}
@@ -705,12 +635,12 @@ func (c *Client) DeleteGroupUsers(ctx context.Context, groupID string, request U
 		return nil, nil, fmt.Errorf("at least one user must be provided")
 	}
 
-	deleteGroupUsersURL, err := c.buildClientURL(updateGroupUsers, groupID)
+	deleteGroupUsersURL, err := c.buildClientURL(deleteGroupUsers, groupID)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	var response UpdateGroupUsersResponse
+	var response GroupUsersResponse
 	_, annon, err := c.doRequest(ctx, http.MethodDelete, deleteGroupUsersURL, request, &response)
 	if err != nil {
 		return nil, annon, fmt.Errorf("error deleting group users: %w", err)
@@ -721,7 +651,7 @@ func (c *Client) DeleteGroupUsers(ctx context.Context, groupID string, request U
 
 // DeleteSigningGroupUsers removes users from a signing group using the DocuSign API.
 // Based on API: DELETE /restapi/v2.1/accounts/{accountId}/signing_groups/{signingGroupId}/users.
-func (c *Client) DeleteSigningGroupUsers(ctx context.Context, signingGroupID string, request UpdateSigningGroupRequest) (*UpdateSigningGroupResponse, annotations.Annotations, error) {
+func (c *Client) DeleteSigningGroupUsers(ctx context.Context, signingGroupID string, request SigningGroupUsersRequest) (*SigningGroupUsersResponse, annotations.Annotations, error) {
 	if err := c.ensureInitialized(ctx); err != nil {
 		return nil, nil, err
 	}
@@ -735,7 +665,7 @@ func (c *Client) DeleteSigningGroupUsers(ctx context.Context, signingGroupID str
 		return nil, nil, err
 	}
 
-	var response UpdateSigningGroupResponse
+	var response SigningGroupUsersResponse
 	_, annon, err := c.doRequest(ctx, http.MethodDelete, deleteSigningGroupUsersURL, request, &response)
 	if err != nil {
 		return nil, annon, fmt.Errorf("error deleting signing group users: %w", err)

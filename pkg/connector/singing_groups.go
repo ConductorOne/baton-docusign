@@ -15,19 +15,9 @@ import (
 	"go.uber.org/zap"
 )
 
-type signingGroupsClientInterface interface {
-	GetSigningGroups(ctx context.Context, options client.PageOptions) ([]client.SigningGroup, string, annotations.Annotations, error)
-	GetSigningGroupUsers(ctx context.Context, groupID string, options client.PageOptions) ([]client.User, string, annotations.Annotations, error)
-	IsUserInSigningGroup(ctx context.Context, groupID, userEmail string) (bool, annotations.Annotations, error)
-	GetUserByEmail(ctx context.Context, userEmail string) (*client.User, annotations.Annotations, error)
-	GetUserDetails(ctx context.Context, userID string) (*client.UserDetail, annotations.Annotations, error)
-	UpdateSigningGroup(ctx context.Context, signingGroupID string, request client.UpdateSigningGroupRequest) (*client.UpdateSigningGroupResponse, annotations.Annotations, error)
-	DeleteSigningGroupUsers(ctx context.Context, signingGroupID string, request client.UpdateSigningGroupRequest) (*client.UpdateSigningGroupResponse, annotations.Annotations, error)
-}
-
 type signingGroupBuilder struct {
 	resourceType *v2.ResourceType
-	client       signingGroupsClientInterface
+	client       *client.Client
 }
 
 func (g *signingGroupBuilder) ResourceType(_ context.Context) *v2.ResourceType {
@@ -156,16 +146,7 @@ func (g *signingGroupBuilder) Grant(ctx context.Context, principal *v2.Resource,
 		return nil, nil, fmt.Errorf("failed to get user details: %w", err)
 	}
 
-	request := client.UpdateSigningGroupRequest{
-		Users: []client.SigningGroupUserIdentifier{
-			{
-				UserName: userDetails.UserName,
-				Email:    userDetails.Email,
-			},
-		},
-	}
-
-	_, annos, err := g.client.UpdateSigningGroup(ctx, signingGroupID, request)
+	_, annos, err := g.client.UpdateSigningGroup(ctx, signingGroupID, buildSigningGroupRequest(userDetails))
 	if err != nil {
 		return nil, annos, fmt.Errorf("failed to grant signing group membership: %w", err)
 	}
@@ -186,16 +167,7 @@ func (g *signingGroupBuilder) Revoke(ctx context.Context, grantObj *v2.Grant) (a
 
 	// Note: DocuSign API returns {} with 200 if user is not in the signing group (idempotent).
 	// We skip membership validation to avoid costly pagination through potentially thousands of users.
-	request := client.UpdateSigningGroupRequest{
-		Users: []client.SigningGroupUserIdentifier{
-			{
-				UserName: userDetails.UserName,
-				Email:    userDetails.Email,
-			},
-		},
-	}
-
-	_, annos, err := g.client.DeleteSigningGroupUsers(ctx, signingGroupID, request)
+	_, annos, err := g.client.DeleteSigningGroupUsers(ctx, signingGroupID, buildSigningGroupRequest(userDetails))
 	if err != nil {
 		return annos, fmt.Errorf("failed to remove user %s from signing group %s: %w", userID, signingGroupID, err)
 	}
@@ -203,10 +175,22 @@ func (g *signingGroupBuilder) Revoke(ctx context.Context, grantObj *v2.Grant) (a
 	return annos, nil
 }
 
+// buildSigningGroupRequest creates a request to add/remove a user from a signing group.
+func buildSigningGroupRequest(userDetails *client.UserDetail) client.SigningGroupUsersRequest {
+	return client.SigningGroupUsersRequest{
+		Users: []client.SigningGroupUserIdentifier{
+			{
+				UserName: userDetails.UserName,
+				Email:    userDetails.Email,
+			},
+		},
+	}
+}
+
 // newSigningGroupBuilder constructs a signingGroupBuilder with the provided API client.
 func newSigningGroupBuilder(client *client.Client) *signingGroupBuilder {
 	return &signingGroupBuilder{
-		resourceType: groupResourceType,
+		resourceType: signingGroupResourceType,
 		client:       client,
 	}
 }

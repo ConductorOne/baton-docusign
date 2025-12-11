@@ -202,8 +202,8 @@ type DeleteUsersResponse struct {
 	} `json:"users"`
 }
 
-// UpdateGroupUsersRequest represents a request to add users to a group.
-type UpdateGroupUsersRequest struct {
+// GroupUsersRequest represents a request to modify group membership (add or remove users).
+type GroupUsersRequest struct {
 	Users []GroupUserIdentifier `json:"users"`
 }
 
@@ -212,8 +212,8 @@ type GroupUserIdentifier struct {
 	UserId string `json:"userId"`
 }
 
-// UpdateGroupUsersResponse represents the response from updating group users.
-type UpdateGroupUsersResponse struct {
+// GroupUsersResponse represents the response from modifying group membership.
+type GroupUsersResponse struct {
 	Users []struct {
 		UserName   string `json:"userName"`
 		UserId     string `json:"userId"`
@@ -223,8 +223,8 @@ type UpdateGroupUsersResponse struct {
 	} `json:"users"`
 }
 
-// UpdateSigningGroupRequest represents a request to update a signing group.
-type UpdateSigningGroupRequest struct {
+// SigningGroupUsersRequest represents a request to modify signing group membership (add or remove users).
+type SigningGroupUsersRequest struct {
 	Users []SigningGroupUserIdentifier `json:"users"`
 }
 
@@ -234,8 +234,8 @@ type SigningGroupUserIdentifier struct {
 	Email    string `json:"email"`
 }
 
-// UpdateSigningGroupResponse represents the response from updating a signing group.
-type UpdateSigningGroupResponse struct {
+// SigningGroupUsersResponse represents the response from modifying signing group membership.
+type SigningGroupUsersResponse struct {
 	SigningGroupId string `json:"signingGroupId"`
 	GroupName      string `json:"groupName"`
 	GroupType      string `json:"groupType"`

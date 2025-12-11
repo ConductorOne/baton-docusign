@@ -31,6 +31,13 @@
    - Signing group membership (remove users from signing groups)
    - Permission profile revoke (assigns "DocuSign Viewer" - the default read-only profile)
 
+   **Important Note about Permission Profiles:**
+
+   - DocuSign requires all users to have at least one permission profile assigned at all times
+   - When revoking a permission profile, the connector automatically assigns "DocuSign Viewer" (the minimum permission level)
+   - **Cannot revoke "DocuSign Viewer"**: If a user already has the "DocuSign Viewer" profile, the revoke operation will fail with an error, as there is no lower permission level available
+   - Built-in profiles ("DocuSign Admin", "DocuSign Sender", "DocuSign Viewer") cannot be edited or deleted per DocuSign's design
+
 ---
 
 ## Connector credentials

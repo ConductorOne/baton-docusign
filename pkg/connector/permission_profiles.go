@@ -28,15 +28,9 @@ const (
 	defaultPermissionProfileName = "DocuSign Viewer"
 )
 
-type permissionProfilesClientInterface interface {
-	GetPermissionProfiles(ctx context.Context) ([]client.PermissionProfile, annotations.Annotations, error)
-	GetUserDetails(ctx context.Context, userID string) (*client.UserDetail, annotations.Annotations, error)
-	UpdateUserProfile(ctx context.Context, userID string, request client.UpdateUserProfileRequest) (annotations.Annotations, error)
-}
-
 type permissionProfilesBuilder struct {
 	resourceType *v2.ResourceType
-	client       permissionProfilesClientInterface
+	client       *client.Client
 }
 
 func (p *permissionProfilesBuilder) ResourceType(_ context.Context) *v2.ResourceType {
@@ -112,13 +106,16 @@ func (p *permissionProfilesBuilder) Grant(ctx context.Context, principal *v2.Res
 // Revoke "removes" a permission profile from a user by assigning the default "DocuSign Viewer" profile.
 // Note: DocuSign requires users to always have a permission profile assigned.
 // Revoking a permission profile assigns the user to "DocuSign Viewer" (the most basic, read-only profile).
+// If attempting to revoke the "DocuSign Viewer" profile itself, an error is returned.
+// If the user already has "DocuSign Viewer", the operation is idempotent (GrantAlreadyRevoked).
 func (p *permissionProfilesBuilder) Revoke(ctx context.Context, grantObj *v2.Grant) (annotations.Annotations, error) {
 	userID := grantObj.Principal.Id.Resource
+	profileToRevokeID := grantObj.Entitlement.Resource.Id.Resource
 
 	// Get the default "DocuSign Viewer" permission profile ID.
-	permissionProfiles, _, err := p.client.GetPermissionProfiles(ctx)
+	permissionProfiles, profileAnnos, err := p.client.GetPermissionProfiles(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get permission profiles: %w", err)
+		return profileAnnos, fmt.Errorf("failed to get permission profiles: %w", err)
 	}
 
 	var defaultProfileID string
@@ -130,7 +127,28 @@ func (p *permissionProfilesBuilder) Revoke(ctx context.Context, grantObj *v2.Gra
 	}
 
 	if defaultProfileID == "" {
-		return nil, fmt.Errorf("default permission profile '%s' not found in account", defaultPermissionProfileName)
+		return profileAnnos, fmt.Errorf("default permission profile '%s' not found in account", defaultPermissionProfileName)
+	}
+
+	// Check if trying to revoke the default "DocuSign Viewer" profile itself.
+	// This is not allowed as it's the minimum permission level.
+	if profileToRevokeID == defaultProfileID {
+		return profileAnnos, fmt.Errorf(
+			"cannot revoke the default '%s' profile (minimum permission level)",
+			defaultPermissionProfileName,
+		)
+	}
+
+	// Get current user details to check their current permission profile.
+	userDetail, userAnnos, err := p.client.GetUserDetails(ctx, userID)
+	if err != nil {
+		return userAnnos, fmt.Errorf("failed to get user details: %w", err)
+	}
+
+	// If the user already has the default "DocuSign Viewer" profile,
+	// the revoke operation is already complete (idempotent).
+	if userDetail.PermissionProfileName == defaultPermissionProfileName {
+		return annotations.New(&v2.GrantAlreadyRevoked{}), nil
 	}
 
 	// Assign default "DocuSign Viewer" profile.

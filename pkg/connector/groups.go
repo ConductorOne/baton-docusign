@@ -16,19 +16,10 @@ import (
 // Entitlement value representing group membership.
 const entitlementGroupMember = "member"
 
-// groupsClientInterface defines the methods required for group-related API calls.
-type groupsClientInterface interface {
-	GetGroups(ctx context.Context, options client.PageOptions) ([]client.Group, string, annotations.Annotations, error)
-	GetGroupUsers(ctx context.Context, groupID string, options client.PageOptions) ([]client.User, string, annotations.Annotations, error)
-	IsUserInGroup(ctx context.Context, groupID, userID string) (bool, annotations.Annotations, error)
-	UpdateGroupUsers(ctx context.Context, groupID string, request client.UpdateGroupUsersRequest) (*client.UpdateGroupUsersResponse, annotations.Annotations, error)
-	DeleteGroupUsers(ctx context.Context, groupID string, request client.UpdateGroupUsersRequest) (*client.UpdateGroupUsersResponse, annotations.Annotations, error)
-}
-
 // groupBuilder implements resource listing, entitlements, and grants for DocuSign groups.
 type groupBuilder struct {
 	resourceType *v2.ResourceType
-	client       groupsClientInterface
+	client       *client.Client
 }
 
 // ResourceType returns the Baton resource type handled by this builder.
@@ -41,7 +32,7 @@ func (g *groupBuilder) List(ctx context.Context, _ *v2.ResourceId, pToken *pagin
 	var resources []*v2.Resource
 
 	annos := annotations.Annotations{}
-	bag, pageToken, err := parsePageToken(pToken.Token, &v2.ResourceId{ResourceType: userResourceType.Id})
+	bag, pageToken, err := parsePageToken(pToken.Token, &v2.ResourceId{ResourceType: groupResourceType.Id})
 	if err != nil {
 		return nil, "", nil, err
 	}
@@ -141,13 +132,7 @@ func (g *groupBuilder) Grant(ctx context.Context, principal *v2.Resource, entitl
 	groupID := entitlement.Resource.Id.Resource
 	userID := principal.Id.Resource
 
-	request := client.UpdateGroupUsersRequest{
-		Users: []client.GroupUserIdentifier{
-			{UserId: userID},
-		},
-	}
-
-	_, annos, err := g.client.UpdateGroupUsers(ctx, groupID, request)
+	_, annos, err := g.client.UpdateGroupUsers(ctx, groupID, buildGroupUsersRequest(userID))
 	if err != nil {
 		return nil, annos, fmt.Errorf("failed to grant group membership: %w", err)
 	}
@@ -160,18 +145,21 @@ func (g *groupBuilder) Revoke(ctx context.Context, grantObj *v2.Grant) (annotati
 	groupID := grantObj.Entitlement.Resource.Id.Resource
 	userID := grantObj.Principal.Id.Resource
 
-	request := client.UpdateGroupUsersRequest{
-		Users: []client.GroupUserIdentifier{
-			{UserId: userID},
-		},
-	}
-
-	_, annos, err := g.client.DeleteGroupUsers(ctx, groupID, request)
+	_, annos, err := g.client.DeleteGroupUsers(ctx, groupID, buildGroupUsersRequest(userID))
 	if err != nil {
 		return annos, fmt.Errorf("failed to remove user %s from group %s: %w", userID, groupID, err)
 	}
 
 	return annos, nil
+}
+
+// buildGroupUsersRequest creates a request to add/remove a user from a group.
+func buildGroupUsersRequest(userID string) client.GroupUsersRequest {
+	return client.GroupUsersRequest{
+		Users: []client.GroupUserIdentifier{
+			{UserId: userID},
+		},
+	}
 }
 
 // newGroupBuilder constructs a groupBuilder with the provided API client.

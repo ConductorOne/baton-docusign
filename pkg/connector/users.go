@@ -13,20 +13,12 @@ import (
 	"github.com/conductorone/baton-sdk/pkg/types/resource"
 )
 
-// UserClient defines the interface for DocuSign user API operations.
-type UserClient interface {
-	GetUsers(ctx context.Context, options client.PageOptions) ([]client.User, string, annotations.Annotations, error)
-	GetUserDetails(ctx context.Context, userID string) (*client.UserDetail, annotations.Annotations, error)
-	CreateUsers(ctx context.Context, request client.CreateUsersRequest) (*client.UserCreationResponse, annotations.Annotations, error)
-	DeleteUsers(ctx context.Context, request client.DeleteUsersRequest) (*client.DeleteUsersResponse, annotations.Annotations, error)
-}
-
 var _ connectorbuilder.AccountManager = &userBuilder{}
 
 // userBuilder handles user resource management and permission assignments.
 type userBuilder struct {
 	resourceType *v2.ResourceType
-	client       UserClient
+	client       *client.Client
 }
 
 // ResourceType returns the Baton resource type handled by this builder.
