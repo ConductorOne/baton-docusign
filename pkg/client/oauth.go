@@ -1,15 +1,21 @@
 package client
 
 import (
+	"bufio"
 	"context"
+	"fmt"
+	"os"
+	"strings"
 	"time"
 
 	"golang.org/x/oauth2"
 )
 
 var (
-	authURL      = "https://account-d.docusign.com/oauth/auth"
-	tokenURL     = "https://account-d.docusign.com/oauth/token" //nolint:gosec // token URL does not contain sensitive credentials.
+	authURLDemo  = "https://account-d.docusign.com/oauth/auth"
+	tokenURLDemo = "https://account-d.docusign.com/oauth/token" //nolint:gosec // token URL does not contain sensitive credentials.
+	authURLProd  = "https://account.docusign.com/oauth/auth"
+	tokenURLProd = "https://account.docusign.com/oauth/token" //nolint:gosec // token URL does not contain sensitive credentials.
 	defaultScope = "signature"
 )
 
@@ -21,7 +27,14 @@ type OAuth2Docusign struct {
 }
 
 // getTokenSource creates a TokenSource that always refreshes using the provided refreshToken.
-func getTokenSource(ctx context.Context, clientID, clientSecret, redirectURI, refreshToken string) oauth2.TokenSource {
+func getTokenSource(ctx context.Context, isDemo bool, clientID, clientSecret, redirectURI, refreshToken string) oauth2.TokenSource {
+	authURL := authURLProd
+	tokenURL := tokenURLProd
+	if isDemo {
+		authURL = authURLDemo
+		tokenURL = tokenURLDemo
+	}
+
 	cfg := &oauth2.Config{
 		ClientID:     clientID,
 		ClientSecret: clientSecret,
@@ -41,7 +54,14 @@ func getTokenSource(ctx context.Context, clientID, clientSecret, redirectURI, re
 }
 
 // NewOAuth2Docusign initializes a new OAuth2Docusign helper with client credentials.
-func NewOAuth2Docusign(clientID, clientSecret, redirectURI string) *OAuth2Docusign {
+func NewOAuth2Docusign(isDemo bool, clientID, clientSecret, redirectURI string) *OAuth2Docusign {
+	authURL := authURLProd
+	tokenURL := tokenURLProd
+	if isDemo {
+		authURL = authURLDemo
+		tokenURL = tokenURLDemo
+	}
+
 	cfg := &oauth2.Config{
 		ClientID:     clientID,
 		ClientSecret: clientSecret,
@@ -53,10 +73,51 @@ func NewOAuth2Docusign(clientID, clientSecret, redirectURI string) *OAuth2Docusi
 		},
 	}
 	// Start with no refresh token; will trigger initial authenticate flow.
-	ts := getTokenSource(context.Background(), clientID, clientSecret, redirectURI, "")
+	ts := getTokenSource(context.Background(), isDemo, clientID, clientSecret, redirectURI, "")
 	return &OAuth2Docusign{
 		config:      cfg,
 		tokenSource: ts,
 		token:       nil,
 	}
+}
+
+// Authorize initiates the OAuth2 authorization code flow and prompts the user to enter the authorization code.
+func (o *OAuth2Docusign) Authorize(ctx context.Context) (string, error) {
+	// Generate the authorization URL using oauth2.Config.AuthCodeURL
+	// Note: For CLI flows, state parameter is less critical than web flows,
+	// but we include it for consistency with OAuth2 best practices
+	authURL := o.config.AuthCodeURL("state", oauth2.AccessTypeOffline)
+
+	fmt.Fprintf(os.Stdout, "\nPlease visit the following URL to authorize the application:\n")
+	fmt.Fprintf(os.Stdout, "\n%s\n\n", authURL)
+	fmt.Fprint(os.Stdout, "Enter the authorization code: ")
+
+	// Read the authorization code from user input
+	reader := bufio.NewReader(os.Stdin)
+	code, err := reader.ReadString('\n')
+	if err != nil {
+		return "", fmt.Errorf("failed to read authorization code: %w", err)
+	}
+
+	// Trim whitespace and newline characters
+	code = strings.TrimSpace(code)
+
+	if code == "" {
+		return "", fmt.Errorf("authorization code cannot be empty")
+	}
+
+	return code, nil
+}
+
+// ExchangeCodeForToken exchanges an authorization code for an access token and refresh token.
+func (o *OAuth2Docusign) ExchangeCodeForToken(ctx context.Context, code string) (*oauth2.Token, error) {
+	token, err := o.config.Exchange(ctx, code)
+	if err != nil {
+		return nil, fmt.Errorf("failed to exchange authorization code: %w", err)
+	}
+
+	o.token = token
+	o.tokenSource = o.config.TokenSource(ctx, token)
+
+	return token, nil
 }

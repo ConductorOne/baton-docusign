@@ -34,17 +34,58 @@ To connect to DocuSign, you will need the following credentials:
 
 ### Obtaining Credentials
 
-1. Log in to [DocuSign Developer Account.](https://account-d.docusign.com/logout)
-2. Go to Admin → Apps and Keys.
-3. Copy The User ID.
-4. Click on Add App and Integration Key.
-5. Click in "Add App and integration Key"
-6. Configure the app:
-   - Enable User Application **User Application**
-   - Click **Add Secret Key** and copy it.
-   - Under **Additional Settings**, add your **Redirect URI** (e.g.,"http://example.com/callback")
-   - Under **CORS Settings** enable GET, POST, PUT, DELETE, and HEAD.
-7. Save the application.
+#### Step 1: Create OAuth Integration in DocuSign
+
+1. Log in to [DocuSign Developer Account](https://account-d.docusign.com) (demo) or [DocuSign Production](https://account.docusign.com) (production)
+2. Go to **Admin → Apps and Keys**
+3. Click **Add App and Integration Key**
+4. Configure the app:
+   - Enter an app name (e.g., "Baton Connector")
+   - Enable **User Application**
+   - Click **Add Secret Key** and save the **Client Secret** securely
+   - Under **Additional Settings**, add your **Redirect URI** (e.g., `http://example.com/callback`)
+   - Under **CORS Settings** enable GET, POST, PUT, DELETE, and HEAD
+5. Save the application and copy the **Integration Key** (Client ID)
+
+#### Step 2: Obtain Refresh Token
+
+The connector provides a convenient `--configure` flag to obtain your refresh token:
+
+```bash
+baton-docusign \
+  --demo=true \
+  --clientId "YOUR_CLIENT_ID" \
+  --clientSecret "YOUR_CLIENT_SECRET" \
+  --redirect-uri "http://example.com/callback" \
+  --configure
+```
+
+This will:
+
+1. Display an authorization URL
+2. Prompt you to visit the URL and authorize the application
+3. Ask you to paste the authorization code from the redirect URL
+4. Exchange the code for a refresh token and display it
+
+**Example output:**
+
+```
+Please visit the following URL to authorize the application:
+
+https://account-d.docusign.com/oauth/auth?response_type=code&scope=signature&client_id=...
+
+Enter the authorization code: <paste code here>
+
+refresh token: eyJ0eXAiOiJNVCIsImFsZyI6...
+```
+
+After visiting the URL and authorizing, you'll be redirected to:
+
+```
+http://example.com/callback?code=AUTHORIZATION_CODE
+```
+
+Copy the `code` parameter value and paste it when prompted. Save the refresh token for future use.
 
 # Getting Started
 
@@ -54,14 +95,24 @@ Before using the connector, ensure you have:
 
 - DocuSign account (demo or production)
 - Admin access to create OAuth integrations
-- All required credentials (Client ID, Client Secret, Refresh Token)
+- Client ID, Client Secret, and Redirect URI (see [Obtaining Credentials](#obtaining-credentials))
 
 ## brew
 
 ```bash
 brew install conductorone/baton/baton conductorone/baton/baton-docusign
 
+# First, obtain your refresh token
 baton-docusign \
+  --demo=true \
+  --clientId "YOUR_CLIENT_ID" \
+  --clientSecret "YOUR_CLIENT_SECRET" \
+  --redirect-uri "YOUR_REDIRECT_URI" \
+  --configure
+
+# Then, run the connector with your refresh token
+baton-docusign \
+  --demo=true \
   --clientId "YOUR_CLIENT_ID" \
   --clientSecret "YOUR_CLIENT_SECRET" \
   --redirect-uri "YOUR_REDIRECT_URI" \
@@ -73,11 +124,21 @@ baton resources
 ## docker
 
 ```bash
+# First, obtain your refresh token using --configure
+docker run --rm -it \
+  -e BATON_DEMO=true \
+  -e BATON_CLIENTID=YOUR_CLIENT_ID \
+  -e BATON_CLIENTSECRET=YOUR_CLIENT_SECRET \
+  -e BATON_REDIRECT_URI=YOUR_REDIRECT_URI \
+  ghcr.io/conductorone/baton-docusign:latest --configure
+
+# Then, run the connector with your refresh token
 docker run --rm -v $(pwd):/out \
-  -e BATON_CLIENTID=clientId \
-  -e BATON_CLIENTSECRET=clientSecret \
-  -e BATON_REDIRECT_URI=redirectUri \
-  -e BATON_REFRESH_TOKEN=refreshToken \
+  -e BATON_DEMO=true \
+  -e BATON_CLIENTID=YOUR_CLIENT_ID \
+  -e BATON_CLIENTSECRET=YOUR_CLIENT_SECRET \
+  -e BATON_REDIRECT_URI=YOUR_REDIRECT_URI \
+  -e BATON_REFRESH_TOKEN=YOUR_REFRESH_TOKEN \
   ghcr.io/conductorone/baton-docusign:latest -f "/out/sync.c1z"
 
 docker run --rm -v $(pwd):/out \
@@ -91,7 +152,17 @@ docker run --rm -v $(pwd):/out \
 go install github.com/conductorone/baton/cmd/baton@main
 go install github.com/conductorone/baton-docusign/cmd/baton-docusign@main
 
+# First, obtain your refresh token
 baton-docusign \
+  --demo=true \
+  --clientId "YOUR_CLIENT_ID" \
+  --clientSecret "YOUR_CLIENT_SECRET" \
+  --redirect-uri "YOUR_REDIRECT_URI" \
+  --configure
+
+# Then, run the connector with your refresh token
+baton-docusign \
+  --demo=true \
   --clientId "YOUR_CLIENT_ID" \
   --clientSecret "YOUR_CLIENT_SECRET" \
   --redirect-uri "YOUR_REDIRECT_URI" \
@@ -138,19 +209,20 @@ Flags:
       --client-secret string                             The client secret used to authenticate with ConductorOne ($BATON_CLIENT_SECRET)
       --clientId string                                  required: OAuth 2.0 Client ID from DocuSign ($BATON_CLIENTID)
       --clientSecret string                              required: OAuth 2.0 Client Secret from DocuSign ($BATON_CLIENTSECRET)
+      --configure                                        Get the refresh token the first time you run the connector ($BATON_CONFIGURE)
       --demo                                             Set to true for demo environment, false for production ($BATON_DEMO) (default true)
       --external-resource-c1z string                     The path to the c1z file to sync external baton resources with ($BATON_EXTERNAL_RESOURCE_C1Z)
       --external-resource-entitlement-id-filter string   The entitlement that external users, groups must have access to sync external baton resources ($BATON_EXTERNAL_RESOURCE_ENTITLEMENT_ID_FILTER)
   -f, --file string                                      The path to the c1z file to sync with ($BATON_FILE) (default "sync.c1z")
   -h, --help                                             help for baton-docusign
+      --include-signing-groups                           Set to true to include syncing signing groups (for customers with signing groups feature enabled) ($BATON_INCLUDE_SIGNING_GROUPS)
       --log-format string                                The output format for logs: json, console ($BATON_LOG_FORMAT) (default "json")
       --log-level string                                 The log level: debug, info, warn, error ($BATON_LOG_LEVEL) (default "info")
       --otel-collector-endpoint string                   The endpoint of the OpenTelemetry collector to send observability data to ($BATON_OTEL_COLLECTOR_ENDPOINT)
   -p, --provisioning                                     This must be set in order for provisioning actions to be enabled ($BATON_PROVISIONING)
       --redirect-uri string                              required: Redirect URI registered in your DocuSign integration ($BATON_REDIRECT_URI)
-      --refresh-token string                             required: Refresh token. ($BATON_REFRESH_TOKEN)
+      --refresh-token string                             OAuth 2.0 Refresh Token for DocuSign (obtain via --configure) ($BATON_REFRESH_TOKEN)
       --skip-full-sync                                   This must be set to skip a full sync ($BATON_SKIP_FULL_SYNC)
-      --include-signing-groups                           Set to true to include syncing signing groups (for customers with signing groups feature enabled) ($BATON_INCLUDE_SIGNING_GROUPS)
       --ticketing                                        This must be set to enable ticketing support ($BATON_TICKETING)
   -v, --version                                          version for baton-docusign
 

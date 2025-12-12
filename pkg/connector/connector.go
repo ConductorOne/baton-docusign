@@ -2,9 +2,12 @@ package connector
 
 import (
 	"context"
+	"fmt"
 	"io"
+	"os"
 
 	"github.com/conductorone/baton-docusign/pkg/client"
+	cfg "github.com/conductorone/baton-docusign/pkg/config"
 	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
 	"github.com/conductorone/baton-sdk/pkg/annotations"
 	"github.com/conductorone/baton-sdk/pkg/connectorbuilder"
@@ -15,6 +18,39 @@ import (
 type Connector struct {
 	client               *client.Client
 	includeSigningGroups bool
+}
+
+// Configure handles the OAuth2 authorization flow to obtain a refresh token.
+func Configure(ctx context.Context, docusignCfg *cfg.Docusign) error {
+	if docusignCfg.ClientId == "" {
+		return fmt.Errorf("client-id is required")
+	}
+
+	if docusignCfg.ClientSecret == "" {
+		return fmt.Errorf("client-secret is required")
+	}
+
+	if docusignCfg.RedirectUri == "" {
+		return fmt.Errorf("redirect-uri is required")
+	}
+
+	// Create OAuth2 helper for authorization flow
+	oauth2Helper := client.NewOAuth2Docusign(docusignCfg.Demo, docusignCfg.ClientId, docusignCfg.ClientSecret, docusignCfg.RedirectUri)
+
+	code, err := oauth2Helper.Authorize(ctx)
+	if err != nil {
+		return err
+	}
+
+	// Exchange the authorization code for tokens
+	token, err := oauth2Helper.ExchangeCodeForToken(ctx, code)
+	if err != nil {
+		return err
+	}
+
+	// Output the refresh token to stdout (not logs for security)
+	fmt.Fprintf(os.Stdout, "\nrefresh token: %s\n", token.RefreshToken)
+	return nil
 }
 
 func (d *Connector) ResourceSyncers(_ context.Context) []connectorbuilder.ResourceSyncer {

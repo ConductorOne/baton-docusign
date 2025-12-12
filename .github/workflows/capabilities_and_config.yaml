@@ -6,7 +6,7 @@ on:
       - main
 
 jobs:
-  calculate-capabilities:
+  generate_outputs:
     if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
 
