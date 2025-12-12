@@ -1,5 +1,12 @@
 name: ci
-on: pull_request
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+  push:
+    branches:
+      - main
+
 jobs:
   go-lint:
     runs-on: ubuntu-latest
@@ -28,15 +35,16 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - name: Run go tests
-        run: (set -o pipefail && go test -v -covermode=atomic -json -race ./... | tee test.json)
-      - name: Annotate go tests
+      - name: go tests
+        run: (set -o pipefail && go test -v -covermode=count -json ./... | tee test.json)
+      - name: annotate go tests
         if: always()
-        uses: guyarb/golang-test-annotations@v0.5.1
+        uses: guyarb/golang-test-annotations@v0.6.0
         with:
           test-results: test.json
 
-  integration-test:
+  test-groups:
+    needs: [go-lint, go-test]
     runs-on: ubuntu-latest
     env:
       BATON_LOG_LEVEL: debug
@@ -44,6 +52,8 @@ jobs:
       BATON_CLIENTSECRET: ${{ secrets.CLIENTSECRET }}
       BATON_REDIRECT_URI: ${{ secrets.REDIRECTURI }}
       BATON_REFRESH_TOKEN: ${{ secrets.REFRESHTOKEN }}
+      BATON_DEMO: "true"
+      BATON_INCLUDE_SIGNING_GROUPS: "true"
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -52,18 +62,73 @@ jobs:
         with:
           go-version-file: go.mod
       - name: Build baton-docusign
-        run: go build -o baton-docusign ./cmd/baton-docusign
-      - name: Validate capabilities
-        run: |
-          ./baton-docusign capabilities
-      - name: Run basic sync test
-        run: |
-          ./baton-docusign \
-            --log-level debug
+        run: go build ./cmd/baton-docusign
+      - name: Get baton
+        uses: ConductorOne/github-workflows/actions/get-baton@v3
+      - name: Grant/revoke group test
+        uses: ConductorOne/github-workflows/actions/sync-test@v3
+        with:
+          connector: ./baton-docusign
+          baton-entitlement: "${{ vars.TEST_GROUP_ENTITLEMENT }}"
+          baton-principal: "${{ vars.TEST_GROUP_PRINCIPAL }}"
+          baton-principal-type: "${{ vars.TEST_GROUP_PRINCIPAL_TYPE }}"
 
-          if [ ! -f "sync.c1z" ]; then
-            echo "Error: File sync.c1z was not generated."
-            exit 1
-          fi
-      - name: List Baton Commands
-        run: ./baton-docusign --help
+  test-signing-groups:
+    needs: [test-groups]
+    runs-on: ubuntu-latest
+    env:
+      BATON_LOG_LEVEL: debug
+      BATON_CLIENTID: ${{ secrets.CLIENTID }}
+      BATON_CLIENTSECRET: ${{ secrets.CLIENTSECRET }}
+      BATON_REDIRECT_URI: ${{ secrets.REDIRECTURI }}
+      BATON_REFRESH_TOKEN: ${{ secrets.REFRESHTOKEN }}
+      BATON_DEMO: "true"
+      BATON_INCLUDE_SIGNING_GROUPS: "true"
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Build baton-docusign
+        run: go build ./cmd/baton-docusign
+      - name: Get baton
+        uses: ConductorOne/github-workflows/actions/get-baton@v3
+      - name: Grant/revoke signing group test
+        uses: ConductorOne/github-workflows/actions/sync-test@v3
+        with:
+          connector: ./baton-docusign
+          baton-entitlement: "${{ vars.TEST_SIGNING_GROUP_ENTITLEMENT }}"
+          baton-principal: "${{ vars.TEST_SIGNING_GROUP_PRINCIPAL }}"
+          baton-principal-type: "${{ vars.TEST_SIGNING_GROUP_PRINCIPAL_TYPE }}"
+
+  test-permission-profiles:
+    needs: [test-signing-groups]
+    runs-on: ubuntu-latest
+    env:
+      BATON_LOG_LEVEL: debug
+      BATON_CLIENTID: ${{ secrets.CLIENTID }}
+      BATON_CLIENTSECRET: ${{ secrets.CLIENTSECRET }}
+      BATON_REDIRECT_URI: ${{ secrets.REDIRECTURI }}
+      BATON_REFRESH_TOKEN: ${{ secrets.REFRESHTOKEN }}
+      BATON_DEMO: "true"
+      BATON_INCLUDE_SIGNING_GROUPS: "true"
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Build baton-docusign
+        run: go build ./cmd/baton-docusign
+      - name: Get baton
+        uses: ConductorOne/github-workflows/actions/get-baton@v3
+      - name: Grant/revoke permission profile test
+        uses: ConductorOne/github-workflows/actions/sync-test@v3
+        with:
+          connector: ./baton-docusign
+          baton-entitlement: "${{ vars.TEST_PERMISSION_PROFILE_ENTITLEMENT }}"
+          baton-principal: "${{ vars.TEST_PERMISSION_PROFILE_PRINCIPAL }}"
+          baton-principal-type: "${{ vars.TEST_PERMISSION_PROFILE_PRINCIPAL_TYPE }}"

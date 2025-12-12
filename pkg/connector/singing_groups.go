@@ -11,17 +11,13 @@ import (
 	"github.com/conductorone/baton-sdk/pkg/types/entitlement"
 	"github.com/conductorone/baton-sdk/pkg/types/grant"
 	"github.com/conductorone/baton-sdk/pkg/types/resource"
+	"github.com/grpc-ecosystem/go-grpc-middleware/logging/zap/ctxzap"
+	"go.uber.org/zap"
 )
-
-type signingGroupsClientInterface interface {
-	GetSigningGroups(ctx context.Context, options client.PageOptions) ([]client.SigningGroup, string, annotations.Annotations, error)
-	GetSigningGroupUsers(ctx context.Context, groupID string, options client.PageOptions) ([]client.User, string, annotations.Annotations, error)
-	GetUserByEmail(ctx context.Context, userEmail string) (*client.User, annotations.Annotations, error)
-}
 
 type signingGroupBuilder struct {
 	resourceType *v2.ResourceType
-	client       signingGroupsClientInterface
+	client       *client.Client
 }
 
 func (g *signingGroupBuilder) ResourceType(_ context.Context) *v2.ResourceType {
@@ -90,13 +86,21 @@ func (g *signingGroupBuilder) Grants(ctx context.Context, groupResource *v2.Reso
 		PageToken: pageToken,
 	})
 	if err != nil {
-		return nil, "", nil, fmt.Errorf("docusign-connector: failed to get group users for %s: %w", groupResource.Id.Resource, err)
+		return nil, "", nil, fmt.Errorf("failed to get group users for %s: %w", groupResource.Id.Resource, err)
 	}
 	grants := make([]*v2.Grant, 0, len(signingGroupMembers))
 	for _, user := range signingGroupMembers {
+		// DocuSign API does not return userId for signing group members.
+		// We must lookup the user by email to get the userId.
 		userDetails, _, err := g.client.GetUserByEmail(ctx, user.Email)
 		if err != nil {
-			return nil, "", nil, err
+			l := ctxzap.Extract(ctx)
+			l.Warn("docusign-connector: failed to lookup user by email for signing group member, skipping",
+				zap.String("signing_group_id", groupResource.Id.Resource),
+				zap.String("email", user.Email),
+				zap.String("username", user.UserName),
+				zap.Error(err))
+			continue
 		}
 
 		userResource := &v2.Resource{
@@ -109,12 +113,10 @@ func (g *signingGroupBuilder) Grants(ctx context.Context, groupResource *v2.Reso
 			groupResource,
 			entitlementGroupMember,
 			userResource.Id,
-			grant.WithGrantMetadata(map[string]interface{}{
-				"signing_group_id":   groupResource.Id.Resource,
+			grant.WithGrantMetadata(map[string]any{
 				"signing_group_name": groupResource.DisplayName,
-				"user_id":            userDetails.UserId,
-				"email":              userDetails.Email,
-				"username":           userDetails.UserName,
+				"email":              user.Email,
+				"username":           user.UserName,
 			}),
 		))
 	}
@@ -129,17 +131,73 @@ func (g *signingGroupBuilder) Grants(ctx context.Context, groupResource *v2.Reso
 	return grants, outToken, annos, nil
 }
 
+// Grant adds a user to a signing group by calling the UpdateSigningGroup API.
+func (g *signingGroupBuilder) Grant(ctx context.Context, principal *v2.Resource, entitlement *v2.Entitlement) ([]*v2.Grant, annotations.Annotations, error) {
+	if principal.Id.ResourceType != userResourceType.Id {
+		return nil, nil, fmt.Errorf("invalid principal type: expected %s, got %s", userResourceType.Id, principal.Id.ResourceType)
+	}
+
+	signingGroupID := entitlement.Resource.Id.Resource
+	userID := principal.Id.Resource
+
+	// Get user details to obtain email and username.
+	userDetails, _, err := g.client.GetUserDetails(ctx, userID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to get user details: %w", err)
+	}
+
+	_, annos, err := g.client.UpdateSigningGroup(ctx, signingGroupID, buildSigningGroupRequest(userDetails))
+	if err != nil {
+		return nil, annos, fmt.Errorf("failed to grant signing group membership: %w", err)
+	}
+
+	return nil, annos, nil
+}
+
+// Revoke removes a user from a signing group.
+func (g *signingGroupBuilder) Revoke(ctx context.Context, grantObj *v2.Grant) (annotations.Annotations, error) {
+	signingGroupID := grantObj.Entitlement.Resource.Id.Resource
+	userID := grantObj.Principal.Id.Resource
+
+	// Get user details to obtain email for the signing group remove request.
+	userDetails, _, err := g.client.GetUserDetails(ctx, userID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get user details for %s: %w", userID, err)
+	}
+
+	// Note: DocuSign API returns {} with 200 if user is not in the signing group (idempotent).
+	// We skip membership validation to avoid costly pagination through potentially thousands of users.
+	_, annos, err := g.client.DeleteSigningGroupUsers(ctx, signingGroupID, buildSigningGroupRequest(userDetails))
+	if err != nil {
+		return annos, fmt.Errorf("failed to remove user %s from signing group %s: %w", userID, signingGroupID, err)
+	}
+
+	return annos, nil
+}
+
+// buildSigningGroupRequest creates a request to add/remove a user from a signing group.
+func buildSigningGroupRequest(userDetails *client.UserDetail) client.SigningGroupUsersRequest {
+	return client.SigningGroupUsersRequest{
+		Users: []client.SigningGroupUserIdentifier{
+			{
+				UserName: userDetails.UserName,
+				Email:    userDetails.Email,
+			},
+		},
+	}
+}
+
 // newSigningGroupBuilder constructs a signingGroupBuilder with the provided API client.
 func newSigningGroupBuilder(client *client.Client) *signingGroupBuilder {
 	return &signingGroupBuilder{
-		resourceType: groupResourceType,
+		resourceType: signingGroupResourceType,
 		client:       client,
 	}
 }
 
 // parseIntoSigningGroupResource maps a client.SigningGroup to a Baton v2.Resource.
 func parseIntoSigningGroupResource(group *client.SigningGroup) (*v2.Resource, error) {
-	profile := map[string]interface{}{
+	profile := map[string]any{
 		"group_name": group.GroupName,
 		"group_type": group.GroupType,
 		"created":    group.Created,

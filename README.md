@@ -2,30 +2,35 @@
 
 # `baton-docusign` [![Go Reference](https://pkg.go.dev/badge/github.com/conductorone/baton-docusign.svg)](https://pkg.go.dev/github.com/conductorone/baton-docusign) ![main ci](https://github.com/conductorone/baton-docusign/actions/workflows/main.yaml/badge.svg)
 
-`baton-docusign` is a connector for built using the [Baton SDK](https://github.com/conductorone/baton-sdk).
+`baton-docusign` is a connector for DocuSign built using the [Baton SDK](https://github.com/conductorone/baton-sdk). It communicates with the DocuSign eSignature REST API v2.1 to sync users, groups, signing groups, and permission profiles.
 
-Check out [Baton](https://github.com/conductorone/baton) to learn more the project in general.
+Check out [Baton](https://github.com/conductorone/baton) to learn more about the project in general.
 
 ## Connector Capabilities
 
-1. **Resources synced**:
+### Resources Synced
 
-   - Users
-   - Groups
-   - Signing Groups
-   - Permissions Profile
+- Users
+- Groups
+- Signing Groups
+- Permission Profiles
 
-2. **Account provisioning**
+### Provisioning Support
 
-   - Users
+- Users (create accounts)
+- Group membership (grant/revoke)
+- Signing group membership (grant/revoke)
+- Permission profiles (grant only - users must always have a profile assigned)
 
 ## Connector Credentials
 
-1. **ACCOUNT ID**
-2. **CLIENT ID**
-3. **CLIENT SECRET**
-4. **REDIRECT URI**
-4. **REFRESH TOKEN**
+To connect to DocuSign, you will need the following credentials:
+
+1. **Client ID** (Integration Key)
+2. **Client Secret**
+3. **Redirect URI**
+4. **Refresh Token**
+5. **Environment Selection** (demo or production)
 
 ### Obtaining Credentials
 
@@ -43,28 +48,54 @@ Check out [Baton](https://github.com/conductorone/baton) to learn more the proje
 
 # Getting Started
 
+## Prerequisites
+
+Before using the connector, ensure you have:
+
+- DocuSign account (demo or production)
+- Admin access to create OAuth integrations
+- All required credentials (Client ID, Client Secret, Refresh Token)
+
 ## brew
 
-```
+```bash
 brew install conductorone/baton/baton conductorone/baton/baton-docusign
-baton-docusign
+
+baton-docusign \
+  --clientId "YOUR_CLIENT_ID" \
+  --clientSecret "YOUR_CLIENT_SECRET" \
+  --redirect-uri "YOUR_REDIRECT_URI" \
+  --refresh-token "YOUR_REFRESH_TOKEN"
+
 baton resources
 ```
 
 ## docker
 
-```
-docker run --rm -v $(pwd):/out -e BATON_DOMAIN_URL=domain_url -e BATON_API_KEY=apiKey -e BATON_USERNAME=username ghcr.io/conductorone/baton-docusign:latest -f "/out/sync.c1z"
-docker run --rm -v $(pwd):/out ghcr.io/conductorone/baton:latest -f "/out/sync.c1z" resources
+```bash
+docker run --rm -v $(pwd):/out \
+  -e BATON_CLIENTID=clientId \
+  -e BATON_CLIENTSECRET=clientSecret \
+  -e BATON_REDIRECT_URI=redirectUri \
+  -e BATON_REFRESH_TOKEN=refreshToken \
+  ghcr.io/conductorone/baton-docusign:latest -f "/out/sync.c1z"
+
+docker run --rm -v $(pwd):/out \
+  ghcr.io/conductorone/baton:latest -f "/out/sync.c1z" resources
 ```
 
 ## source
 
-```
+```bash
+# Install baton and baton-docusign
 go install github.com/conductorone/baton/cmd/baton@main
 go install github.com/conductorone/baton-docusign/cmd/baton-docusign@main
 
-baton-docusign
+baton-docusign \
+  --clientId "YOUR_CLIENT_ID" \
+  --clientSecret "YOUR_CLIENT_SECRET" \
+  --redirect-uri "YOUR_REDIRECT_URI" \
+  --refresh-token "YOUR_REFRESH_TOKEN"
 
 baton resources
 ```
@@ -75,7 +106,8 @@ baton resources
 
 - Users
 - Groups
-- Permissions
+- Signing Groups
+- Permission Profiles
 
 # Contributing, Support and Issues
 

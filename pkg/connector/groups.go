@@ -16,16 +16,10 @@ import (
 // Entitlement value representing group membership.
 const entitlementGroupMember = "member"
 
-// groupsClientInterface defines the methods required for group-related API calls.
-type groupsClientInterface interface {
-	GetGroups(ctx context.Context, options client.PageOptions) ([]client.Group, string, annotations.Annotations, error)
-	GetGroupUsers(ctx context.Context, groupID string, options client.PageOptions) ([]client.User, string, annotations.Annotations, error)
-}
-
 // groupBuilder implements resource listing, entitlements, and grants for DocuSign groups.
 type groupBuilder struct {
 	resourceType *v2.ResourceType
-	client       groupsClientInterface
+	client       *client.Client
 }
 
 // ResourceType returns the Baton resource type handled by this builder.
@@ -38,7 +32,7 @@ func (g *groupBuilder) List(ctx context.Context, _ *v2.ResourceId, pToken *pagin
 	var resources []*v2.Resource
 
 	annos := annotations.Annotations{}
-	bag, pageToken, err := parsePageToken(pToken.Token, &v2.ResourceId{ResourceType: userResourceType.Id})
+	bag, pageToken, err := parsePageToken(pToken.Token, &v2.ResourceId{ResourceType: groupResourceType.Id})
 	if err != nil {
 		return nil, "", nil, err
 	}
@@ -98,7 +92,7 @@ func (g *groupBuilder) Grants(ctx context.Context, groupResource *v2.Resource, p
 		PageToken: pageToken,
 	})
 	if err != nil {
-		return nil, "", nil, fmt.Errorf("docusign-connector: failed to get group users for %s: %w", groupResource.Id.Resource, err)
+		return nil, "", nil, fmt.Errorf("failed to get group users for %s: %w", groupResource.Id.Resource, err)
 	}
 	grants := make([]*v2.Grant, 0, len(groupUsers))
 	for _, user := range groupUsers {
@@ -112,10 +106,8 @@ func (g *groupBuilder) Grants(ctx context.Context, groupResource *v2.Resource, p
 			groupResource,
 			entitlementGroupMember,
 			userResource.Id,
-			grant.WithGrantMetadata(map[string]interface{}{
-				"group_id":   groupResource.Id.Resource,
+			grant.WithGrantMetadata(map[string]any{
 				"group_name": groupResource.DisplayName,
-				"user_id":    user.UserId,
 				"username":   user.UserName,
 			}),
 		))
@@ -131,6 +123,45 @@ func (g *groupBuilder) Grants(ctx context.Context, groupResource *v2.Resource, p
 	return grants, outToken, annos, nil
 }
 
+// Grant adds a user to a group by calling the UpdateGroupUsers API.
+func (g *groupBuilder) Grant(ctx context.Context, principal *v2.Resource, entitlement *v2.Entitlement) ([]*v2.Grant, annotations.Annotations, error) {
+	if principal.Id.ResourceType != userResourceType.Id {
+		return nil, nil, fmt.Errorf("invalid principal type: expected %s, got %s", userResourceType.Id, principal.Id.ResourceType)
+	}
+
+	groupID := entitlement.Resource.Id.Resource
+	userID := principal.Id.Resource
+
+	_, annos, err := g.client.UpdateGroupUsers(ctx, groupID, buildGroupUsersRequest(userID))
+	if err != nil {
+		return nil, annos, fmt.Errorf("failed to grant group membership: %w", err)
+	}
+
+	return nil, annos, nil
+}
+
+// Revoke removes a user from a group.
+func (g *groupBuilder) Revoke(ctx context.Context, grantObj *v2.Grant) (annotations.Annotations, error) {
+	groupID := grantObj.Entitlement.Resource.Id.Resource
+	userID := grantObj.Principal.Id.Resource
+
+	_, annos, err := g.client.DeleteGroupUsers(ctx, groupID, buildGroupUsersRequest(userID))
+	if err != nil {
+		return annos, fmt.Errorf("failed to remove user %s from group %s: %w", userID, groupID, err)
+	}
+
+	return annos, nil
+}
+
+// buildGroupUsersRequest creates a request to add/remove a user from a group.
+func buildGroupUsersRequest(userID string) client.GroupUsersRequest {
+	return client.GroupUsersRequest{
+		Users: []client.GroupUserIdentifier{
+			{UserId: userID},
+		},
+	}
+}
+
 // newGroupBuilder constructs a groupBuilder with the provided API client.
 func newGroupBuilder(client *client.Client) *groupBuilder {
 	return &groupBuilder{
@@ -141,7 +172,7 @@ func newGroupBuilder(client *client.Client) *groupBuilder {
 
 // parseIntoGroupResource maps a client.Group to a Baton v2.Resource.
 func parseIntoGroupResource(group *client.Group) (*v2.Resource, error) {
-	profile := map[string]interface{}{
+	profile := map[string]any{
 		"group_name":  group.GroupName,
 		"group_type":  group.GroupType,
 		"users_count": group.UsersCount,

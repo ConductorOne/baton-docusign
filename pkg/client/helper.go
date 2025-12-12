@@ -12,10 +12,10 @@ import (
 	"github.com/conductorone/baton-sdk/pkg/uhttp"
 )
 
-const DefaultPageSize = 50
+const DefaultPageSize = 100
 
 // BuildURL combines the base API URL with a formatted endpoint path.
-func buildURL(base, path string, params ...interface{}) (*url.URL, error) {
+func buildURL(base, path string, params ...any) (*url.URL, error) {
 	baseURL, err := url.Parse(base)
 	if err != nil {
 		return nil, fmt.Errorf("invalid base URL: %w", err)
@@ -29,7 +29,7 @@ func buildURL(base, path string, params ...interface{}) (*url.URL, error) {
 }
 
 // DoRequestCommon executes the HTTP request and handles rate limit annotations.
-func doRequestCommon(wrapper *uhttp.BaseHttpClient, req *http.Request, res interface{}) (http.Header, annotations.Annotations, error) {
+func doRequestCommon(wrapper *uhttp.BaseHttpClient, req *http.Request, res any) (http.Header, annotations.Annotations, error) {
 	opts := []uhttp.DoOption{}
 	if res != nil {
 		opts = append(opts, uhttp.WithJSONResponse(res))
