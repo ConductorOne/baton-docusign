@@ -7,10 +7,9 @@ import (
 	"github.com/conductorone/baton-docusign/pkg/client"
 	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
 	"github.com/conductorone/baton-sdk/pkg/annotations"
-	"github.com/conductorone/baton-sdk/pkg/pagination"
 	"github.com/conductorone/baton-sdk/pkg/types/entitlement"
 	"github.com/conductorone/baton-sdk/pkg/types/grant"
-	"github.com/conductorone/baton-sdk/pkg/types/resource"
+	rs "github.com/conductorone/baton-sdk/pkg/types/resource"
 )
 
 // Entitlement value representing group membership.
@@ -28,21 +27,21 @@ func (g *groupBuilder) ResourceType(ctx context.Context) *v2.ResourceType {
 }
 
 // List fetches groups from the API, converts them to Baton resources, and returns pagination info.
-func (g *groupBuilder) List(ctx context.Context, _ *v2.ResourceId, pToken *pagination.Token) ([]*v2.Resource, string, annotations.Annotations, error) {
+func (g *groupBuilder) List(ctx context.Context, _ *v2.ResourceId, attr rs.SyncOpAttrs) ([]*v2.Resource, *rs.SyncOpResults, error) {
 	var resources []*v2.Resource
 
 	annos := annotations.Annotations{}
-	bag, pageToken, err := parsePageToken(pToken.Token, &v2.ResourceId{ResourceType: groupResourceType.Id})
+	bag, pageToken, err := parsePageToken(attr.PageToken.Token, &v2.ResourceId{ResourceType: groupResourceType.Id})
 	if err != nil {
-		return nil, "", nil, err
+		return nil, nil, err
 	}
 
 	groups, nextPageToken, newAnnos, err := g.client.GetGroups(ctx, client.PageOptions{
-		PageSize:  pToken.Size,
+		PageSize:  attr.PageToken.Size,
 		PageToken: pageToken,
 	})
 	if err != nil {
-		return nil, "", nil, err
+		return nil, nil, err
 	}
 
 	for _, annon := range newAnnos {
@@ -52,7 +51,7 @@ func (g *groupBuilder) List(ctx context.Context, _ *v2.ResourceId, pToken *pagin
 	for _, group := range groups {
 		groupResource, err := parseIntoGroupResource(&group)
 		if err != nil {
-			return nil, "", nil, err
+			return nil, nil, err
 		}
 		resources = append(resources, groupResource)
 	}
@@ -61,15 +60,18 @@ func (g *groupBuilder) List(ctx context.Context, _ *v2.ResourceId, pToken *pagin
 	if nextPageToken != "" {
 		outToken, err = bag.NextToken(nextPageToken)
 		if err != nil {
-			return nil, "", nil, err
+			return nil, nil, err
 		}
 	}
 
-	return resources, outToken, annos, nil
+	return resources, &rs.SyncOpResults{
+		Annotations:   annos,
+		NextPageToken: outToken,
+	}, nil
 }
 
 // Entitlements returns a "member" entitlement for each group, grantable to users.
-func (g *groupBuilder) Entitlements(ctx context.Context, groupResource *v2.Resource, pToken *pagination.Token) ([]*v2.Entitlement, string, annotations.Annotations, error) {
+func (g *groupBuilder) Entitlements(ctx context.Context, groupResource *v2.Resource, attr rs.SyncOpAttrs) ([]*v2.Entitlement, *rs.SyncOpResults, error) {
 	annos := annotations.Annotations{}
 	ent := entitlement.NewAssignmentEntitlement(
 		groupResource,
@@ -78,21 +80,21 @@ func (g *groupBuilder) Entitlements(ctx context.Context, groupResource *v2.Resou
 		entitlement.WithDisplayName(fmt.Sprintf("Member of %s", groupResource.DisplayName)),
 		entitlement.WithDescription(fmt.Sprintf("Member of %s group", groupResource.DisplayName)),
 	)
-	return []*v2.Entitlement{ent}, "", annos, nil
+	return []*v2.Entitlement{ent}, &rs.SyncOpResults{Annotations: annos}, nil
 }
 
 // Grants fetches users in the group and returns grants for the "member" entitlement.
-func (g *groupBuilder) Grants(ctx context.Context, groupResource *v2.Resource, pToken *pagination.Token) ([]*v2.Grant, string, annotations.Annotations, error) {
-	bag, pageToken, err := parsePageToken(pToken.Token, &v2.ResourceId{ResourceType: userResourceType.Id})
+func (g *groupBuilder) Grants(ctx context.Context, groupResource *v2.Resource, attr rs.SyncOpAttrs) ([]*v2.Grant, *rs.SyncOpResults, error) {
+	bag, pageToken, err := parsePageToken(attr.PageToken.Token, &v2.ResourceId{ResourceType: userResourceType.Id})
 	if err != nil {
-		return nil, "", nil, err
+		return nil, nil, err
 	}
 	groupUsers, nextPageToken, annos, err := g.client.GetGroupUsers(ctx, groupResource.Id.Resource, client.PageOptions{
-		PageSize:  pToken.Size,
+		PageSize:  attr.PageToken.Size,
 		PageToken: pageToken,
 	})
 	if err != nil {
-		return nil, "", nil, fmt.Errorf("failed to get group users for %s: %w", groupResource.Id.Resource, err)
+		return nil, nil, fmt.Errorf("failed to get group users for %s: %w", groupResource.Id.Resource, err)
 	}
 	grants := make([]*v2.Grant, 0, len(groupUsers))
 	for _, user := range groupUsers {
@@ -117,10 +119,13 @@ func (g *groupBuilder) Grants(ctx context.Context, groupResource *v2.Resource, p
 	if nextPageToken != "" {
 		outToken, err = bag.NextToken(nextPageToken)
 		if err != nil {
-			return nil, "", nil, err
+			return nil, nil, err
 		}
 	}
-	return grants, outToken, annos, nil
+	return grants, &rs.SyncOpResults{
+		NextPageToken: outToken,
+		Annotations:   annos,
+	}, nil
 }
 
 // Grant adds a user to a group by calling the UpdateGroupUsers API.
@@ -178,12 +183,12 @@ func parseIntoGroupResource(group *client.Group) (*v2.Resource, error) {
 		"users_count": group.UsersCount,
 	}
 
-	return resource.NewGroupResource(
+	return rs.NewGroupResource(
 		group.GroupName,
 		groupResourceType,
 		group.GroupId,
-		[]resource.GroupTraitOption{
-			resource.WithGroupProfile(profile),
+		[]rs.GroupTraitOption{
+			rs.WithGroupProfile(profile),
 		},
 	)
 }

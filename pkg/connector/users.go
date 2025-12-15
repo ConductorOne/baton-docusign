@@ -8,12 +8,9 @@ import (
 	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
 	"github.com/conductorone/baton-sdk/pkg/annotations"
 	"github.com/conductorone/baton-sdk/pkg/connectorbuilder"
-	"github.com/conductorone/baton-sdk/pkg/pagination"
 	"github.com/conductorone/baton-sdk/pkg/types/grant"
-	"github.com/conductorone/baton-sdk/pkg/types/resource"
+	rs "github.com/conductorone/baton-sdk/pkg/types/resource"
 )
-
-var _ connectorbuilder.AccountManager = &userBuilder{}
 
 // userBuilder handles user resource management and permission assignments.
 type userBuilder struct {
@@ -31,27 +28,27 @@ func (b *userBuilder) ResourceType(_ context.Context) *v2.ResourceType {
 func (b *userBuilder) List(
 	ctx context.Context,
 	_ *v2.ResourceId,
-	pToken *pagination.Token,
-) ([]*v2.Resource, string, annotations.Annotations, error) {
+	attr rs.SyncOpAttrs,
+) ([]*v2.Resource, *rs.SyncOpResults, error) {
 	var resources []*v2.Resource
 
-	bag, pageToken, err := parsePageToken(pToken.Token, &v2.ResourceId{ResourceType: userResourceType.Id})
+	bag, pageToken, err := parsePageToken(attr.PageToken.Token, &v2.ResourceId{ResourceType: userResourceType.Id})
 	if err != nil {
-		return nil, "", nil, err
+		return nil, nil, err
 	}
 
 	users, nextPageToken, annotation, err := b.client.GetUsers(ctx, client.PageOptions{
-		PageSize:  pToken.Size,
+		PageSize:  attr.PageToken.Size,
 		PageToken: pageToken,
 	})
 	if err != nil {
-		return nil, "", nil, err
+		return nil, nil, err
 	}
 
 	for _, user := range users {
 		userResource, err := parseIntoUserResource(&user)
 		if err != nil {
-			return nil, "", nil, err
+			return nil, nil, err
 		}
 
 		resources = append(resources, userResource)
@@ -60,26 +57,29 @@ func (b *userBuilder) List(
 	if nextPageToken != "" {
 		outToken, err = bag.NextToken(nextPageToken)
 		if err != nil {
-			return nil, "", nil, err
+			return nil, nil, err
 		}
 	}
 
-	return resources, outToken, annotation, nil
+	return resources, &rs.SyncOpResults{
+		Annotations:   annotation,
+		NextPageToken: outToken,
+	}, nil
 }
 
-func (b *userBuilder) Entitlements(_ context.Context, _ *v2.Resource, _ *pagination.Token) ([]*v2.Entitlement, string, annotations.Annotations, error) {
-	return nil, "", nil, nil
+func (b *userBuilder) Entitlements(_ context.Context, _ *v2.Resource, _ rs.SyncOpAttrs) ([]*v2.Entitlement, *rs.SyncOpResults, error) {
+	return nil, nil, nil
 }
 
 // Grants assigns permissions to users based on their DocuSign settings.
-func (b *userBuilder) Grants(ctx context.Context, resource *v2.Resource, _ *pagination.Token) ([]*v2.Grant, string, annotations.Annotations, error) {
+func (b *userBuilder) Grants(ctx context.Context, resource *v2.Resource, _ rs.SyncOpAttrs) ([]*v2.Grant, *rs.SyncOpResults, error) {
 	var grants []*v2.Grant
 	var annos annotations.Annotations
 	userID := resource.Id
 
 	userDetail, annotation, err := b.client.GetUserDetails(ctx, userID.Resource)
 	if err != nil {
-		return nil, "", nil, fmt.Errorf("failed to fetch details for %s: %w", userID.Resource, err)
+		return nil, nil, fmt.Errorf("failed to fetch details for %s: %w", userID.Resource, err)
 	}
 
 	for _, annon := range annotation {
@@ -89,7 +89,7 @@ func (b *userBuilder) Grants(ctx context.Context, resource *v2.Resource, _ *pagi
 	permissionProfileID := userDetail.PermissionProfileID
 	// A non-active user will not have any PP assigned, so this field can be empty.
 	if permissionProfileID == "" {
-		return nil, "", nil, nil
+		return nil, nil, nil
 	}
 
 	permissionProfileResource := &v2.Resource{
@@ -102,7 +102,7 @@ func (b *userBuilder) Grants(ctx context.Context, resource *v2.Resource, _ *pagi
 	newGrant := grant.NewGrant(permissionProfileResource, permissionProfileAssignedTag, userID)
 	grants = append(grants, newGrant)
 
-	return grants, "", annos, nil
+	return grants, &rs.SyncOpResults{Annotations: annos}, nil
 }
 
 // CreateAccountCapabilityDetails declares support for account provisioning without a password.
@@ -242,14 +242,14 @@ func parseIntoUserResource(user *client.User) (*v2.Resource, error) {
 		"status":     user.UserStatus,
 	}
 
-	userTraits := []resource.UserTraitOption{
-		resource.WithStatus(userStatus),
-		resource.WithUserProfile(profile),
-		resource.WithUserLogin(user.UserName),
-		resource.WithEmail(user.Email, true),
+	userTraits := []rs.UserTraitOption{
+		rs.WithStatus(userStatus),
+		rs.WithUserProfile(profile),
+		rs.WithUserLogin(user.UserName),
+		rs.WithEmail(user.Email, true),
 	}
 
-	return resource.NewUserResource(
+	return rs.NewUserResource(
 		user.UserName,
 		userResourceType,
 		user.UserId,

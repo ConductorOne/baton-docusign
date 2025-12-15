@@ -10,28 +10,28 @@ var (
 		field.WithDisplayName("Demo Environment"),
 		field.WithDescription("Set to true for demo environment, false for production"),
 		field.WithDefaultValue(true),
+		field.WithExportTarget(field.ExportTargetCLIOnly),
 	)
 
 	ClientIdField = field.StringField(
-		"clientId",
+		"docusign-client-id",
 		field.WithDisplayName("Client ID"),
 		field.WithDescription("OAuth 2.0 Client ID from DocuSign"),
-		field.WithRequired(true),
+		field.WithExportTarget(field.ExportTargetCLIOnly),
 	)
 
 	ClientSecretField = field.StringField(
-		"clientSecret",
+		"docusign-client-secret",
 		field.WithDisplayName("Client Secret"),
 		field.WithDescription("OAuth 2.0 Client Secret from DocuSign"),
-		field.WithRequired(true),
 		field.WithIsSecret(true),
+		field.WithExportTarget(field.ExportTargetCLIOnly),
 	)
 
 	RedirectURIField = field.StringField(
 		"redirect-uri",
 		field.WithDisplayName("Redirect URI"),
 		field.WithDescription("Redirect URI registered in your DocuSign integration"),
-		field.WithRequired(true),
 		field.WithExportTarget(field.ExportTargetCLIOnly),
 	)
 
@@ -39,7 +39,6 @@ var (
 		"refresh-token",
 		field.WithDisplayName("Refresh Token"),
 		field.WithDescription("OAuth 2.0 Refresh Token for DocuSign"),
-		field.WithRequired(false),
 		field.WithIsSecret(true),
 		field.WithExportTarget(field.ExportTargetCLIOnly),
 	)
@@ -48,7 +47,6 @@ var (
 		"configure",
 		field.WithDisplayName("Configure"),
 		field.WithDescription("Get the refresh token the first time you run the connector."),
-		field.WithRequired(false),
 		field.WithExportTarget(field.ExportTargetCLIOnly),
 	)
 
@@ -78,11 +76,20 @@ var (
 		IncludeSigningGroupsField,
 		Oauth2TokenField,
 	}
+
+
+	// FieldRelationships defines relationships between the ConfigurationFields that can be automatically validated.
+	// For example, a username and password can be required together, or an access token can be
+	// marked as mutually exclusive from the username password pair.
+	FieldRelationships = []field.SchemaFieldRelationship{
+		field.FieldsMutuallyExclusive(RefreshTokenField, Oauth2TokenField),
+		field.FieldsRequiredTogether(ClientIdField, ClientSecretField, RefreshTokenField, RedirectURIField)}
 )
 
 //go:generate go run ./gen
 var ConfigurationSchema = field.NewConfiguration(
 	ConfigurationFields,
+	field.WithConstraints(FieldRelationships...),
 	field.WithConnectorDisplayName("DocuSign"),
 	field.WithHelpUrl("/docs/baton/docusign"),
 	field.WithIconUrl("/static/app-icons/docusign.svg"),

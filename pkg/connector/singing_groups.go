@@ -7,10 +7,9 @@ import (
 	"github.com/conductorone/baton-docusign/pkg/client"
 	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
 	"github.com/conductorone/baton-sdk/pkg/annotations"
-	"github.com/conductorone/baton-sdk/pkg/pagination"
 	"github.com/conductorone/baton-sdk/pkg/types/entitlement"
 	"github.com/conductorone/baton-sdk/pkg/types/grant"
-	"github.com/conductorone/baton-sdk/pkg/types/resource"
+	rs "github.com/conductorone/baton-sdk/pkg/types/resource"
 	"github.com/grpc-ecosystem/go-grpc-middleware/logging/zap/ctxzap"
 	"go.uber.org/zap"
 )
@@ -24,22 +23,22 @@ func (g *signingGroupBuilder) ResourceType(_ context.Context) *v2.ResourceType {
 	return signingGroupResourceType
 }
 
-func (g *signingGroupBuilder) List(ctx context.Context, _ *v2.ResourceId, pToken *pagination.Token) ([]*v2.Resource, string, annotations.Annotations, error) {
+func (g *signingGroupBuilder) List(ctx context.Context, _ *v2.ResourceId, attr rs.SyncOpAttrs) ([]*v2.Resource, *rs.SyncOpResults, error) {
 	var (
 		sGroups []*v2.Resource
 		anno    annotations.Annotations
 	)
 
-	bag, pageToken, err := parsePageToken(pToken.Token, &v2.ResourceId{ResourceType: signingGroupResourceType.Id})
+	bag, pageToken, err := parsePageToken(attr.PageToken.Token, &v2.ResourceId{ResourceType: signingGroupResourceType.Id})
 	if err != nil {
-		return nil, "", nil, err
+		return nil, nil, err
 	}
 	signingGroups, nextPageToken, newAnnos, err := g.client.GetSigningGroups(ctx, client.PageOptions{
-		PageSize:  pToken.Size,
+		PageSize:  attr.PageToken.Size,
 		PageToken: pageToken,
 	})
 	if err != nil {
-		return nil, "", nil, err
+		return nil, nil, err
 	}
 
 	for _, newAnnotation := range newAnnos {
@@ -49,7 +48,7 @@ func (g *signingGroupBuilder) List(ctx context.Context, _ *v2.ResourceId, pToken
 	for _, signingGroup := range signingGroups {
 		signingGroupResource, err := parseIntoSigningGroupResource(&signingGroup)
 		if err != nil {
-			return nil, "", nil, err
+			return nil, nil, err
 		}
 		sGroups = append(sGroups, signingGroupResource)
 	}
@@ -58,14 +57,17 @@ func (g *signingGroupBuilder) List(ctx context.Context, _ *v2.ResourceId, pToken
 	if nextPageToken != "" {
 		outToken, err = bag.NextToken(nextPageToken)
 		if err != nil {
-			return nil, "", nil, err
+			return nil, nil, err
 		}
 	}
 
-	return sGroups, outToken, anno, nil
+	return sGroups, &rs.SyncOpResults{
+		NextPageToken: outToken,
+		Annotations:   anno,
+	}, nil
 }
 
-func (g *signingGroupBuilder) Entitlements(_ context.Context, groupResource *v2.Resource, _ *pagination.Token) ([]*v2.Entitlement, string, annotations.Annotations, error) {
+func (g *signingGroupBuilder) Entitlements(_ context.Context, groupResource *v2.Resource, _ rs.SyncOpAttrs) ([]*v2.Entitlement, *rs.SyncOpResults, error) {
 	newEntitlement := entitlement.NewAssignmentEntitlement(
 		groupResource,
 		entitlementGroupMember,
@@ -73,20 +75,20 @@ func (g *signingGroupBuilder) Entitlements(_ context.Context, groupResource *v2.
 		entitlement.WithDisplayName(fmt.Sprintf("Member of %s", groupResource.DisplayName)),
 		entitlement.WithDescription(fmt.Sprintf("Member of %s signing group", groupResource.DisplayName)),
 	)
-	return []*v2.Entitlement{newEntitlement}, "", nil, nil
+	return []*v2.Entitlement{newEntitlement}, nil, nil
 }
 
-func (g *signingGroupBuilder) Grants(ctx context.Context, groupResource *v2.Resource, pToken *pagination.Token) ([]*v2.Grant, string, annotations.Annotations, error) {
-	bag, pageToken, err := parsePageToken(pToken.Token, &v2.ResourceId{ResourceType: userResourceType.Id})
+func (g *signingGroupBuilder) Grants(ctx context.Context, groupResource *v2.Resource, attr rs.SyncOpAttrs) ([]*v2.Grant, *rs.SyncOpResults, error) {
+	bag, pageToken, err := parsePageToken(attr.PageToken.Token, &v2.ResourceId{ResourceType: userResourceType.Id})
 	if err != nil {
-		return nil, "", nil, err
+		return nil, nil, err
 	}
 	signingGroupMembers, nextPageToken, annos, err := g.client.GetSigningGroupUsers(ctx, groupResource.Id.Resource, client.PageOptions{
-		PageSize:  pToken.Size,
+		PageSize:  attr.PageToken.Size,
 		PageToken: pageToken,
 	})
 	if err != nil {
-		return nil, "", nil, fmt.Errorf("failed to get group users for %s: %w", groupResource.Id.Resource, err)
+		return nil, nil, fmt.Errorf("failed to get group users for %s: %w", groupResource.Id.Resource, err)
 	}
 	grants := make([]*v2.Grant, 0, len(signingGroupMembers))
 	for _, user := range signingGroupMembers {
@@ -125,10 +127,13 @@ func (g *signingGroupBuilder) Grants(ctx context.Context, groupResource *v2.Reso
 	if nextPageToken != "" {
 		outToken, err = bag.NextToken(nextPageToken)
 		if err != nil {
-			return nil, "", nil, err
+			return nil, nil, err
 		}
 	}
-	return grants, outToken, annos, nil
+	return grants, &rs.SyncOpResults{
+		NextPageToken: outToken,
+		Annotations:   annos,
+	}, nil
 }
 
 // Grant adds a user to a signing group by calling the UpdateSigningGroup API.
@@ -203,12 +208,12 @@ func parseIntoSigningGroupResource(group *client.SigningGroup) (*v2.Resource, er
 		"created":    group.Created,
 	}
 
-	return resource.NewGroupResource(
+	return rs.NewGroupResource(
 		group.GroupName,
 		signingGroupResourceType,
 		group.SigningGroupId,
-		[]resource.GroupTraitOption{
-			resource.WithGroupProfile(profile),
+		[]rs.GroupTraitOption{
+			rs.WithGroupProfile(profile),
 		},
 	)
 }

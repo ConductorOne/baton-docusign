@@ -7,9 +7,8 @@ import (
 	"github.com/conductorone/baton-docusign/pkg/client"
 	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
 	"github.com/conductorone/baton-sdk/pkg/annotations"
-	"github.com/conductorone/baton-sdk/pkg/pagination"
 	"github.com/conductorone/baton-sdk/pkg/types/entitlement"
-	"github.com/conductorone/baton-sdk/pkg/types/resource"
+	rs "github.com/conductorone/baton-sdk/pkg/types/resource"
 )
 
 const (
@@ -37,7 +36,7 @@ func (p *permissionProfilesBuilder) ResourceType(_ context.Context) *v2.Resource
 	return p.resourceType
 }
 
-func (p *permissionProfilesBuilder) List(ctx context.Context, _ *v2.ResourceId, _ *pagination.Token) ([]*v2.Resource, string, annotations.Annotations, error) {
+func (p *permissionProfilesBuilder) List(ctx context.Context, _ *v2.ResourceId, _ rs.SyncOpAttrs) ([]*v2.Resource, *rs.SyncOpResults, error) {
 	var (
 		pProfiles []*v2.Resource
 		anno      annotations.Annotations
@@ -45,7 +44,7 @@ func (p *permissionProfilesBuilder) List(ctx context.Context, _ *v2.ResourceId, 
 
 	permissionProfiles, newAnnos, err := p.client.GetPermissionProfiles(ctx)
 	if err != nil {
-		return nil, "", nil, err
+		return nil, nil, err
 	}
 
 	for _, newAnnotation := range newAnnos {
@@ -59,15 +58,15 @@ func (p *permissionProfilesBuilder) List(ctx context.Context, _ *v2.ResourceId, 
 
 		permissionProfileResource, err := parseIntoPermissionProfileResource(permissionProfile)
 		if err != nil {
-			return nil, "", nil, err
+			return nil, nil, err
 		}
 		pProfiles = append(pProfiles, permissionProfileResource)
 	}
 
-	return pProfiles, "", anno, nil
+	return pProfiles, &rs.SyncOpResults{Annotations: anno}, nil
 }
 
-func (p *permissionProfilesBuilder) Entitlements(_ context.Context, resource *v2.Resource, _ *pagination.Token) ([]*v2.Entitlement, string, annotations.Annotations, error) {
+func (p *permissionProfilesBuilder) Entitlements(_ context.Context, resource *v2.Resource, _ rs.SyncOpAttrs) ([]*v2.Entitlement, *rs.SyncOpResults, error) {
 	newEntitlement := entitlement.NewPermissionEntitlement(
 		resource,
 		permissionProfileAssignedTag,
@@ -75,12 +74,12 @@ func (p *permissionProfilesBuilder) Entitlements(_ context.Context, resource *v2
 		entitlement.WithDisplayName(resource.DisplayName),
 		entitlement.WithDescription(resource.Description),
 	)
-	return []*v2.Entitlement{newEntitlement}, "", nil, nil
+	return []*v2.Entitlement{newEntitlement}, nil, nil
 }
 
 // Grants would assign permissions to users. This is intentionally left empty as grants are now handled by the userBuilder.
-func (p *permissionProfilesBuilder) Grants(_ context.Context, _ *v2.Resource, _ *pagination.Token) ([]*v2.Grant, string, annotations.Annotations, error) {
-	return nil, "", nil, nil
+func (p *permissionProfilesBuilder) Grants(_ context.Context, _ *v2.Resource, _ rs.SyncOpAttrs) ([]*v2.Grant, *rs.SyncOpResults, error) {
+	return nil, nil, nil
 }
 
 // Grant assigns a permission profile to a user by updating the user's profile.
@@ -164,7 +163,7 @@ func (p *permissionProfilesBuilder) Revoke(ctx context.Context, grantObj *v2.Gra
 }
 
 func parseIntoPermissionProfileResource(permissionProfile client.PermissionProfile) (*v2.Resource, error) {
-	permissionResource, err := resource.NewRoleResource(
+	permissionResource, err := rs.NewRoleResource(
 		permissionProfile.PermissionProfileName,
 		permissionProfilesResourceType,
 		permissionProfile.PermissionProfileId,
