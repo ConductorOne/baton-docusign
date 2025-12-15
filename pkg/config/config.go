@@ -9,7 +9,7 @@ var (
 		"demo",
 		field.WithDisplayName("Demo Environment"),
 		field.WithDescription("Set to true for demo environment, false for production"),
-		field.WithDefaultValue(true),
+		field.WithDefaultValue(false),
 		field.WithExportTarget(field.ExportTargetCLIOnly),
 	)
 
