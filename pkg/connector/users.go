@@ -12,6 +12,8 @@ import (
 	rs "github.com/conductorone/baton-sdk/pkg/types/resource"
 )
 
+var _ connectorbuilder.AccountManagerV2 = &userBuilder{}
+
 // userBuilder handles user resource management and permission assignments.
 type userBuilder struct {
 	resourceType *v2.ResourceType

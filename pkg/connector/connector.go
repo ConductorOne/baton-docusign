@@ -51,6 +51,11 @@ func Configure(ctx context.Context, docusignCfg *cfg.Docusign) error {
 		return err
 	}
 
+	// Validate that we received a refresh token
+	if token.RefreshToken == "" {
+		return fmt.Errorf("received empty refresh token from DocuSign; check OAuth scopes and app configuration")
+	}
+
 	// Output the refresh token to stdout (not logs for security)
 	fmt.Fprintf(os.Stdout, "\nrefresh token: %s\n", token.RefreshToken)
 	return nil
@@ -167,11 +172,9 @@ func New(ctx context.Context, docusignCfg *cfg.Docusign, opts *cli.ConnectorOpts
 		// In production, `docusignCfg.Configure` is always false.
 		if docusignCfg.Configure {
 			if err := Configure(ctx, docusignCfg); err != nil {
-				fmt.Fprintln(os.Stderr, err.Error())
-				os.Exit(1)
-			} else {
-				os.Exit(0)
+				return nil, nil, err
 			}
+			return nil, nil, fmt.Errorf("configuration complete")
 		}
 
 		if docusignCfg.RefreshToken == "" {
@@ -193,7 +196,6 @@ func New(ctx context.Context, docusignCfg *cfg.Docusign, opts *cli.ConnectorOpts
 		}
 
 		cb = cbWithRefreshToken
-
 	}
 
 	if cb == nil {

@@ -29,8 +29,8 @@ jobs:
 
       - name: Run and save capabilities output
         env:
-          BATON_CLIENTID: ${{ secrets.CLIENTID }}
-          BATON_CLIENTSECRET: ${{ secrets.CLIENTSECRET }}
+          BATON_DOCUSIGN_CLIENT_ID: ${{ secrets.CLIENTID }}
+          BATON_DOCUSIGN_CLIENT_SECRET: ${{ secrets.CLIENTSECRET }}
           BATON_REDIRECT_URI: ${{ secrets.REDIRECTURI }}
           BATON_REFRESH_TOKEN: ${{ secrets.REFRESHTOKEN }}
           BATON_DEMO: "true"

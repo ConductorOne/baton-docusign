@@ -77,13 +77,15 @@ var (
 		Oauth2TokenField,
 	}
 
-
 	// FieldRelationships defines relationships between the ConfigurationFields that can be automatically validated.
 	// For example, a username and password can be required together, or an access token can be
 	// marked as mutually exclusive from the username password pair.
 	FieldRelationships = []field.SchemaFieldRelationship{
 		field.FieldsMutuallyExclusive(RefreshTokenField, Oauth2TokenField),
-		field.FieldsRequiredTogether(ClientIdField, ClientSecretField, RefreshTokenField, RedirectURIField)}
+		// Note: ClientIdField, ClientSecretField, and RedirectURIField are required together,
+		// but RefreshTokenField is conditionally required (not needed during --configure flow).
+		// Programmatic validation is handled in connector.go.
+		field.FieldsRequiredTogether(ClientIdField, ClientSecretField, RedirectURIField)}
 )
 
 //go:generate go run ./gen

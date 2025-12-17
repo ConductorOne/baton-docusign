@@ -127,16 +127,16 @@ baton resources
 # First, obtain your refresh token using --configure
 docker run --rm -it \
   -e BATON_DEMO=true \
-  -e BATON_CLIENTID=YOUR_CLIENT_ID \
-  -e BATON_CLIENTSECRET=YOUR_CLIENT_SECRET \
+  -e BATON_DOCUSIGN_CLIENT_ID=YOUR_CLIENT_ID \
+  -e BATON_DOCUSIGN_CLIENT_SECRET=YOUR_CLIENT_SECRET \
   -e BATON_REDIRECT_URI=YOUR_REDIRECT_URI \
   ghcr.io/conductorone/baton-docusign:latest --configure
 
 # Then, run the connector with your refresh token
 docker run --rm -v $(pwd):/out \
   -e BATON_DEMO=true \
-  -e BATON_CLIENTID=YOUR_CLIENT_ID \
-  -e BATON_CLIENTSECRET=YOUR_CLIENT_SECRET \
+  -e BATON_DOCUSIGN_CLIENT_ID=YOUR_CLIENT_ID \
+  -e BATON_DOCUSIGN_CLIENT_SECRET=YOUR_CLIENT_SECRET \
   -e BATON_REDIRECT_URI=YOUR_REDIRECT_URI \
   -e BATON_REFRESH_TOKEN=YOUR_REFRESH_TOKEN \
   ghcr.io/conductorone/baton-docusign:latest -f "/out/sync.c1z"
@@ -207,8 +207,8 @@ Available Commands:
 Flags:
       --client-id string                                 The client ID used to authenticate with ConductorOne ($BATON_CLIENT_ID)
       --client-secret string                             The client secret used to authenticate with ConductorOne ($BATON_CLIENT_SECRET)
-      --clientId string                                  required: OAuth 2.0 Client ID from DocuSign ($BATON_CLIENTID)
-      --clientSecret string                              required: OAuth 2.0 Client Secret from DocuSign ($BATON_CLIENTSECRET)
+      --docusign-client-id string                        required: OAuth 2.0 Client ID from DocuSign ($BATON_DOCUSIGN_CLIENT_ID)
+      --docusign-client-secret string                    required: OAuth 2.0 Client Secret from DocuSign ($BATON_DOCUSIGN_CLIENT_SECRET)
       --configure                                        Get the refresh token the first time you run the connector ($BATON_CONFIGURE)
       --demo                                             Set to true for demo environment, false for production ($BATON_DEMO) (default true)
       --external-resource-c1z string                     The path to the c1z file to sync external baton resources with ($BATON_EXTERNAL_RESOURCE_C1Z)
