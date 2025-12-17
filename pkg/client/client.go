@@ -61,6 +61,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -106,7 +107,7 @@ type Client struct {
 
 // New constructs a Client with OAuth2 flow, now using dynamic base URI resolution.
 func New(ctx context.Context, isDemo bool, clientID, clientSecret, redirectURI, refreshToken string) (*Client, error) {
-	tokenSource := getTokenSource(ctx, clientID, clientSecret, redirectURI, refreshToken)
+	tokenSource := getTokenSource(ctx, isDemo, clientID, clientSecret, redirectURI, refreshToken)
 	baseClient := oauth2.NewClient(ctx, tokenSource)
 
 	return &Client{
@@ -114,6 +115,61 @@ func New(ctx context.Context, isDemo bool, clientID, clientSecret, redirectURI, 
 		tokenSource: tokenSource,
 		wrapper:     uhttp.NewBaseHttpClient(baseClient),
 	}, nil
+}
+
+// RequestRefreshToken exchanges an authorization code for a refresh token.
+// DocuSign requires Basic Auth (base64(clientID:clientSecret)) and redirect_uri in the request.
+func (c *Client) RequestRefreshToken(ctx context.Context, clientID, clientSecret, redirectURI, code string) (string, error) {
+	// Select the appropriate token endpoint based on demo/production environment
+	tokenEndpoint := tokenURLProd
+	if c.isDemo {
+		tokenEndpoint = tokenURLDemo
+	}
+
+	form := url.Values{}
+	form.Set("grant_type", "authorization_code")
+	form.Set("code", code)
+	form.Set("redirect_uri", redirectURI)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenEndpoint, strings.NewReader(form.Encode()))
+	if err != nil {
+		return "", err
+	}
+
+	// DocuSign requires Basic Auth: base64(clientID:clientSecret)
+	req.SetBasicAuth(clientID, clientSecret)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	// Use a basic HTTP client instead of c.wrapper to avoid OAuth2 authentication issues
+	// during the token exchange (we don't have a valid token yet)
+	basicClient := &http.Client{
+		Timeout: 30 * time.Second,
+	}
+	baseWrapper := uhttp.NewBaseHttpClient(basicClient)
+
+	var target struct {
+		AccessToken  string `json:"access_token"`
+		RefreshToken string `json:"refresh_token"`
+		ExpiresIn    int    `json:"expires_in"`
+		TokenType    string `json:"token_type"`
+	}
+
+	res, err := baseWrapper.Do(req, uhttp.WithJSONResponse(&target))
+	if err != nil {
+		return "", err
+	}
+
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("error getting refresh token (status %s): %v", res.Status, target)
+	}
+
+	// Validate that we received a non-empty refresh token
+	if target.RefreshToken == "" {
+		return "", fmt.Errorf("received empty refresh token from DocuSign")
+	}
+
+	return target.RefreshToken, nil
 }
 
 // NewClient initializes a Client with a fixed token and optional HTTP wrapper.

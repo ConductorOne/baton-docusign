@@ -77,14 +77,55 @@
      5. In the app configuration:
         - **Client ID**: Copy the Integration Key (automatically generated)
         - **Client Secret**: Click **Add Secret Key**, copy and save it securely
-        - **Redirect URI**: Add your redirect URI (e.g., `http://localhost:8080/callback`)
+        - **Redirect URI**: Add your redirect URI (e.g., `http://example.com/callback`)
         - Enable **Authorization Code Grant** under Authentication
+        - Under **CORS Settings** enable GET, POST, PUT, DELETE, and HEAD
      6. Click **Save**
 
-     **Step 3: Generate Refresh Token**
+     **Step 3: Obtain Refresh Token Using the Connector**
 
-     7. Use the OAuth Authorization Code flow to obtain a refresh token
-     8. See [DocuSign OAuth Guide](https://developers.docusign.com/platform/auth/authcode/authcode-get-token/) for detailed steps
+     The connector provides a convenient `--configure` flag to obtain your refresh token automatically:
+
+     ```bash
+     baton-docusign \
+       --demo=true \
+       --clientId "YOUR_CLIENT_ID" \
+       --clientSecret "YOUR_CLIENT_SECRET" \
+       --redirect-uri "http://example.com/callback" \
+       --configure
+     ```
+
+     This interactive command will:
+
+     1. Display an authorization URL for you to visit
+     2. Prompt you to authorize the application in your browser
+     3. Ask you to paste the authorization code from the redirect URL
+     4. Automatically exchange the code for a refresh token
+     5. Display the refresh token for you to save
+
+     **Example flow:**
+
+     ```
+     Please visit the following URL to authorize the application:
+
+     https://account-d.docusign.com/oauth/auth?response_type=code&scope=signature&client_id=...
+
+     Enter the authorization code: <paste code here>
+
+     refresh token: eyJ0eXAiOiJNVCIsImFsZyI6...
+     ```
+
+     After visiting the authorization URL and granting access, you'll be redirected to:
+
+     ```
+     http://example.com/callback?code=AUTHORIZATION_CODE
+     ```
+
+     Copy the `code` parameter value and paste it when the connector prompts you. Save the displayed refresh token securely for future use.
+
+     **Alternative: Manual OAuth Flow**
+
+     If you prefer to obtain the refresh token manually, follow the [DocuSign OAuth Guide](https://developers.docusign.com/platform/auth/authcode/authcode-get-token/)
 
    - **Does the credential need any specific scopes or permissions?**  
      Yes. Your app must be authorized to use OAuth2 Authorization Code Grant and have access to read user and group data, as well as manage users (for provisioning).
@@ -119,5 +160,30 @@ DocuSign Signing Groups are an optional feature. To sync signing groups:
 - **Production Environment**: Use `--demo=false`
   - Base URL: `https://na3.docusign.net` (or your account's base URL)
   - OAuth URL: `https://account.docusign.com`
+
+### Refresh Token Best Practices
+
+1. **Security**: Store refresh tokens securely. They provide long-term access to your DocuSign account.
+2. **Expiration**: DocuSign refresh tokens do not expire unless explicitly revoked, but it's good practice to rotate them periodically.
+3. **Environment-specific**: Refresh tokens obtained in the demo environment cannot be used in production and vice versa.
+4. **Revocation**: You can revoke refresh tokens at any time from the DocuSign Admin Console under Apps and Keys.
+5. **Regeneration**: If you lose your refresh token or it's compromised, use the `--configure` flag to generate a new one.
+
+### Troubleshooting
+
+**Issue: "oauth2: token expired and refresh token is not set"**
+
+- This error occurs during the `--configure` step if there's an authentication issue
+- Solution: The connector has been updated to handle this correctly. Make sure you're using the latest version.
+
+**Issue: Authorization code already used**
+
+- Authorization codes are single-use only
+- Solution: If you make a mistake, visit the authorization URL again to get a new code
+
+**Issue: Invalid redirect URI**
+
+- The redirect URI in your command must exactly match the one registered in DocuSign
+- Solution: Check your DocuSign app configuration and ensure the redirect URI matches exactly (including protocol, domain, and path)
 
 ---

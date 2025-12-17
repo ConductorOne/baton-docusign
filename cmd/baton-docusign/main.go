@@ -2,17 +2,13 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"os"
 
-	connectorSchema "github.com/conductorone/baton-docusign/pkg/connector"
+	cfg "github.com/conductorone/baton-docusign/pkg/config"
+	"github.com/conductorone/baton-docusign/pkg/connector"
+	"github.com/conductorone/baton-sdk/pkg/cli"
 	"github.com/conductorone/baton-sdk/pkg/config"
 	"github.com/conductorone/baton-sdk/pkg/connectorbuilder"
-	"github.com/conductorone/baton-sdk/pkg/field"
-	"github.com/conductorone/baton-sdk/pkg/types"
-	"github.com/grpc-ecosystem/go-grpc-middleware/logging/zap/ctxzap"
-	"github.com/spf13/viper"
-	"go.uber.org/zap"
 )
 
 var version = "dev"
@@ -20,50 +16,21 @@ var version = "dev"
 func main() {
 	ctx := context.Background()
 
-	_, cmd, err := config.DefineConfiguration(
+	// Wrap the connector.New to handle configure completion
+	connectorFn := func(ctx context.Context, docusignCfg *cfg.Docusign, opts *cli.ConnectorOpts) (connectorbuilder.ConnectorBuilderV2, []connectorbuilder.Opt, error) {
+		cb, cOpts, err := connector.New(ctx, docusignCfg, opts)
+		if err != nil && err.Error() == "configuration complete" {
+			// Configure flow completed successfully, exit with success
+			os.Exit(0)
+		}
+		return cb, cOpts, err
+	}
+
+	config.RunConnector(
 		ctx,
 		"baton-docusign",
-		getConnector,
-		field.Configuration{
-			Fields: ConfigurationFields,
-		},
+		version,
+		cfg.ConfigurationSchema,
+		connectorFn,
 	)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err.Error())
-		os.Exit(1)
-	}
-
-	cmd.Version = version
-
-	err = cmd.Execute()
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err.Error())
-		os.Exit(1)
-	}
-}
-
-func getConnector(ctx context.Context, v *viper.Viper) (types.ConnectorServer, error) {
-	l := ctxzap.Extract(ctx)
-	if err := ValidateConfig(v); err != nil {
-		return nil, err
-	}
-
-	isDemo := v.GetBool(isDemoField.FieldName)
-	docusignClientId := v.GetString(clientIdField.FieldName)
-	docusignClientSecret := v.GetString(clientSecretField.FieldName)
-	docusignRedirectURI := v.GetString(redirectURIField.FieldName)
-	docusignRefreshToken := v.GetString(refreshTokenField.FieldName)
-	includeSigningGroups := v.GetBool(includeSigningGroupsField.FieldName)
-
-	cb, err := connectorSchema.New(ctx, isDemo, docusignClientId, docusignClientSecret, docusignRedirectURI, docusignRefreshToken, includeSigningGroups)
-	if err != nil {
-		l.Error("error creating connector", zap.Error(err))
-		return nil, err
-	}
-	connector, err := connectorbuilder.NewConnector(ctx, cb)
-	if err != nil {
-		l.Error("error creating connector", zap.Error(err))
-		return nil, err
-	}
-	return connector, nil
 }
