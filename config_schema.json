@@ -1,38 +1,6 @@
 {
   "fields": [
     {
-      "name": "clientId",
-      "description": "OAuth 2.0 Client ID from DocuSign",
-      "isRequired": true,
-      "stringField": {
-        "rules": {
-          "isRequired": true
-        }
-      }
-    },
-    {
-      "name": "clientSecret",
-      "description": "OAuth 2.0 Client Secret from DocuSign",
-      "isRequired": true,
-      "stringField": {
-        "rules": {
-          "isRequired": true
-        }
-      }
-    },
-    {
-      "name": "demo",
-      "description": "Set to true for demo environment, false for production",
-      "boolField": {
-        "defaultValue": true
-      }
-    },
-    {
-      "name": "include-signing-groups",
-      "description": "Set to true to include syncing signing groups (for customers with signing groups feature enabled)",
-      "boolField": {}
-    },
-    {
       "name": "log-level",
       "description": "The log level: debug, info, warn, error",
       "isOps": true,
@@ -47,14 +15,16 @@
       "stringField": {}
     },
     {
-      "name": "otel-collector-endpoint",
-      "description": "The endpoint of the OpenTelemetry collector to send observability data to (used for both tracing and logging if specific endpoints are not provided)",
+      "name": "session-store-maximum-size",
+      "description": "The maximum size of the local in-memory session store cache in bytes.",
       "isOps": true,
-      "stringField": {}
+      "intField": {
+        "defaultValue": "15728640"
+      }
     },
     {
-      "name": "otel-collector-endpoint-tls-cert",
-      "description": "A PEM-encoded certificate to use as a CA for TLS connections to the OpenTelemetry collector",
+      "name": "otel-collector-endpoint",
+      "description": "The endpoint of the OpenTelemetry collector to send observability data to (used for both tracing and logging if specific endpoints are not provided)",
       "isOps": true,
       "stringField": {}
     },
@@ -65,14 +35,14 @@
       "stringField": {}
     },
     {
-      "name": "otel-collector-endpoint-tls-insecure",
-      "description": "Allow insecure connections to the OpenTelemetry collector",
+      "name": "otel-collector-endpoint-tls-cert",
+      "description": "A PEM-encoded certificate to use as a CA for TLS connections to the OpenTelemetry collector",
       "isOps": true,
-      "boolField": {}
+      "stringField": {}
     },
     {
-      "name": "otel-logging-disabled",
-      "description": "Disable OpenTelemetry logging",
+      "name": "otel-collector-endpoint-tls-insecure",
+      "description": "Allow insecure connections to the OpenTelemetry collector",
       "isOps": true,
       "boolField": {}
     },
@@ -83,24 +53,27 @@
       "boolField": {}
     },
     {
-      "name": "redirect-uri",
-      "description": "Redirect URI registered in your DocuSign integration",
-      "isRequired": true,
-      "stringField": {
-        "rules": {
-          "isRequired": true
-        }
-      }
+      "name": "otel-logging-disabled",
+      "description": "Disable OpenTelemetry logging",
+      "isOps": true,
+      "boolField": {}
     },
     {
-      "name": "refresh-token",
-      "description": "Refresh token.",
-      "isRequired": true,
+      "name": "include-signing-groups",
+      "displayName": "Include Signing Groups",
+      "description": "Set to true to include syncing signing groups (for customers with signing groups feature enabled)",
+      "boolField": {}
+    },
+    {
+      "name": "oauth2-token",
+      "displayName": "OAuth Authentication",
+      "description": "OAuth 2.0 Authentication for DocuSign",
       "stringField": {
-        "rules": {
-          "isRequired": true
-        }
+        "type": "STRING_FIELD_TYPE_OAUTH2"
       }
     }
-  ]
+  ],
+  "displayName": "DocuSign",
+  "helpUrl": "/docs/baton/docusign",
+  "iconUrl": "/static/app-icons/docusign.svg"
 }
