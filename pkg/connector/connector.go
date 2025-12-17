@@ -161,7 +161,7 @@ func New(ctx context.Context, docusignCfg *cfg.Docusign, opts *cli.ConnectorOpts
 	}
 
 	if opts.TokenSource != nil {
-		cbWithTokenSource, err := NewWithTokenSource(ctx, docusignCfg.Demo, opts.TokenSource, docusignCfg.IncludeSigningGroups)
+		cbWithTokenSource, err := NewWithTokenSource(ctx, true, opts.TokenSource, docusignCfg.IncludeSigningGroups)
 		if err != nil {
 			l.Error("error creating connector with token source", zap.Error(err))
 			return nil, nil, err
