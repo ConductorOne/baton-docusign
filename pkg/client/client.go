@@ -62,7 +62,6 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/conductorone/baton-sdk/pkg/annotations"
@@ -95,14 +94,14 @@ const (
 
 // Client wraps HTTP interactions with the DocuSign API, handling auth and base URL.
 type Client struct {
-	isDemo         bool
-	tokenSource    oauth2.TokenSource
-	wrapper        *uhttp.BaseHttpClient
-	baseURI        string
-	accountId      string
-	userInfo       *UserInfoResponse
-	userInfoExpiry time.Time
-	mutex          sync.RWMutex // protects baseURI, accountId, userInfo, and userInfoExpiry
+	isDemo      bool
+	tokenSource oauth2.TokenSource
+	wrapper     *uhttp.BaseHttpClient
+	baseURI     string
+	accountId   string
+	userInfo    *UserInfoResponse
+	// userInfoExpiry time.Time
+	// mutex          sync.RWMutex // protects baseURI, accountId, userInfo, and userInfoExpiry
 }
 
 // New constructs a Client with OAuth2 flow, now using dynamic base URI resolution.
@@ -110,11 +109,18 @@ func New(ctx context.Context, isDemo bool, clientID, clientSecret, redirectURI, 
 	tokenSource := getTokenSource(ctx, isDemo, clientID, clientSecret, redirectURI, refreshToken)
 	baseClient := oauth2.NewClient(ctx, tokenSource)
 
-	return &Client{
+	c := &Client{
 		isDemo:      isDemo,
 		tokenSource: tokenSource,
 		wrapper:     uhttp.NewBaseHttpClient(baseClient),
-	}, nil
+	}
+
+	err := c.initializeClient(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	return c, nil
 }
 
 // RequestRefreshToken exchanges an authorization code for a refresh token.
@@ -182,11 +188,18 @@ func NewClient(ctx context.Context, isDemo bool, tokenSource oauth2.TokenSource,
 		wrapper = uhttp.NewBaseHttpClient(baseClient)
 	}
 
-	return &Client{
+	c := &Client{
 		isDemo:      isDemo,
 		tokenSource: tokenSource,
 		wrapper:     wrapper,
 	}
+
+	err := c.initializeClient(ctx)
+	if err != nil {
+		return nil
+	}
+
+	return c
 }
 
 // fetchUserInfo calls the DocuSign OAuth User Info endpoint to get account details.
@@ -218,15 +231,7 @@ func (c *Client) fetchUserInfo(ctx context.Context) (*UserInfoResponse, error) {
 }
 
 // ensureInitialized ensures the client has fetched user info and set base URI.
-func (c *Client) ensureInitialized(ctx context.Context) error {
-	c.mutex.Lock()
-	defer c.mutex.Unlock()
-
-	// Check if we have valid cached user info
-	if c.userInfo != nil && time.Now().Before(c.userInfoExpiry) {
-		return nil
-	}
-
+func (c *Client) initializeClient(ctx context.Context) error {
 	// Fetch fresh user info
 	userInfo, err := c.fetchUserInfo(ctx)
 	if err != nil {
@@ -253,7 +258,6 @@ func (c *Client) ensureInitialized(ctx context.Context) error {
 
 	// Update cached values with 1-hour expiry
 	c.userInfo = userInfo
-	c.userInfoExpiry = time.Now().Add(1 * time.Hour)
 	c.baseURI = selectedAccount.BaseURI
 	c.accountId = selectedAccount.AccountId
 
@@ -262,20 +266,16 @@ func (c *Client) ensureInitialized(ctx context.Context) error {
 
 // buildClientURL safely reads baseURI and accountId to build a URL.
 func (c *Client) buildClientURL(path string, params ...any) (*url.URL, error) {
-	c.mutex.RLock()
 	baseURI := c.baseURI
 	accountId := c.accountId
-	c.mutex.RUnlock()
 
 	return buildURL(baseURI, path, append([]any{accountId}, params...)...)
 }
 
 // prepareClientPagedRequest safely prepares a paged request URL with client's baseURI and accountId.
 func (c *Client) prepareClientPagedRequest(endpoint string, options PageOptions) (*url.URL, error) {
-	c.mutex.RLock()
 	baseURI := c.baseURI
 	accountId := c.accountId
-	c.mutex.RUnlock()
 
 	baseURL, err := url.Parse(baseURI)
 	if err != nil {
@@ -287,10 +287,8 @@ func (c *Client) prepareClientPagedRequest(endpoint string, options PageOptions)
 
 // prepareSigningGroupUsersRequest handles the special case for signing group users.
 func (c *Client) prepareSigningGroupUsersRequest(groupId string, options PageOptions) (*url.URL, error) {
-	c.mutex.RLock()
 	baseURI := c.baseURI
 	accountId := c.accountId
-	c.mutex.RUnlock()
 
 	baseURL, err := url.Parse(baseURI)
 	if err != nil {
@@ -307,10 +305,8 @@ func (c *Client) prepareSigningGroupUsersRequest(groupId string, options PageOpt
 
 // buildPermissionProfilesURL handles the special case for permission profiles.
 func (c *Client) buildPermissionProfilesURL() (*url.URL, *url.URL, error) {
-	c.mutex.RLock()
 	baseURI := c.baseURI
 	accountId := c.accountId
-	c.mutex.RUnlock()
 
 	baseURL, err := url.Parse(baseURI)
 	if err != nil {
@@ -327,10 +323,8 @@ func (c *Client) buildPermissionProfilesURL() (*url.URL, *url.URL, error) {
 
 // prepareGroupUsersRequest handles paged requests for group users.
 func (c *Client) prepareGroupUsersRequest(groupId string, options PageOptions) (*url.URL, error) {
-	c.mutex.RLock()
 	baseURI := c.baseURI
 	accountId := c.accountId
-	c.mutex.RUnlock()
 
 	baseURL, err := url.Parse(baseURI)
 	if err != nil {
@@ -350,10 +344,6 @@ func (c *Client) prepareGroupUsersRequest(groupId string, options PageOptions) (
 //
 // Returns: users list, next page token (empty if last page), annotations, error.
 func (c *Client) GetUsers(ctx context.Context, options PageOptions) ([]User, string, annotations.Annotations, error) {
-	if err := c.ensureInitialized(ctx); err != nil {
-		return nil, "", nil, err
-	}
-
 	var usersResponse UsersResponse
 
 	usersURL, err := c.prepareClientPagedRequest(getUsers, options)
@@ -379,10 +369,6 @@ func (c *Client) GetUsers(ctx context.Context, options PageOptions) ([]User, str
 //
 // Returns: groups list, next page token (empty if last page), annotations, error.
 func (c *Client) GetGroups(ctx context.Context, options PageOptions) ([]Group, string, annotations.Annotations, error) {
-	if err := c.ensureInitialized(ctx); err != nil {
-		return nil, "", nil, err
-	}
-
 	var groupsResponse GroupsResponse
 
 	groupsURL, err := c.prepareClientPagedRequest(getGroups, options)
@@ -408,10 +394,6 @@ func (c *Client) GetGroups(ctx context.Context, options PageOptions) ([]Group, s
 //
 // Returns: users list, next page token (empty if last page), annotations, error.
 func (c *Client) GetGroupUsers(ctx context.Context, groupId string, options PageOptions) ([]User, string, annotations.Annotations, error) {
-	if err := c.ensureInitialized(ctx); err != nil {
-		return nil, "", nil, err
-	}
-
 	var usersResponse UsersResponse
 
 	groupUsersURL, err := c.prepareGroupUsersRequest(groupId, options)
@@ -431,10 +413,6 @@ func (c *Client) GetGroupUsers(ctx context.Context, groupId string, options Page
 
 // GetUserDetails fetches detailed information for a specific user, including permissions.
 func (c *Client) GetUserDetails(ctx context.Context, userID string) (*UserDetail, annotations.Annotations, error) {
-	if err := c.ensureInitialized(ctx); err != nil {
-		return nil, nil, err
-	}
-
 	userURL, err := c.buildClientURL(getUserDetails, userID)
 	if err != nil {
 		return nil, nil, err
@@ -451,10 +429,6 @@ func (c *Client) GetUserDetails(ctx context.Context, userID string) (*UserDetail
 
 // CreateUsers sends a bulk create request for new users in the account.
 func (c *Client) CreateUsers(ctx context.Context, request CreateUsersRequest) (*UserCreationResponse, annotations.Annotations, error) {
-	if err := c.ensureInitialized(ctx); err != nil {
-		return nil, nil, err
-	}
-
 	if len(request.NewUsers) == 0 {
 		return nil, nil, fmt.Errorf("at least one user must be provided")
 	}
@@ -475,10 +449,6 @@ func (c *Client) CreateUsers(ctx context.Context, request CreateUsersRequest) (*
 
 // DeleteUsers sends a bulk delete request to remove users from the account.
 func (c *Client) DeleteUsers(ctx context.Context, request DeleteUsersRequest) (*DeleteUsersResponse, annotations.Annotations, error) {
-	if err := c.ensureInitialized(ctx); err != nil {
-		return nil, nil, err
-	}
-
 	if len(request.Users) == 0 {
 		return nil, nil, fmt.Errorf("at least one user must be provided")
 	}
@@ -505,10 +475,6 @@ func (c *Client) DeleteUsers(ctx context.Context, request DeleteUsersRequest) (*
 //
 // Returns: signing groups list, next page token (empty if last page), annotations, error.
 func (c *Client) GetSigningGroups(ctx context.Context, options PageOptions) ([]SigningGroup, string, annotations.Annotations, error) {
-	if err := c.ensureInitialized(ctx); err != nil {
-		return nil, "", nil, err
-	}
-
 	var signingGroupsResponse SigningGroupResponse
 
 	signingGroupsURL, err := c.prepareClientPagedRequest(getSigningGroups, options)
@@ -534,10 +500,6 @@ func (c *Client) GetSigningGroups(ctx context.Context, options PageOptions) ([]S
 //
 // Returns: users list, next page token (empty if last page), annotations, error.
 func (c *Client) GetSigningGroupUsers(ctx context.Context, groupId string, options PageOptions) ([]User, string, annotations.Annotations, error) {
-	if err := c.ensureInitialized(ctx); err != nil {
-		return nil, "", nil, err
-	}
-
 	var groupMembersResponse UsersResponse
 
 	signedGroupDetailsURL, err := c.prepareSigningGroupUsersRequest(groupId, options)
@@ -557,10 +519,6 @@ func (c *Client) GetSigningGroupUsers(ctx context.Context, groupId string, optio
 
 // GetUserByEmail retrieves a user filtering by the email and the user status 'Active' or 'Activation Sent'.
 func (c *Client) GetUserByEmail(ctx context.Context, userEmail string) (*User, annotations.Annotations, error) {
-	if err := c.ensureInitialized(ctx); err != nil {
-		return nil, nil, err
-	}
-
 	userURL, err := c.buildClientURL(getUsers)
 	if err != nil {
 		return nil, nil, err
@@ -589,10 +547,6 @@ func (c *Client) GetUserByEmail(ctx context.Context, userEmail string) (*User, a
 //
 // Returns: all permission profiles, annotations, error.
 func (c *Client) GetPermissionProfiles(ctx context.Context) ([]PermissionProfile, annotations.Annotations, error) {
-	if err := c.ensureInitialized(ctx); err != nil {
-		return nil, nil, err
-	}
-
 	var permissionProfilesResponse PermissionProfilesResponse
 
 	baseURL, permissionProfilesURL, err := c.buildPermissionProfilesURL()
@@ -613,10 +567,6 @@ func (c *Client) GetPermissionProfiles(ctx context.Context) ([]PermissionProfile
 // UpdateGroupUsers adds users to a group using the DocuSign API.
 // Based on API: PUT /restapi/v2.1/accounts/{accountId}/groups/{groupId}/users.
 func (c *Client) UpdateGroupUsers(ctx context.Context, groupID string, request GroupUsersRequest) (*GroupUsersResponse, annotations.Annotations, error) {
-	if err := c.ensureInitialized(ctx); err != nil {
-		return nil, nil, err
-	}
-
 	if len(request.Users) == 0 {
 		return nil, nil, fmt.Errorf("at least one user must be provided")
 	}
@@ -638,10 +588,6 @@ func (c *Client) UpdateGroupUsers(ctx context.Context, groupID string, request G
 // UpdateSigningGroup updates a signing group by adding users to it.
 // Based on API: PUT /restapi/v2.1/accounts/{accountId}/signing_groups/{signingGroupId}.
 func (c *Client) UpdateSigningGroup(ctx context.Context, signingGroupID string, request SigningGroupUsersRequest) (*SigningGroupUsersResponse, annotations.Annotations, error) {
-	if err := c.ensureInitialized(ctx); err != nil {
-		return nil, nil, err
-	}
-
 	if len(request.Users) == 0 {
 		return nil, nil, fmt.Errorf("at least one user must be provided")
 	}
@@ -663,10 +609,6 @@ func (c *Client) UpdateSigningGroup(ctx context.Context, signingGroupID string, 
 // UpdateUserProfile updates a user's permission profile.
 // Based on API: PUT /restapi/v2.1/accounts/{accountId}/users/{userId}/profile.
 func (c *Client) UpdateUserProfile(ctx context.Context, userID string, request UpdateUserProfileRequest) (annotations.Annotations, error) {
-	if err := c.ensureInitialized(ctx); err != nil {
-		return nil, err
-	}
-
 	updateUserProfileURL, err := c.buildClientURL(updateUserProfile, userID)
 	if err != nil {
 		return nil, err
@@ -683,10 +625,6 @@ func (c *Client) UpdateUserProfile(ctx context.Context, userID string, request U
 // DeleteGroupUsers removes users from a group using the DocuSign API.
 // Based on API: DELETE /restapi/v2.1/accounts/{accountId}/groups/{groupId}/users.
 func (c *Client) DeleteGroupUsers(ctx context.Context, groupID string, request GroupUsersRequest) (*GroupUsersResponse, annotations.Annotations, error) {
-	if err := c.ensureInitialized(ctx); err != nil {
-		return nil, nil, err
-	}
-
 	if len(request.Users) == 0 {
 		return nil, nil, fmt.Errorf("at least one user must be provided")
 	}
@@ -708,10 +646,6 @@ func (c *Client) DeleteGroupUsers(ctx context.Context, groupID string, request G
 // DeleteSigningGroupUsers removes users from a signing group using the DocuSign API.
 // Based on API: DELETE /restapi/v2.1/accounts/{accountId}/signing_groups/{signingGroupId}/users.
 func (c *Client) DeleteSigningGroupUsers(ctx context.Context, signingGroupID string, request SigningGroupUsersRequest) (*SigningGroupUsersResponse, annotations.Annotations, error) {
-	if err := c.ensureInitialized(ctx); err != nil {
-		return nil, nil, err
-	}
-
 	if len(request.Users) == 0 {
 		return nil, nil, fmt.Errorf("at least one user must be provided")
 	}
