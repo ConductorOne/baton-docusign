@@ -46,6 +46,11 @@ type C1File struct {
 	readOnly           bool
 	encoderConcurrency int
 
+	// Cached sync run for listConnectorObjects (avoids N+1 queries)
+	cachedViewSyncRun *syncRun
+	cachedViewSyncMu  sync.Mutex
+	cachedViewSyncErr error
+
 	// Slow query tracking
 	slowQueryLogTimes     map[string]time.Time
 	slowQueryLogTimesMu   sync.Mutex
@@ -260,6 +265,19 @@ func (c *C1File) init(ctx context.Context) error {
 	err = c.InitTables(ctx)
 	if err != nil {
 		return err
+	}
+
+	if c.readOnly {
+		// Disable journaling in read only mode, since we're not writing to the database.
+		_, err = c.db.ExecContext(ctx, "PRAGMA journal_mode = OFF")
+		if err != nil {
+			return err
+		}
+		// Disable synchronous writes in read only mode, since we're not writing to the database.
+		_, err = c.db.ExecContext(ctx, "PRAGMA synchronous = OFF")
+		if err != nil {
+			return err
+		}
 	}
 
 	for _, pragma := range c.pragmas {
