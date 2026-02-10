@@ -1,6 +1,6 @@
 ![Baton Logo](./baton-logo.png)
 
-# `baton-docusign` [![Go Reference](https://pkg.go.dev/badge/github.com/conductorone/baton-docusign.svg)](https://pkg.go.dev/github.com/conductorone/baton-docusign) ![main ci](https://github.com/conductorone/baton-docusign/actions/workflows/main.yaml/badge.svg)
+# `baton-docusign` [![Go Reference](https://pkg.go.dev/badge/github.com/conductorone/baton-docusign.svg)](https://pkg.go.dev/github.com/conductorone/baton-docusign) ![ci](https://github.com/conductorone/baton-docusign/actions/workflows/ci.yaml/badge.svg) ![verify](https://github.com/conductorone/baton-docusign/actions/workflows/verify.yaml/badge.svg)
 
 `baton-docusign` is a connector for DocuSign built using the [Baton SDK](https://github.com/conductorone/baton-sdk). It communicates with the DocuSign eSignature REST API v2.1 to sync users, groups, signing groups, and permission profiles.
 
