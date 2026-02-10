@@ -81,6 +81,18 @@
       }
     },
     {
+      "name": "http-timeout-seconds",
+      "description": "HTTP client timeout in seconds (max 1800)",
+      "isOps": true,
+      "intField": {
+        "defaultValue": "300",
+        "rules": {
+          "lte": "1800",
+          "gte": "1"
+        }
+      }
+    },
+    {
       "name": "include-signing-groups",
       "displayName": "Include Signing Groups",
       "description": "Set to true to include syncing signing groups (for customers with signing groups feature enabled)",
