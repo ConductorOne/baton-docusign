@@ -10,7 +10,6 @@ var (
 		field.WithDisplayName("Demo Environment"),
 		field.WithDescription("Set to true for demo environment, false for production"),
 		field.WithDefaultValue(false),
-		field.WithExportTarget(field.ExportTargetCLIOnly),
 	)
 
 	ClientIdField = field.StringField(
