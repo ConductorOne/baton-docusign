@@ -93,6 +93,12 @@
       }
     },
     {
+      "name": "demo",
+      "displayName": "Demo Environment",
+      "description": "Set to true for demo environment, false for production",
+      "boolField": {}
+    },
+    {
       "name": "include-signing-groups",
       "displayName": "Include Signing Groups",
       "description": "Set to true to include syncing signing groups (for customers with signing groups feature enabled)",
