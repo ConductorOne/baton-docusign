@@ -95,25 +95,28 @@ const (
 
 // Client wraps HTTP interactions with the DocuSign API, handling auth and base URL.
 type Client struct {
-	isDemo         bool
-	tokenSource    oauth2.TokenSource
-	wrapper        *uhttp.BaseHttpClient
-	baseURI        string
-	accountId      string
-	userInfo       *UserInfoResponse
-	userInfoExpiry time.Time
-	mutex          sync.RWMutex // protects baseURI, accountId, userInfo, and userInfoExpiry
+	isDemo          bool
+	configAccountId string // user-specified account ID from config (empty = use default)
+	tokenSource     oauth2.TokenSource
+	wrapper         *uhttp.BaseHttpClient
+	baseURI         string
+	accountId       string
+	userInfo        *UserInfoResponse
+	userInfoExpiry  time.Time
+	mutex           sync.RWMutex // protects baseURI, accountId, userInfo, and userInfoExpiry
 }
 
 // New constructs a Client with OAuth2 flow, now using dynamic base URI resolution.
-func New(ctx context.Context, isDemo bool, clientID, clientSecret, redirectURI, refreshToken string) (*Client, error) {
+// If configAccountId is non-empty, the client will select that specific account instead of the default.
+func New(ctx context.Context, isDemo bool, clientID, clientSecret, redirectURI, refreshToken, configAccountId string) (*Client, error) {
 	tokenSource := getTokenSource(ctx, isDemo, clientID, clientSecret, redirectURI, refreshToken)
 	baseClient := oauth2.NewClient(ctx, tokenSource)
 
 	return &Client{
-		isDemo:      isDemo,
-		tokenSource: tokenSource,
-		wrapper:     uhttp.NewBaseHttpClient(baseClient),
+		isDemo:          isDemo,
+		configAccountId: configAccountId,
+		tokenSource:     tokenSource,
+		wrapper:         uhttp.NewBaseHttpClient(baseClient),
 	}, nil
 }
 
@@ -174,7 +177,8 @@ func (c *Client) RequestRefreshToken(ctx context.Context, clientID, clientSecret
 }
 
 // NewClient initializes a Client with a fixed token and optional HTTP wrapper.
-func NewClient(ctx context.Context, isDemo bool, tokenSource oauth2.TokenSource, httpClient ...*uhttp.BaseHttpClient) *Client {
+// If configAccountId is non-empty, the client will select that specific account instead of the default.
+func NewClient(ctx context.Context, isDemo bool, tokenSource oauth2.TokenSource, configAccountId string, httpClient ...*uhttp.BaseHttpClient) *Client {
 	var wrapper *uhttp.BaseHttpClient
 	if len(httpClient) > 0 {
 		wrapper = httpClient[0]
@@ -184,9 +188,10 @@ func NewClient(ctx context.Context, isDemo bool, tokenSource oauth2.TokenSource,
 	}
 
 	return &Client{
-		isDemo:      isDemo,
-		tokenSource: tokenSource,
-		wrapper:     wrapper,
+		isDemo:          isDemo,
+		configAccountId: configAccountId,
+		tokenSource:     tokenSource,
+		wrapper:         wrapper,
 	}
 }
 
@@ -236,16 +241,32 @@ func (c *Client) ensureInitialized(ctx context.Context) error {
 
 	// Find the appropriate account
 	var selectedAccount *AccountInfo
-	for _, account := range userInfo.Accounts {
-		if account.IsDefault {
-			selectedAccount = &account
-			break
+	if c.configAccountId != "" {
+		// User specified an account ID — find the matching account
+		for _, account := range userInfo.Accounts {
+			if account.AccountId == c.configAccountId {
+				selectedAccount = &account
+				break
+			}
 		}
-	}
-
-	// If no default account, use the first one
-	if selectedAccount == nil && len(userInfo.Accounts) > 0 {
-		selectedAccount = &userInfo.Accounts[0]
+		if selectedAccount == nil {
+			availableIDs := make([]string, 0, len(userInfo.Accounts))
+			for _, account := range userInfo.Accounts {
+				availableIDs = append(availableIDs, account.AccountId)
+			}
+			return fmt.Errorf("configured account ID %q not found in user info; available account IDs: %v", c.configAccountId, availableIDs)
+		}
+	} else {
+		// No account ID configured — use default or first account
+		for _, account := range userInfo.Accounts {
+			if account.IsDefault {
+				selectedAccount = &account
+				break
+			}
+		}
+		if selectedAccount == nil && len(userInfo.Accounts) > 0 {
+			selectedAccount = &userInfo.Accounts[0]
+		}
 	}
 
 	if selectedAccount == nil {

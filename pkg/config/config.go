@@ -49,6 +49,12 @@ var (
 		field.WithExportTarget(field.ExportTargetCLIOnly),
 	)
 
+	AccountIdField = field.StringField(
+		"account-id",
+		field.WithDisplayName("Account ID"),
+		field.WithDescription("The DocuSign account ID to sync. If not specified, the default account (or the first account) associated with the authenticated user will be used."),
+	)
+
 	IncludeSigningGroupsField = field.BoolField(
 		"include-signing-groups",
 		field.WithDisplayName("Include Signing Groups"),
@@ -72,6 +78,7 @@ var (
 		RedirectURIField,
 		RefreshTokenField,
 		ConfigureField,
+		AccountIdField,
 		IncludeSigningGroupsField,
 		Oauth2TokenField,
 	}
