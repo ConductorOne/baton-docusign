@@ -118,6 +118,9 @@ To complete this task, you'll need the **Connector Administrator** or **Super Ad
   **Optional.** Click to **Sync signing groups**, if desired.
   </Step>
   <Step>
+  **Optional.** Enable **Demo Environment** if you need to connect to the DocuSign demo or UAT environment (`account-d.docusign.com`). Leave this disabled (the default) to connect to the DocuSign production environment (`account.docusign.com`).
+  </Step>
+  <Step>
   Click **Login with OAuth**.
   </Step>
   <Step>
@@ -211,6 +214,10 @@ stringData:
 
   # Optional: include if you want ConductorOne to sync signing groups
   BATON_INCLUDE_SIGNING_GROUPS: true
+
+  # Optional: set to true to connect to the DocuSign demo/UAT environment (account-d.docusign.com)
+  # When omitted or false, the connector targets DocuSign production (account.docusign.com)
+  BATON_DEMO: true
 ```
 
 See the connector's README or run `--help` to see all available configuration flags and environment variables.
@@ -263,5 +270,3 @@ spec:
 
 </Tab>
 </Tabs>
-
-
