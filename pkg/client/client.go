@@ -149,8 +149,8 @@ func (c *Client) RequestRefreshToken(ctx context.Context, clientID, clientSecret
 
 	// TODO: We don't need to create this here. We could just use the struct TokenResponse created on models.go
 	var target struct {
-		AccessToken  string `json:"access_token"`  //nolint:gosec // AccessToken is the name of the property that will contain the token value on the response.
-		RefreshToken string `json:"refresh_token"` //nolint:gosec // RefreshToken is the name of the property that will contain the refresh token value on the response.
+		AccessToken  string `json:"access_token"`
+		RefreshToken string `json:"refresh_token"`
 		ExpiresIn    int    `json:"expires_in"`
 		TokenType    string `json:"token_type"`
 	}
