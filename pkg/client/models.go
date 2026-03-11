@@ -6,10 +6,10 @@ import (
 )
 
 type TokenResponse struct {
-	AccessToken  string `json:"access_token"` //nolint:gosec // AccessToken is the name of the property that contains the token value on the response.
+	AccessToken  string `json:"access_token"`
 	TokenType    string `json:"token_type"`
 	ExpiresIn    int    `json:"expires_in"`
-	RefreshToken string `json:"refresh_token"` //nolint:gosec // RefreshToken is the name of the property that contains the refresh token value on the response.
+	RefreshToken string `json:"refresh_token"`
 }
 
 type PageOptions struct {
