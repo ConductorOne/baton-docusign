@@ -51,8 +51,18 @@ var (
 
 	AccountIdField = field.StringField(
 		"account-id",
-		field.WithDisplayName("Account ID"),
-		field.WithDescription("The DocuSign account ID to sync. If not specified, the default account (or the first account) associated with the authenticated user will be used."),
+		field.WithDisplayName("DocuSign Account ID"),
+		field.WithDescription("API account ID (UUID format) of the DocuSign account to be used for synchronization. "+
+			"Leave blank to use your default account. "+
+			"Warning: changing this ID between different synchronizations may result in data loss. "+
+			"If you want to synchronize different accounts, create different connectors."),
+	)
+
+	BaseURLField = field.StringField(
+		"base-url",
+		field.WithDescription("Override the DocuSign API base URL (for testing)"),
+		field.WithHidden(true),
+		field.WithExportTarget(field.ExportTargetCLIOnly),
 	)
 
 	IncludeSigningGroupsField = field.BoolField(
@@ -79,6 +89,7 @@ var (
 		RefreshTokenField,
 		ConfigureField,
 		AccountIdField,
+		BaseURLField,
 		IncludeSigningGroupsField,
 		Oauth2TokenField,
 	}
