@@ -234,9 +234,6 @@ func (c *Client) fetchUserInfo(ctx context.Context) (*UserInfoResponse, error) {
 // If configAccountId is set, it finds the matching account or returns an error.
 // Otherwise it returns the default account, or the first one if none is marked default.
 func selectAccount(accounts []AccountInfo, configAccountId string) (*AccountInfo, error) {
-	if len(accounts) == 0 {
-		return nil, fmt.Errorf("no valid account found in user info")
-	}
 	if configAccountId != "" {
 		for _, account := range accounts {
 			if account.AccountId == configAccountId {

@@ -78,6 +78,11 @@ func newTestClient(t *testing.T, userInfo UserInfoResponse, configAccountId stri
 	t.Helper()
 	mockServer := httptest.NewServer(nil)
 
+	// Deep-copy Accounts so we don't mutate the shared backing array of the
+	// package-level fixture var (which would be a data race under t.Parallel()).
+	accounts := make([]AccountInfo, len(userInfo.Accounts))
+	copy(accounts, userInfo.Accounts)
+	userInfo.Accounts = accounts
 	for i := range userInfo.Accounts {
 		userInfo.Accounts[i].BaseURI = mockServer.URL
 	}
