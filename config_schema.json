@@ -99,6 +99,12 @@
       "boolField": {}
     },
     {
+      "name": "account-id",
+      "displayName": "Account ID",
+      "description": "The DocuSign account ID to sync. If not specified, the default account (or the first account) associated with the authenticated user will be used.",
+      "stringField": {}
+    },
+    {
       "name": "include-signing-groups",
       "displayName": "Include Signing Groups",
       "description": "Set to true to include syncing signing groups (for customers with signing groups feature enabled)",

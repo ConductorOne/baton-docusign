@@ -31,6 +31,7 @@ To connect to DocuSign, you will need the following credentials:
 3. **Redirect URI**
 4. **Refresh Token**
 5. **Environment Selection** (demo or production)
+6. **Account ID** (optional — API Account ID UUID, only needed if you have multiple DocuSign accounts)
 
 ### Obtaining Credentials
 
@@ -215,6 +216,7 @@ Flags:
       --external-resource-entitlement-id-filter string   The entitlement that external users, groups must have access to sync external baton resources ($BATON_EXTERNAL_RESOURCE_ENTITLEMENT_ID_FILTER)
   -f, --file string                                      The path to the c1z file to sync with ($BATON_FILE) (default "sync.c1z")
   -h, --help                                             help for baton-docusign
+      --account-id string                                API account ID (UUID) of the DocuSign account to sync. Leave blank to use your default account. ($BATON_ACCOUNT_ID)
       --include-signing-groups                           Set to true to include syncing signing groups (for customers with signing groups feature enabled) ($BATON_INCLUDE_SIGNING_GROUPS)
       --log-format string                                The output format for logs: json, console ($BATON_LOG_FORMAT) (default "json")
       --log-level string                                 The log level: debug, info, warn, error ($BATON_LOG_LEVEL) (default "info")
