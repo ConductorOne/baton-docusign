@@ -100,8 +100,8 @@
     },
     {
       "name": "account-id",
-      "displayName": "Account ID",
-      "description": "The DocuSign account ID to sync. If not specified, the default account (or the first account) associated with the authenticated user will be used.",
+      "displayName": "DocuSign Account ID",
+      "description": "API account ID (UUID format) of the DocuSign account to be used for synchronization. Leave blank to use your default account. Warning: changing this ID between different synchronizations may result in data loss. If you want to synchronize different accounts, create different connectors.",
       "stringField": {}
     },
     {
