@@ -11,7 +11,6 @@ type Docusign struct {
 	RefreshToken         string `mapstructure:"refresh-token"`
 	Configure            bool   `mapstructure:"configure"`
 	AccountId            string `mapstructure:"account-id"`
-	BaseUrl              string `mapstructure:"base-url"`
 	IncludeSigningGroups bool   `mapstructure:"include-signing-groups"`
 	Oauth2Token          string `mapstructure:"oauth2-token"`
 }

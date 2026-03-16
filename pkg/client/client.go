@@ -93,11 +93,10 @@ const (
 	userInfoEndpointProd = "https://account.docusign.com/oauth/userinfo"
 )
 
-// Client wraps HTTP interactions with the DocuSign API, handling auth and base URL.
+// Client wraps HTTP interactions with the DocuSign API.
 type Client struct {
 	isDemo          bool
 	configAccountId string // user-specified account ID from config (empty = use default)
-	baseURL         string // overrides the /oauth/userinfo endpoint (for testing); empty means use default prod/demo URL
 	tokenSource     oauth2.TokenSource
 	wrapper         *uhttp.BaseHttpClient
 	baseURI         string
@@ -109,14 +108,13 @@ type Client struct {
 
 // New constructs a Client with OAuth2 flow, now using dynamic base URI resolution.
 // If configAccountId is non-empty, the client will select that specific account instead of the default.
-func New(ctx context.Context, isDemo bool, clientID, clientSecret, redirectURI, refreshToken, configAccountId, baseURL string) (*Client, error) {
+func New(ctx context.Context, isDemo bool, clientID, clientSecret, redirectURI, refreshToken, configAccountId string) (*Client, error) {
 	tokenSource := getTokenSource(ctx, isDemo, clientID, clientSecret, redirectURI, refreshToken)
 	baseClient := oauth2.NewClient(ctx, tokenSource)
 
 	return &Client{
 		isDemo:          isDemo,
 		configAccountId: configAccountId,
-		baseURL:         baseURL,
 		tokenSource:     tokenSource,
 		wrapper:         uhttp.NewBaseHttpClient(baseClient),
 	}, nil
@@ -180,8 +178,7 @@ func (c *Client) RequestRefreshToken(ctx context.Context, clientID, clientSecret
 
 // NewClient initializes a Client with a fixed token and optional HTTP wrapper.
 // If configAccountId is non-empty, the client will select that specific account instead of the default.
-// If baseURL is non-empty, it overrides all API endpoints (for testing against a mock server).
-func NewClient(ctx context.Context, isDemo bool, tokenSource oauth2.TokenSource, configAccountId, baseURL string, httpClient ...*uhttp.BaseHttpClient) *Client {
+func NewClient(ctx context.Context, isDemo bool, tokenSource oauth2.TokenSource, configAccountId string, httpClient ...*uhttp.BaseHttpClient) *Client {
 	var wrapper *uhttp.BaseHttpClient
 	if len(httpClient) > 0 {
 		wrapper = httpClient[0]
@@ -193,7 +190,6 @@ func NewClient(ctx context.Context, isDemo bool, tokenSource oauth2.TokenSource,
 	return &Client{
 		isDemo:          isDemo,
 		configAccountId: configAccountId,
-		baseURL:         baseURL,
 		tokenSource:     tokenSource,
 		wrapper:         wrapper,
 	}
@@ -202,12 +198,9 @@ func NewClient(ctx context.Context, isDemo bool, tokenSource oauth2.TokenSource,
 // fetchUserInfo calls the DocuSign OAuth User Info endpoint to get account details.
 func (c *Client) fetchUserInfo(ctx context.Context) (*UserInfoResponse, error) {
 	var userInfoEndpoint string
-	switch {
-	case c.baseURL != "":
-		userInfoEndpoint = c.baseURL + "/oauth/userinfo"
-	case c.isDemo:
+	if c.isDemo {
 		userInfoEndpoint = userInfoEndpointDemo
-	default:
+	} else {
 		userInfoEndpoint = userInfoEndpointProd
 	}
 
@@ -220,11 +213,11 @@ func (c *Client) fetchUserInfo(ctx context.Context) (*UserInfoResponse, error) {
 	_, _, err = c.doRequest(ctx, http.MethodGet, userInfoURL, nil, &userInfo)
 	if err != nil {
 		// Wrap the error so baton-sdk can handle retries
-		return nil, fmt.Errorf("failed to fetch user info: %w", err)
+		return nil, fmt.Errorf("baton-docusign: failed to fetch user info: %w", err)
 	}
 
 	if len(userInfo.Accounts) == 0 {
-		return nil, fmt.Errorf("no accounts found in user info response")
+		return nil, fmt.Errorf("baton-docusign: no accounts found in user info response")
 	}
 
 	return &userInfo, nil
@@ -236,7 +229,7 @@ func (c *Client) fetchUserInfo(ctx context.Context) (*UserInfoResponse, error) {
 func selectAccount(accounts []AccountInfo, configAccountId string) (*AccountInfo, error) {
 	if configAccountId != "" {
 		for _, account := range accounts {
-			if account.AccountId == configAccountId {
+			if strings.EqualFold(account.AccountId, configAccountId) {
 				return &account, nil
 			}
 		}

@@ -6,12 +6,26 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
 	"github.com/conductorone/baton-sdk/pkg/uhttp"
 	"golang.org/x/oauth2"
 )
+
+// rewriteTransport rewrites all outgoing request URLs to the given target host.
+type rewriteTransport struct {
+	target *url.URL
+	base   http.RoundTripper
+}
+
+func (t *rewriteTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	req = req.Clone(req.Context())
+	req.URL.Scheme = t.target.Scheme
+	req.URL.Host = t.target.Host
+	return t.base.RoundTrip(req)
+}
 
 // multiAccountUserInfo simulates what DocuSign's /oauth/userinfo returns for an
 // organisation with four accounts under the same tenant. The default account is
@@ -68,12 +82,11 @@ var accountUsers = map[string][]User{
 
 // newTestClient creates a Client wired to a mock httptest.Server that acts as
 // both the DocuSign OAuth userinfo endpoint and the API base URL.
-// Pass baseURL (--base-url flag equivalent) as the mock server URL so the client
-// hits the mock instead of real DocuSign endpoints.
+// A rewriteTransport redirects all outgoing requests to the mock server
 //
 // The mock server handles:
-//   - GET /oauth/userinfo             → returns the provided userInfo
-//   - GET /restapi/v2.1/accounts/{id}/users → returns per-account fixtures from accountUsers
+//   - GET /oauth/userinfo                    → returns the provided userInfo
+//   - GET /restapi/v2.1/accounts/{id}/users  → returns per-account fixtures from accountUsers
 func newTestClient(t *testing.T, userInfo UserInfoResponse, configAccountId string) (*Client, *httptest.Server) {
 	t.Helper()
 	mockServer := httptest.NewServer(nil)
@@ -108,11 +121,12 @@ func newTestClient(t *testing.T, userInfo UserInfoResponse, configAccountId stri
 		http.NotFound(w, r)
 	})
 
+	mockServerURL, _ := url.Parse(mockServer.URL)
+	transport := &rewriteTransport{target: mockServerURL, base: http.DefaultTransport}
+	testHTTPWrapper := uhttp.NewBaseHttpClient(&http.Client{Transport: transport})
 	testTokenSource := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "test-token"})
-	testHTTPWrapper := uhttp.NewBaseHttpClient(mockServer.Client())
-	testBaseURL := mockServer.URL
 
-	c := NewClient(context.Background(), false, testTokenSource, configAccountId, testBaseURL, testHTTPWrapper)
+	c := NewClient(context.Background(), false, testTokenSource, configAccountId, testHTTPWrapper)
 
 	return c, mockServer
 }

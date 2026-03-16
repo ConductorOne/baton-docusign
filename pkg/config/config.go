@@ -58,13 +58,6 @@ var (
 			"If you want to synchronize different accounts, create different connectors."),
 	)
 
-	BaseURLField = field.StringField(
-		"base-url",
-		field.WithDescription("Override the DocuSign API base URL (for testing)"),
-		field.WithHidden(true),
-		field.WithExportTarget(field.ExportTargetCLIOnly),
-	)
-
 	IncludeSigningGroupsField = field.BoolField(
 		"include-signing-groups",
 		field.WithDisplayName("Include Signing Groups"),
@@ -89,7 +82,6 @@ var (
 		RefreshTokenField,
 		ConfigureField,
 		AccountIdField,
-		BaseURLField,
 		IncludeSigningGroupsField,
 		Oauth2TokenField,
 	}

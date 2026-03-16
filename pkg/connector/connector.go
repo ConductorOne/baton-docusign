@@ -120,10 +120,10 @@ func (d *Connector) Validate(_ context.Context) (annotations.Annotations, error)
 	return nil, nil
 }
 
-func NewWithRefreshToken(ctx context.Context, isDemo bool, clientId, clientSecret, redirectURI, refreshToken, accountId, baseURL string, includeSigningGroups bool) (*Connector, error) {
+func NewWithRefreshToken(ctx context.Context, isDemo bool, clientId, clientSecret, redirectURI, refreshToken, accountId string, includeSigningGroups bool) (*Connector, error) {
 	l := ctxzap.Extract(ctx)
 
-	docusignClient, err := client.New(ctx, isDemo, clientId, clientSecret, redirectURI, refreshToken, accountId, baseURL)
+	docusignClient, err := client.New(ctx, isDemo, clientId, clientSecret, redirectURI, refreshToken, accountId)
 	if err != nil {
 		l.Error("error creating DocuSign client", zap.Error(err))
 		return nil, err
@@ -142,8 +142,8 @@ func NewWithClient(client *client.Client, includeSigningGroups bool) (*Connector
 	}, nil
 }
 
-func NewWithTokenSource(ctx context.Context, isDemo bool, tokenSource oauth2.TokenSource, accountId, baseURL string, includeSigningGroups bool) (*Connector, error) {
-	docusignClient := client.NewClient(ctx, isDemo, tokenSource, accountId, baseURL)
+func NewWithTokenSource(ctx context.Context, isDemo bool, tokenSource oauth2.TokenSource, accountId string, includeSigningGroups bool) (*Connector, error) {
+	docusignClient := client.NewClient(ctx, isDemo, tokenSource, accountId)
 
 	return &Connector{
 		client:               docusignClient,
@@ -161,7 +161,7 @@ func New(ctx context.Context, docusignCfg *cfg.Docusign, opts *cli.ConnectorOpts
 	}
 
 	if opts.TokenSource != nil {
-		cbWithTokenSource, err := NewWithTokenSource(ctx, docusignCfg.Demo, opts.TokenSource, docusignCfg.AccountId, docusignCfg.BaseUrl, docusignCfg.IncludeSigningGroups)
+		cbWithTokenSource, err := NewWithTokenSource(ctx, docusignCfg.Demo, opts.TokenSource, docusignCfg.AccountId, docusignCfg.IncludeSigningGroups)
 		if err != nil {
 			l.Error("error creating connector with token source", zap.Error(err))
 			return nil, nil, err
@@ -189,7 +189,6 @@ func New(ctx context.Context, docusignCfg *cfg.Docusign, opts *cli.ConnectorOpts
 			docusignCfg.RedirectUri,
 			docusignCfg.RefreshToken,
 			docusignCfg.AccountId,
-			docusignCfg.BaseUrl,
 			docusignCfg.IncludeSigningGroups,
 		)
 		if err != nil {
