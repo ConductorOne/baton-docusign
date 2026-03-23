@@ -160,8 +160,12 @@ func New(ctx context.Context, docusignCfg *cfg.Docusign, opts *cli.ConnectorOpts
 		return nil, nil, err
 	}
 
+	// isDemo is set explicitly via --demo flag (CLI) or implied when a custom
+	// client ID is provided (GUI demo group selection).
+	isDemo := docusignCfg.Demo || docusignCfg.DocusignClientId != ""
+
 	if opts.TokenSource != nil {
-		cbWithTokenSource, err := NewWithTokenSource(ctx, docusignCfg.Demo, opts.TokenSource, docusignCfg.AccountId, docusignCfg.IncludeSigningGroups)
+		cbWithTokenSource, err := NewWithTokenSource(ctx, isDemo, opts.TokenSource, docusignCfg.AccountId, docusignCfg.IncludeSigningGroups)
 		if err != nil {
 			l.Error("error creating connector with token source", zap.Error(err))
 			return nil, nil, err
@@ -183,7 +187,7 @@ func New(ctx context.Context, docusignCfg *cfg.Docusign, opts *cli.ConnectorOpts
 
 		cbWithRefreshToken, err := NewWithRefreshToken(
 			ctx,
-			docusignCfg.Demo,
+			isDemo,
 			docusignCfg.DocusignClientId,
 			docusignCfg.DocusignClientSecret,
 			docusignCfg.RedirectUri,

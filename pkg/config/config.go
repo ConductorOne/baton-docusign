@@ -5,26 +5,26 @@ import (
 )
 
 var (
+	// IsDemoField is CLI-only: demo mode is implied in the GUI by selecting the "demo" field group.
 	IsDemoField = field.BoolField(
 		"demo",
 		field.WithDisplayName("Demo Environment"),
 		field.WithDescription("Set to true for demo environment, false for production"),
 		field.WithDefaultValue(false),
+		field.WithExportTarget(field.ExportTargetCLIOnly),
 	)
 
 	ClientIdField = field.StringField(
 		"docusign-client-id",
 		field.WithDisplayName("Client ID"),
-		field.WithDescription("OAuth 2.0 Client ID from DocuSign"),
-		field.WithExportTarget(field.ExportTargetCLIOnly),
+		field.WithDescription("OAuth 2.0 Client ID from your DocuSign developer app"),
 	)
 
 	ClientSecretField = field.StringField(
 		"docusign-client-secret",
 		field.WithDisplayName("Client Secret"),
-		field.WithDescription("OAuth 2.0 Client Secret from DocuSign"),
+		field.WithDescription("OAuth 2.0 Client Secret from your DocuSign developer app"),
 		field.WithIsSecret(true),
-		field.WithExportTarget(field.ExportTargetCLIOnly),
 	)
 
 	RedirectURIField = field.StringField(
@@ -94,7 +94,28 @@ var (
 		// Note: ClientIdField, ClientSecretField, and RedirectURIField are required together,
 		// but RefreshTokenField is conditionally required (not needed during --configure flow).
 		// Programmatic validation is handled in connector.go.
-		field.FieldsRequiredTogether(ClientIdField, ClientSecretField, RedirectURIField)}
+		field.FieldsRequiredTogether(ClientIdField, ClientSecretField, RedirectURIField),
+	}
+
+	// FieldGroups defines how fields are presented in the C1 UI.
+	// The "oauth2" group (default) uses ConductorOne's managed DocuSign OAuth app for production.
+	// The "demo" group lets customers supply their own DocuSign developer app credentials
+	// against DocuSign's demo environment.
+	FieldGroups = []field.SchemaFieldGroup{
+		{
+			Name:        "oauth2",
+			DisplayName: "OAuth Authentication",
+			HelpText:    "Authenticate using ConductorOne's managed DocuSign OAuth app (production environment).",
+			Default:     true,
+			Fields:      []field.SchemaField{Oauth2TokenField, AccountIdField, IncludeSigningGroupsField},
+		},
+		{
+			Name:        "demo",
+			DisplayName: "Custom App (Demo Environment)",
+			HelpText:    "Authenticate using your own DocuSign developer app against DocuSign's demo environment. Use --configure to obtain the refresh token.",
+			Fields:      []field.SchemaField{ClientIdField, ClientSecretField, AccountIdField, IncludeSigningGroupsField},
+		},
+	}
 )
 
 //go:generate go run ./gen
@@ -104,4 +125,5 @@ var ConfigurationSchema = field.NewConfiguration(
 	field.WithConnectorDisplayName("DocuSign"),
 	field.WithHelpUrl("/docs/baton/docusign"),
 	field.WithIconUrl("/static/app-icons/docusign.svg"),
+	field.WithFieldGroups(FieldGroups),
 )
