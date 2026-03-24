@@ -18,6 +18,7 @@ var (
 		"docusign-client-id",
 		field.WithDisplayName("Client ID"),
 		field.WithDescription("OAuth 2.0 Client ID from your DocuSign developer app"),
+		field.WithIsRequired(true),
 	)
 
 	ClientSecretField = field.StringField(
@@ -25,6 +26,7 @@ var (
 		field.WithDisplayName("Client Secret"),
 		field.WithDescription("OAuth 2.0 Client Secret from your DocuSign developer app"),
 		field.WithIsSecret(true),
+		field.WithIsRequired(true),
 	)
 
 	RedirectURIField = field.StringField(
