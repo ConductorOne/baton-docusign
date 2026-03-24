@@ -144,10 +144,11 @@
     {
       "name": "demo",
       "displayName": "Custom App (Demo Environment)",
-      "helpText": "Authenticate using your own DocuSign developer app against DocuSign's demo environment. Use --configure to obtain the refresh token.",
+      "helpText": "Authenticate using your own DocuSign developer app against DocuSign's demo environment. Provide your app's Client ID and Client Secret, then click the OAuth button to authorize.",
       "fields": [
         "docusign-client-id",
         "docusign-client-secret",
+        "oauth2-token",
         "account-id",
         "include-signing-groups"
       ]

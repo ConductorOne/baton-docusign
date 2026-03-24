@@ -91,10 +91,6 @@ var (
 	// marked as mutually exclusive from the username password pair.
 	FieldRelationships = []field.SchemaFieldRelationship{
 		field.FieldsMutuallyExclusive(RefreshTokenField, Oauth2TokenField),
-		// Note: ClientIdField, ClientSecretField, and RedirectURIField are required together,
-		// but RefreshTokenField is conditionally required (not needed during --configure flow).
-		// Programmatic validation is handled in connector.go.
-		field.FieldsRequiredTogether(ClientIdField, ClientSecretField, RedirectURIField),
 	}
 
 	// FieldGroups defines how fields are presented in the C1 UI.
@@ -112,8 +108,9 @@ var (
 		{
 			Name:        "demo",
 			DisplayName: "Custom App (Demo Environment)",
-			HelpText:    "Authenticate using your own DocuSign developer app against DocuSign's demo environment. Use --configure to obtain the refresh token.",
-			Fields:      []field.SchemaField{ClientIdField, ClientSecretField, AccountIdField, IncludeSigningGroupsField},
+			HelpText: "Authenticate using your own DocuSign developer app against DocuSign's demo environment. " +
+				"Provide your app's Client ID and Client Secret, then click the OAuth button to authorize.",
+			Fields: []field.SchemaField{ClientIdField, ClientSecretField, Oauth2TokenField, AccountIdField, IncludeSigningGroupsField},
 		},
 	}
 )
