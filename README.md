@@ -24,14 +24,19 @@ Check out [Baton](https://github.com/conductorone/baton) to learn more about the
 
 ## Connector Credentials
 
-To connect to DocuSign, you will need the following credentials:
+The credentials required depend on the environment:
 
+**Production** (using ConductorOne's managed OAuth app, cloud-hosted only):
+- No custom DocuSign app credentials needed — authentication is handled via ConductorOne's OAuth flow.
+
+**Demo environment** (DocuSign's `account-d.docusign.com`) **or self-hosted**:
 1. **Client ID** (Integration Key)
 2. **Client Secret**
 3. **Redirect URI**
 4. **Refresh Token**
-5. **Environment Selection** (demo or production)
-6. **Account ID** (optional — API Account ID UUID, only needed if you have multiple DocuSign accounts)
+5. **Account ID** (optional — API Account ID UUID, only needed if you have multiple DocuSign accounts)
+
+> **Note:** When running the connector with `--docusign-client-id`, demo mode is automatically enabled. The `--demo` flag is optional in that case.
 
 ### Obtaining Credentials
 
