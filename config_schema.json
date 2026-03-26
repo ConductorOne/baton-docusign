@@ -96,14 +96,24 @@
       "name": "docusign-client-id",
       "displayName": "Client ID",
       "description": "OAuth 2.0 Client ID from your DocuSign developer app",
-      "stringField": {}
+      "isRequired": true,
+      "stringField": {
+        "rules": {
+          "isRequired": true
+        }
+      }
     },
     {
       "name": "docusign-client-secret",
       "displayName": "Client Secret",
       "description": "OAuth 2.0 Client Secret from your DocuSign developer app",
+      "isRequired": true,
       "isSecret": true,
-      "stringField": {}
+      "stringField": {
+        "rules": {
+          "isRequired": true
+        }
+      }
     },
     {
       "name": "account-id",
