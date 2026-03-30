@@ -93,10 +93,27 @@
       }
     },
     {
-      "name": "demo",
-      "displayName": "Demo Environment",
-      "description": "Set to true for demo environment, false for production",
-      "boolField": {}
+      "name": "docusign-client-id",
+      "displayName": "Client ID",
+      "description": "OAuth 2.0 Client ID from your DocuSign developer app",
+      "isRequired": true,
+      "stringField": {
+        "rules": {
+          "isRequired": true
+        }
+      }
+    },
+    {
+      "name": "docusign-client-secret",
+      "displayName": "Client Secret",
+      "description": "OAuth 2.0 Client Secret from your DocuSign developer app",
+      "isRequired": true,
+      "isSecret": true,
+      "stringField": {
+        "rules": {
+          "isRequired": true
+        }
+      }
     },
     {
       "name": "account-id",
@@ -121,5 +138,30 @@
   ],
   "displayName": "DocuSign",
   "helpUrl": "/docs/baton/docusign",
-  "iconUrl": "/static/app-icons/docusign.svg"
+  "iconUrl": "/static/app-icons/docusign.svg",
+  "fieldGroups": [
+    {
+      "name": "oauth2",
+      "displayName": "OAuth Authentication",
+      "helpText": "Authenticate using ConductorOne's managed DocuSign OAuth app (production environment).",
+      "fields": [
+        "oauth2-token",
+        "account-id",
+        "include-signing-groups"
+      ],
+      "default": true
+    },
+    {
+      "name": "demo",
+      "displayName": "Custom App (Demo Environment)",
+      "helpText": "Authenticate using your own DocuSign developer app against DocuSign's demo environment. Provide your app's Client ID and Client Secret, then click the OAuth button to authorize.",
+      "fields": [
+        "docusign-client-id",
+        "docusign-client-secret",
+        "oauth2-token",
+        "account-id",
+        "include-signing-groups"
+      ]
+    }
+  ]
 }
