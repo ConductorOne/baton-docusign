@@ -162,7 +162,7 @@ func New(ctx context.Context, docusignCfg *cfg.Docusign, opts *cli.ConnectorOpts
 
 	// isDemo is set explicitly via --demo flag (CLI) or implied when a custom
 	// client ID is provided (GUI demo group selection).
-	isDemo := docusignCfg.Demo || docusignCfg.DocusignClientId != ""
+	isDemo := docusignCfg.Demo || opts.SelectedAuthMethod == "demo"
 
 	if opts.TokenSource != nil {
 		cbWithTokenSource, err := NewWithTokenSource(ctx, isDemo, opts.TokenSource, docusignCfg.AccountId, docusignCfg.IncludeSigningGroups)
