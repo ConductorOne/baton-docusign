@@ -3,7 +3,7 @@ module github.com/conductorone/baton-docusign
 go 1.25.2
 
 require (
-	github.com/conductorone/baton-sdk v0.8.25
+	github.com/conductorone/baton-sdk v0.8.26-0.20260422163716-1d2d64f6097b
 	github.com/ennyjfrick/ruleguard-logfatal v0.0.2
 	github.com/grpc-ecosystem/go-grpc-middleware v1.4.0
 	github.com/quasilyte/go-ruleguard/dsl v0.3.23
