@@ -1,0 +1,157 @@
+package connector
+
+import (
+	"context"
+	"testing"
+
+	"github.com/conductorone/baton-docusign/pkg/client"
+	"github.com/conductorone/baton-docusign/pkg/client/clmtest"
+	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
+	"github.com/conductorone/baton-sdk/pkg/pagination"
+	rs "github.com/conductorone/baton-sdk/pkg/types/resource"
+)
+
+func TestClmGroupBuilder_List(t *testing.T) {
+	_, c := clmtest.NewServer(t)
+	b := newClmGroupBuilder(c)
+	ctx := context.Background()
+
+	var all []*v2.Resource
+	pageToken := ""
+	for i := 0; i < 10; i++ {
+		resources, res, err := b.List(ctx, nil, rs.SyncOpAttrs{PageToken: pagination.Token{Size: 25, Token: pageToken}})
+		if err != nil {
+			t.Fatalf("List page %d: %v", i, err)
+		}
+		all = append(all, resources...)
+		if res.NextPageToken == "" {
+			break
+		}
+		pageToken = res.NextPageToken
+	}
+
+	// 5 named groups + 105 synthetic bulk groups seeded for member-frank's pagination test.
+	if len(all) != 110 {
+		t.Fatalf("expected 110 CLM groups, got %d", len(all))
+	}
+}
+
+func TestClmGroupBuilder_Entitlements(t *testing.T) {
+	_, c := clmtest.NewServer(t)
+	b := newClmGroupBuilder(c)
+	ctx := context.Background()
+
+	groupResource, err := rs.NewGroupResource("Legal", clmGroupResourceType, "group-legal", nil)
+	if err != nil {
+		t.Fatalf("NewGroupResource: %v", err)
+	}
+
+	ents, _, err := b.Entitlements(ctx, groupResource, rs.SyncOpAttrs{})
+	if err != nil {
+		t.Fatalf("Entitlements: %v", err)
+	}
+	if len(ents) != 1 || ents[0].Slug != entitlementClmGroupMember {
+		t.Fatalf("expected exactly one %q entitlement, got %+v", entitlementClmGroupMember, ents)
+	}
+	if len(ents[0].GrantableTo) != 1 || ents[0].GrantableTo[0].Id != clmMemberResourceType.Id {
+		t.Errorf("expected the entitlement to be grantable only to clm_member, got %+v", ents[0].GrantableTo)
+	}
+}
+
+func TestClmGroupBuilder_Grants_Pagination(t *testing.T) {
+	// Regression test: clmGroupBuilder.Grants() must thread GetGroupMembers'
+	// pagination token, not just return the first page.
+	_, c := clmtest.NewServer(t)
+	b := newClmGroupBuilder(c)
+	ctx := context.Background()
+
+	groupResource, err := rs.NewGroupResource("Legal", clmGroupResourceType, "group-legal", nil)
+	if err != nil {
+		t.Fatalf("NewGroupResource: %v", err)
+	}
+
+	var all []*v2.Grant
+	pageToken := ""
+	for i := 0; i < 10; i++ {
+		grants, res, err := b.Grants(ctx, groupResource, rs.SyncOpAttrs{PageToken: pagination.Token{Size: 1, Token: pageToken}})
+		if err != nil {
+			t.Fatalf("Grants page %d: %v", i, err)
+		}
+		all = append(all, grants...)
+		if res.NextPageToken == "" {
+			break
+		}
+		pageToken = res.NextPageToken
+	}
+
+	// group-legal has 2 members (alice, bob) — forcing PageSize 1 requires 2 pages.
+	if len(all) != 2 {
+		t.Fatalf("expected 2 grants across all pages for group-legal, got %d", len(all))
+	}
+	for _, g := range all {
+		if g.Principal.Id.ResourceType != clmMemberResourceType.Id {
+			t.Errorf("expected a clm_member principal, got %s", g.Principal.Id.ResourceType)
+		}
+	}
+}
+
+func TestClmGroupBuilder_GrantAndRevoke_Idempotent(t *testing.T) {
+	// Regression test for the same class of bug fixed in
+	// TestClmFolderBuilder_GrantAndRevoke_Idempotent: GetMemberGroups is a
+	// read-before-write used by both Grant and Revoke, so a cached response from an
+	// earlier call in this same sequence must not be served back stale.
+	srv, c := clmtest.NewServer(t)
+	b := newClmGroupBuilder(c)
+	ctx := context.Background()
+
+	// member-carol starts in group-finance only (see clmtest/seed.go).
+	memberResource, err := rs.NewResource("Carol", clmMemberResourceType, "member-carol")
+	if err != nil {
+		t.Fatalf("NewResource: %v", err)
+	}
+	groupResource, err := parseIntoClmGroupResource(&client.ClmGroup{Name: "Legal", Href: srv.GroupHref("group-legal")})
+	if err != nil {
+		t.Fatalf("parseIntoClmGroupResource: %v", err)
+	}
+	ent := &v2.Entitlement{Slug: entitlementClmGroupMember, Resource: groupResource}
+
+	// Grant once: should succeed and actually add carol to group-legal, on top of her
+	// existing group-finance membership.
+	if _, annos, err := b.Grant(ctx, memberResource, ent); err != nil {
+		t.Fatalf("Grant: %v", err)
+	} else if hasAlreadyExists(annos) {
+		t.Error("first Grant should not report GrantAlreadyExists")
+	}
+	if groups := srv.MemberGroups("member-carol"); len(groups) != 2 {
+		t.Fatalf("expected carol to be in 2 groups (finance, legal) after Grant, got %v", groups)
+	}
+
+	// Grant again: idempotent, should report GrantAlreadyExists and not duplicate.
+	if _, annos, err := b.Grant(ctx, memberResource, ent); err != nil {
+		t.Fatalf("second Grant: %v", err)
+	} else if !hasAlreadyExists(annos) {
+		t.Error("repeat Grant should report GrantAlreadyExists")
+	}
+	if groups := srv.MemberGroups("member-carol"); len(groups) != 2 {
+		t.Fatalf("expected still exactly 2 groups after a repeat Grant, got %v", groups)
+	}
+
+	// Revoke: should remove only group-legal, preserving group-finance.
+	grantObj := &v2.Grant{Principal: memberResource, Entitlement: ent}
+	if annos, err := b.Revoke(ctx, grantObj); err != nil {
+		t.Fatalf("Revoke: %v", err)
+	} else if hasAlreadyRevoked(annos) {
+		t.Error("first Revoke should not report GrantAlreadyRevoked")
+	}
+	groups := srv.MemberGroups("member-carol")
+	if len(groups) != 1 || groups[0] != "group-finance" {
+		t.Fatalf("expected carol to be back to only group-finance after Revoke, got %v", groups)
+	}
+
+	// Revoke again: idempotent.
+	if annos, err := b.Revoke(ctx, grantObj); err != nil {
+		t.Fatalf("second Revoke: %v", err)
+	} else if !hasAlreadyRevoked(annos) {
+		t.Error("repeat Revoke should report GrantAlreadyRevoked")
+	}
+}

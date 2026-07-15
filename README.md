@@ -2,7 +2,7 @@
 
 # `baton-docusign` [![Go Reference](https://pkg.go.dev/badge/github.com/conductorone/baton-docusign.svg)](https://pkg.go.dev/github.com/conductorone/baton-docusign) ![ci](https://github.com/conductorone/baton-docusign/actions/workflows/ci.yaml/badge.svg) ![verify](https://github.com/conductorone/baton-docusign/actions/workflows/verify.yaml/badge.svg)
 
-`baton-docusign` is a connector for DocuSign built using the [Baton SDK](https://github.com/conductorone/baton-sdk). It communicates with the DocuSign eSignature REST API v2.1 to sync users, groups, signing groups, and permission profiles.
+`baton-docusign` is a connector for DocuSign built using the [Baton SDK](https://github.com/conductorone/baton-sdk). It communicates with the DocuSign eSignature REST API v2.1 to sync users, groups, signing groups, and permission profiles. It can optionally also sync DocuSign CLM (Contract Lifecycle Management) folders, folder security, groups, and permission sets — see [CLM Support](#clm-support-optional) below.
 
 Check out [Baton](https://github.com/conductorone/baton) to learn more about the project in general.
 
@@ -14,6 +14,7 @@ Check out [Baton](https://github.com/conductorone/baton) to learn more about the
 - Groups
 - Signing Groups
 - Permission Profiles
+- CLM Members, Roles, Groups, Folders, Folder Security, and Permission Sets (optional — see [CLM Support](#clm-support-optional))
 
 ### Provisioning Support
 
@@ -21,6 +22,9 @@ Check out [Baton](https://github.com/conductorone/baton) to learn more about the
 - Group membership (grant/revoke)
 - Signing group membership (grant/revoke)
 - Permission profiles (grant only - users must always have a profile assigned)
+- CLM group membership (grant/revoke, optional)
+- CLM folder security (grant/revoke, optional)
+- CLM permission sets are synced for visibility only — the CLM API has no assignment endpoint, so they cannot be granted or revoked
 
 ## Connector Credentials
 
@@ -92,6 +96,29 @@ http://example.com/callback?code=AUTHORIZATION_CODE
 ```
 
 Copy the `code` parameter value and paste it when prompted. Save the refresh token for future use.
+
+## CLM Support (optional)
+
+DocuSign CLM (Contract Lifecycle Management) is a separate DocuSign product from
+eSignature, with its own API and a separate production subscription. Set the
+`--include-clm` flag (or `BATON_INCLUDE_CLM=true`) to sync CLM members, roles, groups,
+folders, folder security, and permission sets alongside the standard eSignature
+resources.
+
+Requirements:
+
+- Your DocuSign account must have a CLM production subscription.
+- **Demo environment or self-hosted with your own DocuSign app**: no extra setup — the
+  connector requests the additional CLM OAuth scopes (`spring_read`/`spring_write`)
+  automatically when `--include-clm` is set.
+- **Cloud-hosted production (ConductorOne's managed OAuth app)**: the managed app must
+  also be granted the CLM API scope on ConductorOne's platform side before this flag
+  will have any effect. Contact ConductorOne if enabling `--include-clm` doesn't sync
+  any CLM data in this mode.
+
+CLM permission sets sync for visibility only — DocuSign's CLM API has no endpoint to
+assign or unassign a permission set, so they cannot be granted or revoked through this
+connector.
 
 # Getting Started
 
@@ -185,6 +212,7 @@ baton resources
 - Groups
 - Signing Groups
 - Permission Profiles
+- CLM Members, Roles, Groups, Folders, Folder Security, and Permission Sets (optional, requires `--include-clm` and a DocuSign CLM subscription)
 
 # Contributing, Support and Issues
 
@@ -208,30 +236,37 @@ Available Commands:
   capabilities       Get connector capabilities
   completion         Generate the autocompletion script for the specified shell
   config             Get the connector config schema
+  health-check       Check the health of a running connector
   help               Help about any command
 
 Flags:
+      --account-id string                                API account ID (UUID format) of the DocuSign account to be used for synchronization. Leave blank to use your default account. Warning: changing this ID between different synchronizations may result in data loss. If you want to synchronize different accounts, create different connectors. ($BATON_ACCOUNT_ID)
       --client-id string                                 The client ID used to authenticate with ConductorOne ($BATON_CLIENT_ID)
       --client-secret string                             The client secret used to authenticate with ConductorOne ($BATON_CLIENT_SECRET)
-      --docusign-client-id string                        required: OAuth 2.0 Client ID from DocuSign ($BATON_DOCUSIGN_CLIENT_ID)
-      --docusign-client-secret string                    required: OAuth 2.0 Client Secret from DocuSign ($BATON_DOCUSIGN_CLIENT_SECRET)
-      --configure                                        Get the refresh token the first time you run the connector ($BATON_CONFIGURE)
-      --demo                                             Set to true for demo environment, false for production ($BATON_DEMO) (default true)
+      --configure                                        Get the refresh token the first time you run the connector. ($BATON_CONFIGURE)
+      --demo                                             Set to true for demo environment, false for production ($BATON_DEMO)
+      --docusign-client-id string                        required: OAuth 2.0 Client ID from your DocuSign developer app ($BATON_DOCUSIGN_CLIENT_ID)
+      --docusign-client-secret string                    required: OAuth 2.0 Client Secret from your DocuSign developer app ($BATON_DOCUSIGN_CLIENT_SECRET)
       --external-resource-c1z string                     The path to the c1z file to sync external baton resources with ($BATON_EXTERNAL_RESOURCE_C1Z)
       --external-resource-entitlement-id-filter string   The entitlement that external users, groups must have access to sync external baton resources ($BATON_EXTERNAL_RESOURCE_ENTITLEMENT_ID_FILTER)
   -f, --file string                                      The path to the c1z file to sync with ($BATON_FILE) (default "sync.c1z")
   -h, --help                                             help for baton-docusign
-      --account-id string                                API account ID (UUID) of the DocuSign account to sync. Leave blank to use your default account. ($BATON_ACCOUNT_ID)
+      --include-clm                                      Set to true to include syncing DocuSign CLM folders, folder security, groups, and permission sets. Requires a DocuSign CLM production subscription. When using the default OAuth Authentication method, this also requires ConductorOne's managed OAuth app to be granted the CLM API scope — contact ConductorOne if enabling this has no effect. ($BATON_INCLUDE_CLM)
       --include-signing-groups                           Set to true to include syncing signing groups (for customers with signing groups feature enabled) ($BATON_INCLUDE_SIGNING_GROUPS)
       --log-format string                                The output format for logs: json, console ($BATON_LOG_FORMAT) (default "json")
       --log-level string                                 The log level: debug, info, warn, error ($BATON_LOG_LEVEL) (default "info")
-      --otel-collector-endpoint string                   The endpoint of the OpenTelemetry collector to send observability data to ($BATON_OTEL_COLLECTOR_ENDPOINT)
+      --oauth2-token string                              OAuth 2.0 Authentication for DocuSign ($BATON_OAUTH2_TOKEN)
+      --otel-collector-endpoint string                   The endpoint of the OpenTelemetry collector to send observability data to (used for both tracing and logging if specific endpoints are not provided) ($BATON_OTEL_COLLECTOR_ENDPOINT)
   -p, --provisioning                                     This must be set in order for provisioning actions to be enabled ($BATON_PROVISIONING)
-      --redirect-uri string                              required: Redirect URI registered in your DocuSign integration ($BATON_REDIRECT_URI)
-      --refresh-token string                             OAuth 2.0 Refresh Token for DocuSign (obtain via --configure) ($BATON_REFRESH_TOKEN)
+      --redirect-uri string                              Redirect URI registered in your DocuSign integration ($BATON_REDIRECT_URI)
+      --refresh-token string                             OAuth 2.0 Refresh Token for DocuSign ($BATON_REFRESH_TOKEN)
       --skip-full-sync                                   This must be set to skip a full sync ($BATON_SKIP_FULL_SYNC)
       --ticketing                                        This must be set to enable ticketing support ($BATON_TICKETING)
   -v, --version                                          version for baton-docusign
 
 Use "baton-docusign [command] --help" for more information about a command.
 ```
+
+> Additional flags inherited from the Baton SDK (health checks, worker/concurrency
+> tuning, storage engine selection, etc.) are omitted above for brevity — run
+> `baton-docusign --help` for the full list.

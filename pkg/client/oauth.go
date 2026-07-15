@@ -17,7 +17,20 @@ var (
 	authURLProd  = "https://account.docusign.com/oauth/auth"
 	tokenURLProd = "https://account.docusign.com/oauth/token" //nolint:gosec // token URL does not contain sensitive credentials.
 	defaultScope = "signature"
+	// clmScopes are additional OAuth scopes required to call the DocuSign CLM API.
+	// Confirmed via the CLM Authentication Overview docs: CLM scopes combine with
+	// eSignature's "signature" scope on the same authorization request.
+	clmScopes = []string{"spring_read", "spring_write"}
 )
+
+// buildScopes returns the OAuth scopes to request, adding CLM scopes when includeClm is set.
+func buildScopes(includeClm bool) []string {
+	scopes := []string{defaultScope}
+	if includeClm {
+		scopes = append(scopes, clmScopes...)
+	}
+	return scopes
+}
 
 // OAuth2Docusign manages the OAuth2 configuration and token lifecycle for DocuSign.
 type OAuth2Docusign struct {
@@ -27,7 +40,7 @@ type OAuth2Docusign struct {
 }
 
 // getTokenSource creates a TokenSource that always refreshes using the provided refreshToken.
-func getTokenSource(ctx context.Context, isDemo bool, clientID, clientSecret, redirectURI, refreshToken string) oauth2.TokenSource {
+func getTokenSource(ctx context.Context, isDemo bool, clientID, clientSecret, redirectURI, refreshToken string, includeClm bool) oauth2.TokenSource {
 	authURL := authURLProd
 	tokenURL := tokenURLProd
 	if isDemo {
@@ -39,7 +52,7 @@ func getTokenSource(ctx context.Context, isDemo bool, clientID, clientSecret, re
 		ClientID:     clientID,
 		ClientSecret: clientSecret,
 		RedirectURL:  redirectURI,
-		Scopes:       []string{defaultScope},
+		Scopes:       buildScopes(includeClm),
 		Endpoint: oauth2.Endpoint{
 			AuthURL:  authURL,
 			TokenURL: tokenURL,
@@ -54,7 +67,7 @@ func getTokenSource(ctx context.Context, isDemo bool, clientID, clientSecret, re
 }
 
 // NewOAuth2Docusign initializes a new OAuth2Docusign helper with client credentials.
-func NewOAuth2Docusign(isDemo bool, clientID, clientSecret, redirectURI string) *OAuth2Docusign {
+func NewOAuth2Docusign(isDemo bool, clientID, clientSecret, redirectURI string, includeClm bool) *OAuth2Docusign {
 	authURL := authURLProd
 	tokenURL := tokenURLProd
 	if isDemo {
@@ -66,14 +79,14 @@ func NewOAuth2Docusign(isDemo bool, clientID, clientSecret, redirectURI string) 
 		ClientID:     clientID,
 		ClientSecret: clientSecret,
 		RedirectURL:  redirectURI,
-		Scopes:       []string{defaultScope},
+		Scopes:       buildScopes(includeClm),
 		Endpoint: oauth2.Endpoint{
 			AuthURL:  authURL,
 			TokenURL: tokenURL,
 		},
 	}
 	// Start with no refresh token; will trigger initial authenticate flow.
-	ts := getTokenSource(context.Background(), isDemo, clientID, clientSecret, redirectURI, "")
+	ts := getTokenSource(context.Background(), isDemo, clientID, clientSecret, redirectURI, "", includeClm)
 	return &OAuth2Docusign{
 		config:      cfg,
 		tokenSource: ts,

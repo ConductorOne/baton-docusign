@@ -21,6 +21,7 @@ import (
 type Connector struct {
 	client               *client.Client
 	includeSigningGroups bool
+	includeClm           bool
 }
 
 // Configure handles the OAuth2 authorization flow to obtain a refresh token.
@@ -38,7 +39,7 @@ func Configure(ctx context.Context, docusignCfg *cfg.Docusign) error {
 	}
 
 	// Create OAuth2 helper for authorization flow
-	oauth2Helper := client.NewOAuth2Docusign(docusignCfg.Demo, docusignCfg.DocusignClientId, docusignCfg.DocusignClientSecret, docusignCfg.RedirectUri)
+	oauth2Helper := client.NewOAuth2Docusign(docusignCfg.Demo, docusignCfg.DocusignClientId, docusignCfg.DocusignClientSecret, docusignCfg.RedirectUri, docusignCfg.IncludeClm)
 
 	code, err := oauth2Helper.Authorize(ctx)
 	if err != nil {
@@ -73,6 +74,17 @@ func (d *Connector) ResourceSyncers(_ context.Context) []connectorbuilder.Resour
 		syncers = append(syncers, newSigningGroupBuilder(d.client))
 	}
 
+	// Only include CLM resources if opted in (requires a DocuSign CLM production subscription)
+	if d.includeClm {
+		syncers = append(syncers,
+			newClmMemberBuilder(d.client),
+			newClmRoleBuilder(d.client),
+			newClmGroupBuilder(d.client),
+			newClmPermissionSetBuilder(d.client),
+			newClmFolderBuilder(d.client),
+		)
+	}
+
 	return syncers
 }
 
@@ -85,13 +97,16 @@ func (d *Connector) Metadata(_ context.Context) (*v2.ConnectorMetadata, error) {
 	if d.includeSigningGroups {
 		description = "Connector syncs data from Users, Permission Profiles, Groups, and Signing Groups. It also allows the creation of users in DocuSign"
 	}
+	if d.includeClm {
+		description += ". Also syncs DocuSign CLM members, roles, groups, folders, folder security, and permission sets"
+	}
 
 	return &v2.ConnectorMetadata{
 		DisplayName: "DocuSign",
 		Description: description,
 		AccountCreationSchema: &v2.ConnectorAccountCreationSchema{
 			FieldMap: map[string]*v2.ConnectorAccountCreationSchema_Field{
-				"email": {
+				profileFieldEmail: {
 					DisplayName: "Email",
 					Required:    true,
 					Description: "This email will be used as the login for the user.",
@@ -101,7 +116,7 @@ func (d *Connector) Metadata(_ context.Context) (*v2.ConnectorMetadata, error) {
 					Placeholder: "Email",
 					Order:       1,
 				},
-				"username": {
+				profileFieldUsername: {
 					DisplayName: "Username",
 					Required:    true,
 					Description: "This username will be used for the user.",
@@ -120,10 +135,16 @@ func (d *Connector) Validate(_ context.Context) (annotations.Annotations, error)
 	return nil, nil
 }
 
-func NewWithRefreshToken(ctx context.Context, isDemo bool, clientId, clientSecret, redirectURI, refreshToken, accountId string, includeSigningGroups bool) (*Connector, error) {
+func NewWithRefreshToken(
+	ctx context.Context, isDemo bool, clientId, clientSecret, redirectURI, refreshToken, accountId string,
+	includeSigningGroups, includeClm bool, clmBaseURLOverride, baseURLOverride string,
+) (*Connector, error) {
 	l := ctxzap.Extract(ctx)
 
-	docusignClient, err := client.New(ctx, isDemo, clientId, clientSecret, redirectURI, refreshToken, accountId)
+	docusignClient, err := client.New(
+		ctx, isDemo, clientId, clientSecret, redirectURI, refreshToken, accountId,
+		includeClm, clmBaseURLOverride, baseURLOverride,
+	)
 	if err != nil {
 		l.Error("error creating DocuSign client", zap.Error(err))
 		return nil, err
@@ -132,22 +153,28 @@ func NewWithRefreshToken(ctx context.Context, isDemo bool, clientId, clientSecre
 	return &Connector{
 		client:               docusignClient,
 		includeSigningGroups: includeSigningGroups,
+		includeClm:           includeClm,
 	}, nil
 }
 
-func NewWithClient(client *client.Client, includeSigningGroups bool) (*Connector, error) {
+func NewWithClient(client *client.Client, includeSigningGroups, includeClm bool) (*Connector, error) {
 	return &Connector{
 		client:               client,
 		includeSigningGroups: includeSigningGroups,
+		includeClm:           includeClm,
 	}, nil
 }
 
-func NewWithTokenSource(ctx context.Context, isDemo bool, tokenSource oauth2.TokenSource, accountId string, includeSigningGroups bool) (*Connector, error) {
-	docusignClient := client.NewClient(ctx, isDemo, tokenSource, accountId)
+func NewWithTokenSource(
+	ctx context.Context, isDemo bool, tokenSource oauth2.TokenSource, accountId string,
+	includeSigningGroups, includeClm bool, clmBaseURLOverride string,
+) (*Connector, error) {
+	docusignClient := client.NewClient(ctx, isDemo, tokenSource, accountId, clmBaseURLOverride)
 
 	return &Connector{
 		client:               docusignClient,
 		includeSigningGroups: includeSigningGroups,
+		includeClm:           includeClm,
 	}, nil
 }
 
@@ -165,7 +192,10 @@ func New(ctx context.Context, docusignCfg *cfg.Docusign, opts *cli.ConnectorOpts
 	isDemo := docusignCfg.Demo || opts.SelectedAuthMethod == "demo"
 
 	if opts.TokenSource != nil {
-		cbWithTokenSource, err := NewWithTokenSource(ctx, isDemo, opts.TokenSource, docusignCfg.AccountId, docusignCfg.IncludeSigningGroups)
+		cbWithTokenSource, err := NewWithTokenSource(
+			ctx, isDemo, opts.TokenSource, docusignCfg.AccountId,
+			docusignCfg.IncludeSigningGroups, docusignCfg.IncludeClm, docusignCfg.ClmBaseUrl,
+		)
 		if err != nil {
 			l.Error("error creating connector with token source", zap.Error(err))
 			return nil, nil, err
@@ -194,6 +224,9 @@ func New(ctx context.Context, docusignCfg *cfg.Docusign, opts *cli.ConnectorOpts
 			docusignCfg.RefreshToken,
 			docusignCfg.AccountId,
 			docusignCfg.IncludeSigningGroups,
+			docusignCfg.IncludeClm,
+			docusignCfg.ClmBaseUrl,
+			docusignCfg.BaseUrl,
 		)
 		if err != nil {
 			l.Error("error creating connector", zap.Error(err))

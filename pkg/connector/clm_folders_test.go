@@ -1,0 +1,289 @@
+package connector
+
+import (
+	"context"
+	"testing"
+
+	"github.com/conductorone/baton-docusign/pkg/client"
+	"github.com/conductorone/baton-docusign/pkg/client/clmtest"
+	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
+	"github.com/conductorone/baton-sdk/pkg/annotations"
+	"github.com/conductorone/baton-sdk/pkg/pagination"
+	rs "github.com/conductorone/baton-sdk/pkg/types/resource"
+)
+
+func boolPtr(b bool) *bool { return &b }
+
+// --- Pure-function tests: clmSlugForEntry / clmAccessTypeForSlug / clmPrincipalIDForItem ---
+//
+// These map the CLM API's two representations of folder access (a named AccessType
+// enum on writes, granular boolean flags on reads) onto the 5 static entitlement
+// slugs, and classify a Security entry's Item into a principal. Getting these wrong
+// silently mis-grants or drops access in a security review, so they're covered
+// directly rather than only through the higher-level Grants()/Grant() tests below.
+
+func TestClmSlugForEntry_AccessTypeBased(t *testing.T) {
+	tests := []struct {
+		accessType string
+		wantSlug   string
+		wantOK     bool
+	}{
+		{client.ClmAccessTypeView, "view", true},
+		{client.ClmAccessTypeViewCreate, "view_create", true},
+		{client.ClmAccessTypeViewEdit, "view_edit", true},
+		{client.ClmAccessTypeViewEditDelete, "view_edit_delete", true},
+		{client.ClmAccessTypeViewEditDeleteSetAccess, "view_edit_delete_set_access", true},
+		{client.ClmAccessTypeNoAccess, "", false},
+		{client.ClmAccessTypeInherit, "", false},
+		{client.ClmAccessTypeCustom, "", false},
+	}
+	for _, tt := range tests {
+		slug, ok := clmSlugForEntry(client.ClmSecurityEntry{AccessType: tt.accessType})
+		if ok != tt.wantOK || slug != tt.wantSlug {
+			t.Errorf("clmSlugForEntry(AccessType=%q) = (%q, %v), want (%q, %v)", tt.accessType, slug, ok, tt.wantSlug, tt.wantOK)
+		}
+	}
+}
+
+func TestClmSlugForEntry_FlagsBased(t *testing.T) {
+	tests := []struct {
+		name                                         string
+		create, move, read, see, setAccess, write    bool
+		wantSlug                                     string
+		wantOK                                       bool
+	}{
+		{"view: read+see only", false, false, true, true, false, false, "view", true},
+		{"view_create: +create", true, false, true, true, false, false, "view_create", true},
+		{"view_edit: +write", true, false, true, true, false, true, "view_edit", true},
+		{"view_edit_delete: +move", true, true, true, true, false, true, "view_edit_delete", true},
+		{"view_edit_delete_set_access: all flags", true, true, true, true, true, true, "view_edit_delete_set_access", true},
+		{"no read/see: not a tier", false, false, false, false, false, false, "", false},
+		{"read without see: not a tier", false, false, true, false, false, false, "", false},
+		{"create without read/see: the Custom case", true, false, false, false, false, false, "", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			entry := client.ClmSecurityEntry{
+				Create: boolPtr(tt.create), Move: boolPtr(tt.move), Read: boolPtr(tt.read),
+				See: boolPtr(tt.see), SetAccess: boolPtr(tt.setAccess), Write: boolPtr(tt.write),
+			}
+			slug, ok := clmSlugForEntry(entry)
+			if ok != tt.wantOK || slug != tt.wantSlug {
+				t.Errorf("clmSlugForEntry(%+v) = (%q, %v), want (%q, %v)", tt, slug, ok, tt.wantSlug, tt.wantOK)
+			}
+		})
+	}
+}
+
+func TestClmAccessTypeForSlug_RoundTrips(t *testing.T) {
+	for _, fe := range clmFolderEntitlements {
+		got, ok := clmAccessTypeForSlug(fe.slug)
+		if !ok || got != fe.accessType {
+			t.Errorf("clmAccessTypeForSlug(%q) = (%q, %v), want (%q, true)", fe.slug, got, ok, fe.accessType)
+		}
+	}
+	if _, ok := clmAccessTypeForSlug("not_a_real_slug"); ok {
+		t.Error("expected clmAccessTypeForSlug to reject an unknown slug")
+	}
+}
+
+func TestClmPrincipalIDForItem(t *testing.T) {
+	srv, _ := clmtest.NewServer(t)
+
+	t.Run("role name maps to clm_role", func(t *testing.T) {
+		id, ok := clmPrincipalIDForItem("FullSubscriber")
+		if !ok || id.ResourceType != clmRoleResourceType.Id || id.Resource != "FullSubscriber" {
+			t.Errorf("got (%+v, %v), want clm_role/FullSubscriber", id, ok)
+		}
+	})
+
+	t.Run("group href maps to clm_group", func(t *testing.T) {
+		href := srv.GroupHref("group-legal")
+		id, ok := clmPrincipalIDForItem(href)
+		if !ok || id.ResourceType != clmGroupResourceType.Id || id.Resource != "group-legal" {
+			t.Errorf("got (%+v, %v), want clm_group/group-legal", id, ok)
+		}
+	})
+
+	t.Run("member href maps to clm_member", func(t *testing.T) {
+		href := srv.MemberHref("member-bob")
+		id, ok := clmPrincipalIDForItem(href)
+		if !ok || id.ResourceType != clmMemberResourceType.Id || id.Resource != "member-bob" {
+			t.Errorf("got (%+v, %v), want clm_member/member-bob", id, ok)
+		}
+	})
+
+	t.Run("unrecognized item is rejected, not guessed", func(t *testing.T) {
+		if _, ok := clmPrincipalIDForItem("not-a-role-or-href"); ok {
+			t.Error("expected an unrecognized Item to be rejected")
+		}
+	})
+}
+
+// --- Integration tests against the clmtest mock server ---
+
+func TestClmFolderBuilder_List(t *testing.T) {
+	_, c := clmtest.NewServer(t)
+	b := newClmFolderBuilder(c)
+	ctx := context.Background()
+
+	var all []*v2.Resource
+	pageToken := ""
+	for i := 0; i < 10; i++ {
+		resources, res, err := b.List(ctx, nil, rs.SyncOpAttrs{PageToken: pagination.Token{Size: 2, Token: pageToken}})
+		if err != nil {
+			t.Fatalf("List page %d: %v", i, err)
+		}
+		all = append(all, resources...)
+		if res.NextPageToken == "" {
+			break
+		}
+		pageToken = res.NextPageToken
+	}
+
+	if len(all) != 3 {
+		t.Fatalf("expected 3 CLM folders (root, templates, contracts), got %d", len(all))
+	}
+}
+
+func TestClmFolderBuilder_StaticEntitlements(t *testing.T) {
+	_, c := clmtest.NewServer(t)
+	b := newClmFolderBuilder(c)
+	ctx := context.Background()
+
+	ents, _, err := b.StaticEntitlements(ctx, rs.SyncOpAttrs{})
+	if err != nil {
+		t.Fatalf("StaticEntitlements: %v", err)
+	}
+	if len(ents) != 5 {
+		t.Fatalf("expected exactly 5 static entitlements (the grantable tiers), got %d", len(ents))
+	}
+	for _, e := range ents {
+		if len(e.GrantableTo) != 3 {
+			t.Errorf("entitlement %q: expected grantable to clm_member/clm_group/clm_role (3 types), got %d", e.Slug, len(e.GrantableTo))
+		}
+	}
+
+	// Entitlements() must return nil — the SDK doesn't call it when
+	// StaticEntitlementSyncerV2 is implemented, but confirm it degrades safely anyway.
+	if ents2, _, err := b.Entitlements(ctx, nil, rs.SyncOpAttrs{}); err != nil || ents2 != nil {
+		t.Errorf("Entitlements() should return (nil, nil, nil), got (%v, _, %v)", ents2, err)
+	}
+}
+
+func TestClmFolderBuilder_Grants_MapsAndSkipsCorrectly(t *testing.T) {
+	// folder-contracts is seeded with 4 Security entries: an AccessType-based one
+	// (group), a flags-based one (member), a role-granted one, and one that matches no
+	// known tier ("Custom" — Create=true only). Grants() must emit exactly 3 grants,
+	// skipping the unmatched one rather than approximating it.
+	srv, c := clmtest.NewServer(t)
+	b := newClmFolderBuilder(c)
+	ctx := context.Background()
+
+	folderResource, err := rs.NewResource("Contracts", clmFolderResourceType, "folder-contracts")
+	if err != nil {
+		t.Fatalf("NewResource: %v", err)
+	}
+
+	grants, _, err := b.Grants(ctx, folderResource, rs.SyncOpAttrs{})
+	if err != nil {
+		t.Fatalf("Grants: %v", err)
+	}
+	if len(grants) != 3 {
+		t.Fatalf("expected 3 grants (the Custom entry should be skipped), got %d", len(grants))
+	}
+
+	var sawGroup, sawMember, sawRole bool
+	for _, g := range grants {
+		switch g.Principal.Id.ResourceType {
+		case clmGroupResourceType.Id:
+			sawGroup = true
+			if g.Principal.Id.Resource != "group-legal" {
+				t.Errorf("expected the group grant to target group-legal, got %s", g.Principal.Id.Resource)
+			}
+			if len(g.Annotations) == 0 {
+				t.Error("expected a GrantExpandable annotation on the group-principal grant")
+			}
+		case clmMemberResourceType.Id:
+			sawMember = true
+			if g.Principal.Id.Resource != "member-bob" {
+				t.Errorf("expected the member grant to target member-bob, got %s", g.Principal.Id.Resource)
+			}
+		case clmRoleResourceType.Id:
+			sawRole = true
+			if g.Principal.Id.Resource != "FullSubscriber" {
+				t.Errorf("expected the role grant to target FullSubscriber, got %s", g.Principal.Id.Resource)
+			}
+		}
+	}
+	if !sawGroup || !sawMember || !sawRole {
+		t.Errorf("expected one grant each for group/member/role principals; got group=%v member=%v role=%v", sawGroup, sawMember, sawRole)
+	}
+	_ = srv
+}
+
+func TestClmFolderBuilder_GrantAndRevoke_Idempotent(t *testing.T) {
+	srv, c := clmtest.NewServer(t)
+	b := newClmFolderBuilder(c)
+	ctx := context.Background()
+
+	// folder-templates starts with no Security entries.
+	folderResource, err := rs.NewResource("Templates", clmFolderResourceType, "folder-templates")
+	if err != nil {
+		t.Fatalf("NewResource: %v", err)
+	}
+	groupResource, err := parseIntoClmGroupResource(&client.ClmGroup{Name: "Operations", Href: srv.GroupHref("group-ops")})
+	if err != nil {
+		t.Fatalf("parseIntoClmGroupResource: %v", err)
+	}
+
+	ent := &v2.Entitlement{Slug: "view_edit", Resource: folderResource}
+
+	// Grant once: should succeed and actually write the entry.
+	if _, annos, err := b.Grant(ctx, groupResource, ent); err != nil {
+		t.Fatalf("Grant: %v", err)
+	} else if hasAlreadyExists(annos) {
+		t.Error("first Grant should not report GrantAlreadyExists")
+	}
+	entries := srv.FolderSecurity("folder-templates")
+	if len(entries) != 1 || entries[0].AccessType != client.ClmAccessTypeViewEdit {
+		t.Fatalf("expected one ViewEdit entry after Grant, got %+v", entries)
+	}
+
+	// Grant again: idempotent, should report GrantAlreadyExists and not duplicate.
+	if _, annos, err := b.Grant(ctx, groupResource, ent); err != nil {
+		t.Fatalf("second Grant: %v", err)
+	} else if !hasAlreadyExists(annos) {
+		t.Error("repeat Grant should report GrantAlreadyExists")
+	}
+	if entries := srv.FolderSecurity("folder-templates"); len(entries) != 1 {
+		t.Fatalf("expected still exactly one entry after a repeat Grant, got %d", len(entries))
+	}
+
+	// Revoke: should set AccessType to NoAccess (not remove the entry).
+	grantObj := &v2.Grant{Principal: groupResource, Entitlement: ent}
+	if annos, err := b.Revoke(ctx, grantObj); err != nil {
+		t.Fatalf("Revoke: %v", err)
+	} else if hasAlreadyRevoked(annos) {
+		t.Error("first Revoke should not report GrantAlreadyRevoked")
+	}
+	entries = srv.FolderSecurity("folder-templates")
+	if len(entries) != 1 || entries[0].AccessType != client.ClmAccessTypeNoAccess {
+		t.Fatalf("expected the entry's AccessType to become NoAccess after Revoke, got %+v", entries)
+	}
+
+	// Revoke again: idempotent.
+	if annos, err := b.Revoke(ctx, grantObj); err != nil {
+		t.Fatalf("second Revoke: %v", err)
+	} else if !hasAlreadyRevoked(annos) {
+		t.Error("repeat Revoke should report GrantAlreadyRevoked")
+	}
+}
+
+func hasAlreadyExists(annos annotations.Annotations) bool {
+	return annos.Contains(&v2.GrantAlreadyExists{})
+}
+
+func hasAlreadyRevoked(annos annotations.Annotations) bool {
+	return annos.Contains(&v2.GrantAlreadyRevoked{})
+}

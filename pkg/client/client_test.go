@@ -126,7 +126,7 @@ func newTestClient(t *testing.T, userInfo UserInfoResponse, configAccountId stri
 	testHTTPWrapper := uhttp.NewBaseHttpClient(&http.Client{Transport: transport})
 	testTokenSource := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "test-token"})
 
-	c := NewClient(context.Background(), false, testTokenSource, configAccountId, testHTTPWrapper)
+	c := NewClient(context.Background(), false, testTokenSource, configAccountId, "", testHTTPWrapper)
 
 	return c, mockServer
 }

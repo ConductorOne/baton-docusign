@@ -29,12 +29,14 @@ func buildURL(base, path string, params ...any) (*url.URL, error) {
 }
 
 // DoRequestCommon executes the HTTP request and handles rate limit annotations.
-func doRequestCommon(wrapper *uhttp.BaseHttpClient, req *http.Request, res any) (http.Header, annotations.Annotations, error) {
+// errTarget receives the parsed error body on non-2xx responses (e.g. &ErrorResponse{}
+// for eSignature, &ClmErrorResponse{} for CLM) since the two APIs use different error envelopes.
+func doRequestCommon(wrapper *uhttp.BaseHttpClient, req *http.Request, res any, errTarget uhttp.ErrorResponse) (http.Header, annotations.Annotations, error) {
 	opts := []uhttp.DoOption{}
 	if res != nil {
 		opts = append(opts, uhttp.WithJSONResponse(res))
 	}
-	opts = append(opts, uhttp.WithErrorResponse(&ErrorResponse{}))
+	opts = append(opts, uhttp.WithErrorResponse(errTarget))
 	resp, err := wrapper.Do(req, opts...)
 	if err != nil {
 		return nil, nil, err

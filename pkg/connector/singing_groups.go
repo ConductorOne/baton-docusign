@@ -117,8 +117,8 @@ func (g *signingGroupBuilder) Grants(ctx context.Context, groupResource *v2.Reso
 			userResource.Id,
 			grant.WithGrantMetadata(map[string]any{
 				"signing_group_name": groupResource.DisplayName,
-				"email":              user.Email,
-				"username":           user.UserName,
+				profileFieldEmail:    user.Email,
+				profileFieldUsername: user.UserName,
 			}),
 		))
 	}
@@ -203,9 +203,9 @@ func newSigningGroupBuilder(client *client.Client) *signingGroupBuilder {
 // parseIntoSigningGroupResource maps a client.SigningGroup to a Baton v2.Resource.
 func parseIntoSigningGroupResource(group *client.SigningGroup) (*v2.Resource, error) {
 	profile := map[string]any{
-		"group_name": group.GroupName,
-		"group_type": group.GroupType,
-		"created":    group.Created,
+		profileFieldGroupName: group.GroupName,
+		"group_type":          group.GroupType,
+		"created":             group.Created,
 	}
 
 	return rs.NewGroupResource(
