@@ -47,10 +47,10 @@ func TestClmSlugForEntry_AccessTypeBased(t *testing.T) {
 
 func TestClmSlugForEntry_FlagsBased(t *testing.T) {
 	tests := []struct {
-		name                                         string
-		create, move, read, see, setAccess, write    bool
-		wantSlug                                     string
-		wantOK                                       bool
+		name                                      string
+		create, move, read, see, setAccess, write bool
+		wantSlug                                  string
+		wantOK                                    bool
 	}{
 		{"view: read+see only", false, false, true, true, false, false, "view", true},
 		{"view_create: +create", true, false, true, true, false, false, "view_create", true},
@@ -277,6 +277,62 @@ func TestClmFolderBuilder_GrantAndRevoke_Idempotent(t *testing.T) {
 		t.Fatalf("second Revoke: %v", err)
 	} else if !hasAlreadyRevoked(annos) {
 		t.Error("repeat Revoke should report GrantAlreadyRevoked")
+	}
+}
+
+// TestClmFolderBuilder_GrantAndRevoke_ToleratesBareIDOnRead is a regression test: the
+// CLM API's read-side Item representation isn't confirmed to always match the exact
+// Href shape clmItemForPrincipal constructs on the write side (see clmPrincipalIDForItem,
+// which normalizes for the same reason). Grant/Revoke's existence checks used to compare
+// entry.Item to item with raw string equality — if the API ever returns Item as a bare
+// ID instead of a full Href, that comparison never matches, and Revoke in particular
+// would silently report GrantAlreadyRevoked without ever patching AccessType to
+// NoAccess, leaving the grant active. This seeds a folder-security entry with a bare-ID
+// Item directly (bypassing Grant) to simulate that read-side shape.
+func TestClmFolderBuilder_GrantAndRevoke_ToleratesBareIDOnRead(t *testing.T) {
+	srv, c := clmtest.NewServer(t)
+	b := newClmFolderBuilder(c)
+	ctx := context.Background()
+
+	// Seed folder-templates' Security entry with a bare group ID, not the full Href
+	// clmItemForPrincipal would construct.
+	if _, err := c.PatchFolderSecurity(ctx, "folder-templates", client.ClmSecurityEntry{
+		AccessType: client.ClmAccessTypeViewEdit,
+		Item:       "group-ops",
+	}); err != nil {
+		t.Fatalf("PatchFolderSecurity (seed): %v", err)
+	}
+
+	folderResource, err := rs.NewResource("Templates", clmFolderResourceType, "folder-templates")
+	if err != nil {
+		t.Fatalf("NewResource: %v", err)
+	}
+	groupResource, err := parseIntoClmGroupResource(&client.ClmGroup{Name: "Operations", Href: srv.GroupHref("group-ops")})
+	if err != nil {
+		t.Fatalf("parseIntoClmGroupResource: %v", err)
+	}
+	ent := &v2.Entitlement{Slug: "view_edit", Resource: folderResource}
+
+	// Grant for the same tier must recognize the bare-ID entry as already granted.
+	if _, annos, err := b.Grant(ctx, groupResource, ent); err != nil {
+		t.Fatalf("Grant: %v", err)
+	} else if !hasAlreadyExists(annos) {
+		t.Error("Grant should recognize a bare-ID entry.Item as already granted, not duplicate it")
+	}
+	if entries := srv.FolderSecurity("folder-templates"); len(entries) != 1 {
+		t.Fatalf("expected still exactly one entry, got %d: %+v", len(entries), entries)
+	}
+
+	// Revoke must actually patch AccessType to NoAccess, not silently no-op.
+	grantObj := &v2.Grant{Principal: groupResource, Entitlement: ent}
+	if annos, err := b.Revoke(ctx, grantObj); err != nil {
+		t.Fatalf("Revoke: %v", err)
+	} else if hasAlreadyRevoked(annos) {
+		t.Fatal("Revoke incorrectly reported GrantAlreadyRevoked for a bare-ID entry.Item — access was left in place instead of being revoked")
+	}
+	entries := srv.FolderSecurity("folder-templates")
+	if len(entries) != 1 || entries[0].AccessType != client.ClmAccessTypeNoAccess {
+		t.Fatalf("expected the entry's AccessType to become NoAccess after Revoke, got %+v", entries)
 	}
 }
 

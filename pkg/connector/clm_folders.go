@@ -181,18 +181,32 @@ func (f *clmFolderBuilder) Grant(ctx context.Context, principal *v2.Resource, en
 	if err != nil {
 		return nil, getAnnos, fmt.Errorf("baton-docusign: failed to get security for CLM folder %s: %w", folderID, err)
 	}
+	// patchItem is what gets sent in the Patch call below. It defaults to the freshly
+	// constructed item, but if an existing entry for this principal is found, it's
+	// overwritten with that entry's own Item value (see the loop below for why).
+	patchItem := item
 	for _, entry := range folder.Security {
-		if entry.Item == item {
+		// Compare by clmIDFromHref, not raw equality: entry.Item comes back from the
+		// API's read side, which isn't guaranteed to match item's exact Href shape
+		// (see clmPrincipalIDForItem's own normalization for the same reason) — a bare
+		// ID and a Href ending in that ID must still be treated as the same principal.
+		if clmIDFromHref(entry.Item) == clmIDFromHref(item) {
 			if slug, ok := clmSlugForEntry(entry); ok && slug == ent.Slug {
 				return nil, annotations.New(&v2.GrantAlreadyExists{}), nil
 			}
+			// Patch this existing entry using its own Item value, not the freshly
+			// constructed one: if the API's Patch upserts by exact Item match (as
+			// opposed to whatever principal it logically references), sending our own
+			// Href here could create a second entry alongside this one instead of
+			// updating it, if the stored Item isn't in that same exact shape.
+			patchItem = entry.Item
 			break
 		}
 	}
 
 	patchAnnos, err := f.client.PatchFolderSecurity(ctx, folderID, client.ClmSecurityEntry{
 		AccessType: accessType,
-		Item:       item,
+		Item:       patchItem,
 	})
 	if err != nil {
 		return nil, patchAnnos, fmt.Errorf("baton-docusign: failed to grant CLM folder security: %w", err)
@@ -216,8 +230,17 @@ func (f *clmFolderBuilder) Revoke(ctx context.Context, grantObj *v2.Grant) (anno
 	}
 
 	found := false
+	// patchItem defaults to the freshly constructed item but is overwritten below with
+	// the matched entry's own Item value — see the identical pattern (and its
+	// rationale) in Grant.
+	patchItem := item
 	for _, entry := range folder.Security {
-		if entry.Item != item {
+		// See the matching comment in Grant: compare by clmIDFromHref, not raw
+		// equality, since entry.Item's read-side format isn't guaranteed to match
+		// item's Href shape exactly. Getting this wrong here is worse than in Grant —
+		// a false "not found" makes Revoke report GrantAlreadyRevoked without ever
+		// patching AccessType to NoAccess, silently leaving access in place.
+		if clmIDFromHref(entry.Item) != clmIDFromHref(item) {
 			continue
 		}
 		// Use the same tier resolution as Grant (clmSlugForEntry), not a raw AccessType
@@ -226,6 +249,7 @@ func (f *clmFolderBuilder) Revoke(ctx context.Context, grantObj *v2.Grant) (anno
 		// already-NoAccess flag-only entry as still granted.
 		if _, ok := clmSlugForEntry(entry); ok {
 			found = true
+			patchItem = entry.Item
 			break
 		}
 	}
@@ -235,7 +259,7 @@ func (f *clmFolderBuilder) Revoke(ctx context.Context, grantObj *v2.Grant) (anno
 
 	patchAnnos, err := f.client.PatchFolderSecurity(ctx, folderID, client.ClmSecurityEntry{
 		AccessType: client.ClmAccessTypeNoAccess,
-		Item:       item,
+		Item:       patchItem,
 	})
 	if err != nil {
 		return patchAnnos, fmt.Errorf("baton-docusign: failed to revoke CLM folder security: %w", err)

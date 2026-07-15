@@ -123,8 +123,9 @@ func (c *Client) buildClmClientURL(path string, params ...any) (*url.URL, error)
 
 // prepareClmPagedRequest safely prepares a paged CLM request URL. extra supplies any
 // additional Sprintf placeholders in endpoint beyond accountId (e.g. a groupID/memberID
-// path segment), in order.
-func (c *Client) prepareClmPagedRequest(endpoint string, options PageOptions, extra ...any) (*url.URL, error) {
+// path segment), in order. Returns the offset it requested alongside the URL — see
+// preparePagedRequestClm's doc for why callers need this.
+func (c *Client) prepareClmPagedRequest(endpoint string, options PageOptions, extra ...any) (*url.URL, int, error) {
 	c.mutex.RLock()
 	clmBaseURI := c.clmBaseURI
 	accountId := c.accountId
@@ -132,7 +133,7 @@ func (c *Client) prepareClmPagedRequest(endpoint string, options PageOptions, ex
 
 	baseURL, err := url.Parse(clmBaseURI)
 	if err != nil {
-		return nil, fmt.Errorf("baton-docusign: invalid CLM base URL: %w", err)
+		return nil, 0, fmt.Errorf("baton-docusign: invalid CLM base URL: %w", err)
 	}
 
 	formatted := fmt.Sprintf(endpoint, append([]any{accountId}, extra...)...)
@@ -175,7 +176,7 @@ func (c *Client) SearchFolders(ctx context.Context, options PageOptions) ([]ClmF
 		return nil, "", nil, err
 	}
 
-	searchURL, err := c.prepareClmPagedRequest(clmSearchFolders, options)
+	searchURL, requestOffset, err := c.prepareClmPagedRequest(clmSearchFolders, options)
 	if err != nil {
 		return nil, "", nil, err
 	}
@@ -186,7 +187,7 @@ func (c *Client) SearchFolders(ctx context.Context, options PageOptions) ([]ClmF
 		return nil, "", nil, fmt.Errorf("baton-docusign: failed to search CLM folders: %w", err)
 	}
 
-	return page.Items, getClmNextToken(page.ClmPage), anno, nil
+	return page.Items, getClmNextToken(requestOffset, len(page.Items), page.Total), anno, nil
 }
 
 // GetFolder fetches a single folder, optionally expanding Security to get its explicit
@@ -262,7 +263,7 @@ func (c *Client) ListGroups(ctx context.Context, options PageOptions) ([]ClmGrou
 		return nil, "", nil, err
 	}
 
-	listURL, err := c.prepareClmPagedRequest(clmGetGroups, options)
+	listURL, requestOffset, err := c.prepareClmPagedRequest(clmGetGroups, options)
 	if err != nil {
 		return nil, "", nil, err
 	}
@@ -273,7 +274,7 @@ func (c *Client) ListGroups(ctx context.Context, options PageOptions) ([]ClmGrou
 		return nil, "", nil, fmt.Errorf("baton-docusign: failed to list CLM groups: %w", err)
 	}
 
-	return page.Items, getClmNextToken(page.ClmPage), anno, nil
+	return page.Items, getClmNextToken(requestOffset, len(page.Items), page.Total), anno, nil
 }
 
 // GetGroupMembers lists the members of a CLM group.
@@ -284,7 +285,7 @@ func (c *Client) GetGroupMembers(ctx context.Context, groupID string, options Pa
 		return nil, "", nil, err
 	}
 
-	membersURL, err := c.prepareClmPagedRequest(clmGetGroupMembers, options, groupID)
+	membersURL, requestOffset, err := c.prepareClmPagedRequest(clmGetGroupMembers, options, groupID)
 	if err != nil {
 		return nil, "", nil, err
 	}
@@ -295,7 +296,7 @@ func (c *Client) GetGroupMembers(ctx context.Context, groupID string, options Pa
 		return nil, "", nil, fmt.Errorf("baton-docusign: failed to list members of CLM group %s: %w", groupID, err)
 	}
 
-	return page.Items, getClmNextToken(page.ClmPage), anno, nil
+	return page.Items, getClmNextToken(requestOffset, len(page.Items), page.Total), anno, nil
 }
 
 // ListMembers lists CLM members (the CLM API's principal object). Synced as its own
@@ -308,7 +309,7 @@ func (c *Client) ListMembers(ctx context.Context, options PageOptions) ([]ClmMem
 		return nil, "", nil, err
 	}
 
-	listURL, err := c.prepareClmPagedRequest(clmGetMembers, options)
+	listURL, requestOffset, err := c.prepareClmPagedRequest(clmGetMembers, options)
 	if err != nil {
 		return nil, "", nil, err
 	}
@@ -319,7 +320,7 @@ func (c *Client) ListMembers(ctx context.Context, options PageOptions) ([]ClmMem
 		return nil, "", nil, fmt.Errorf("baton-docusign: failed to list CLM members: %w", err)
 	}
 
-	return page.Items, getClmNextToken(page.ClmPage), anno, nil
+	return page.Items, getClmNextToken(requestOffset, len(page.Items), page.Total), anno, nil
 }
 
 // GetMemberGroups gets the FULL current list of groups a member belongs to — required
@@ -370,7 +371,7 @@ func (c *Client) getMemberGroupsPage(ctx context.Context, memberID string, optio
 		return nil, "", nil, err
 	}
 
-	groupsURL, err := c.prepareClmPagedRequest(clmGetMemberGroups, options, memberID)
+	groupsURL, requestOffset, err := c.prepareClmPagedRequest(clmGetMemberGroups, options, memberID)
 	if err != nil {
 		return nil, "", nil, err
 	}
@@ -381,7 +382,7 @@ func (c *Client) getMemberGroupsPage(ctx context.Context, memberID string, optio
 		return nil, "", nil, fmt.Errorf("baton-docusign: failed to get groups for CLM member %s: %w", memberID, err)
 	}
 
-	return page.Items, getClmNextToken(page.ClmPage), anno, nil
+	return page.Items, getClmNextToken(requestOffset, len(page.Items), page.Total), anno, nil
 }
 
 // PatchMemberGroups grants group membership: the CLM API adds the member to any group
@@ -442,7 +443,7 @@ func (c *Client) ListPermissionSets(ctx context.Context, options PageOptions) ([
 		return nil, "", nil, err
 	}
 
-	listURL, err := c.prepareClmPagedRequest(clmGetPermissionSet, options)
+	listURL, requestOffset, err := c.prepareClmPagedRequest(clmGetPermissionSet, options)
 	if err != nil {
 		return nil, "", nil, err
 	}
@@ -453,5 +454,5 @@ func (c *Client) ListPermissionSets(ctx context.Context, options PageOptions) ([
 		return nil, "", nil, fmt.Errorf("baton-docusign: failed to list CLM permission sets: %w", err)
 	}
 
-	return page.Items, getClmNextToken(page.ClmPage), anno, nil
+	return page.Items, getClmNextToken(requestOffset, len(page.Items), page.Total), anno, nil
 }

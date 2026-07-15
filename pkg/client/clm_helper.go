@@ -9,11 +9,14 @@ import (
 
 // preparePagedRequestClm prepares a paged request URL using CLM's confirmed query
 // param names (pageSortParams.offset/limit/...) — distinct from eSignature's
-// start_position/count (see preparePagedRequest in helper.go).
-func preparePagedRequestClm(baseURL *url.URL, endpoint string, options PageOptions) (*url.URL, error) {
+// start_position/count (see preparePagedRequest in helper.go). Returns the offset it
+// requested alongside the URL, so callers can compute the next-page token from what was
+// actually asked for rather than trusting the response to echo it back (see
+// getClmNextToken's doc for why that trust would be risky).
+func preparePagedRequestClm(baseURL *url.URL, endpoint string, options PageOptions) (*url.URL, int, error) {
 	endpointURL, err := url.Parse(endpoint)
 	if err != nil {
-		return nil, fmt.Errorf("baton-docusign: invalid CLM endpoint: %w", err)
+		return nil, 0, fmt.Errorf("baton-docusign: invalid CLM endpoint: %w", err)
 	}
 
 	fullURL := baseURL.ResolveReference(endpointURL)
@@ -23,7 +26,7 @@ func preparePagedRequestClm(baseURL *url.URL, endpoint string, options PageOptio
 	if options.PageToken != "" {
 		decoded, err := decodeClmPageToken(options.PageToken)
 		if err != nil {
-			return nil, fmt.Errorf("baton-docusign: invalid CLM page token: %w", err)
+			return nil, 0, fmt.Errorf("baton-docusign: invalid CLM page token: %w", err)
 		}
 		offset = decoded.Offset
 	}
@@ -36,7 +39,7 @@ func preparePagedRequestClm(baseURL *url.URL, endpoint string, options PageOptio
 	q.Set("pageSortParams.limit", fmt.Sprintf("%d", pageSize))
 
 	fullURL.RawQuery = q.Encode()
-	return fullURL, nil
+	return fullURL, offset, nil
 }
 
 // clmPageToken is the internal offset-based continuation token for CLM pagination.
@@ -65,11 +68,20 @@ func decodeClmPageToken(token string) (*clmPageToken, error) {
 }
 
 // getClmNextToken calculates the next-page token from a CLM collection response.
-// Prefers the Offset+Limit<Total signal over parsing the Next URL, since Next's
-// absolute-vs-relative shape is undocumented.
-func getClmNextToken(page ClmPage) string {
-	if page.Offset+page.Limit < page.Total {
-		return encodeClmPageToken(&clmPageToken{Offset: page.Offset + page.Limit})
+// Computed from requestOffset (what we actually asked for) plus the number of items
+// actually returned — not the response's own Offset field. Trusting the response to
+// echo the requested offset back correctly was never confirmed live: if it doesn't,
+// this would compute the same non-empty token forever, looping the SDK's own
+// pagination driver indefinitely across List()/Grants() calls, which has no built-in
+// non-advancing-token guard of its own (unlike GetMemberGroups' internal pagination
+// loop, which explicitly checks for and bails out on a non-advancing token).
+func getClmNextToken(requestOffset, itemCount, total int) string {
+	if itemCount == 0 {
+		return ""
 	}
-	return ""
+	nextOffset := requestOffset + itemCount
+	if nextOffset >= total {
+		return ""
+	}
+	return encodeClmPageToken(&clmPageToken{Offset: nextOffset})
 }
