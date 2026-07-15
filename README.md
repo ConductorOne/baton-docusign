@@ -120,6 +120,12 @@ CLM permission sets sync for visibility only — DocuSign's CLM API has no endpo
 assign or unassign a permission set, so they cannot be granted or revoked through this
 connector.
 
+The CLM Object API's base URL is read from an `api_base_url` field on the OAuth token.
+This has not been confirmed against a live CLM account: DocuSign's documented
+`/oauth/token` response does not include that field, so it may need to come from
+`/oauth/userinfo` instead. If `--include-clm` produces a "could not resolve the DocuSign
+CLM API base URL" error, this is the first thing to check.
+
 # Getting Started
 
 ## Prerequisites

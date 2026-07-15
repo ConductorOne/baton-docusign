@@ -11,8 +11,7 @@ import (
 // param names (pageSortParams.offset/limit/...) — distinct from eSignature's
 // start_position/count (see preparePagedRequest in helper.go). Returns the offset it
 // requested alongside the URL, so callers can compute the next-page token from what was
-// actually asked for rather than trusting the response to echo it back (see
-// getClmNextToken's doc for why that trust would be risky).
+// actually asked for.
 func preparePagedRequestClm(baseURL *url.URL, endpoint string, options PageOptions) (*url.URL, int, error) {
 	endpointURL, err := url.Parse(endpoint)
 	if err != nil {

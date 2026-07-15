@@ -32,8 +32,17 @@
 // # Base URL resolution
 //
 // CLM's Object API base URL (a distinct host from eSignature's per-account base_uri,
-// e.g. api.{site}.{region}.clm.docusign.net) is resolved from an `api_base_url` value
-// on the OAuth token, per DocuSign's documentation. See ensureClmInitialized below.
+// e.g. api.{site}.{region}.clm.docusign.net) is read from an `api_base_url` field via
+// the OAuth2 token's Extra data (see ensureClmInitialized below). This needs
+// confirming against a live CLM-scoped token before relying on it: oauth2.Token.Extra
+// only surfaces fields present in the token endpoint's own JSON response body, and
+// DocuSign's documented /oauth/token response is access_token/token_type/
+// refresh_token/expires_in/scope — no api_base_url field is documented there. If the
+// real source of this value turns out to be the /oauth/userinfo response instead (the
+// endpoint eSignature's ensureInitialized/fetchUserInfo already calls), that field
+// would need to be read from UserInfoResponse/AccountInfo instead of the token Extra.
+// Until confirmed, ensureClmInitialized fails loudly with a clear error rather than
+// resolving to an empty or guessed host.
 //
 // # Pagination
 //
@@ -66,9 +75,10 @@ const (
 )
 
 // ensureClmInitialized resolves the CLM Object API base URL, separately from
-// eSignature's ensureInitialized/baseURI. DocuSign's OAuth token exchange carries the
-// base URL in an "api_base_url" field, surfaced here via the OAuth2 token's Extra data.
-// If it's absent, this returns a clear error rather than guessing at a URL shape, since
+// eSignature's ensureInitialized/baseURI, by reading an "api_base_url" field off the
+// OAuth2 token's Extra data — see the package doc's "Base URL resolution" section for
+// why this specific mechanism needs confirming against a live account. If the field is
+// absent, this returns a clear error rather than guessing at a URL shape, since
 // guessing wrong here would silently point every CLM call at a nonexistent host.
 func (c *Client) ensureClmInitialized(ctx context.Context) error {
 	c.mutex.Lock()
