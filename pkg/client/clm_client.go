@@ -80,9 +80,6 @@ const (
 	clmAccountDiscoveryHostDemo = "https://authuat.springcm.com"
 )
 
-// clmAccountDiscoveryPath takes a single %s placeholder for the DocuSign account ID.
-const clmAccountDiscoveryPath = "/api/v2/%s/account"
-
 // clmBaseURLCandidateFields lists the response field names most likely to carry the
 // CLM Object API base URL, in priority order. ClmDiscoveryFieldAPIBaseURL mirrors the
 // field name CLM's legacy token-exchange response uses for the same concept, per the
@@ -142,7 +139,11 @@ func (c *Client) ensureClmInitialized(ctx context.Context) error {
 	if c.baseURLOverride != "" {
 		discoveryHost = c.baseURLOverride
 	}
-	discoveryURL, err := url.Parse(discoveryHost + fmt.Sprintf(clmAccountDiscoveryPath, c.accountId))
+	discoveryURLStr, err := url.JoinPath(discoveryHost, "api", "v2", c.accountId, "account")
+	if err != nil {
+		return fmt.Errorf("baton-docusign: invalid CLM account discovery URL: %w", err)
+	}
+	discoveryURL, err := url.Parse(discoveryURLStr)
 	if err != nil {
 		return fmt.Errorf("baton-docusign: invalid CLM account discovery URL: %w", err)
 	}
