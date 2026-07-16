@@ -120,11 +120,21 @@ CLM permission sets sync for visibility only — DocuSign's CLM API has no endpo
 assign or unassign a permission set, so they cannot be granted or revoked through this
 connector.
 
-The CLM Object API's base URL is read from an `api_base_url` field on the OAuth token.
-This has not been confirmed against a live CLM account: DocuSign's documented
-`/oauth/token` response does not include that field, so it may need to come from
-`/oauth/userinfo` instead. If `--include-clm` produces a "could not resolve the DocuSign
-CLM API base URL" error, this is the first thing to check.
+The CLM Object API's base URL is resolved via a separate account discovery call
+(`GET /api/v2/{accountId}/account` on `auth.springcm.com`/`authuat.springcm.com`,
+authenticated with the same access token), confirmed via DocuSign's CLM API 101
+documentation. That endpoint's exact response schema was not available at
+implementation time, so the connector checks a short list of likely field names
+(`ApiBaseUrl`, `api_base_url`, `ObjectApiUrl`, and similar) and fails with the actual
+field names it received if none match — that error message is the first thing to check
+if `--include-clm` can't resolve the CLM base URL against a real account.
+
+Folder discovery (`SearchFolders`) sends an empty search body, on the assumption that
+no criteria means "match all folders." This has not been confirmed against a live CLM
+account — if it instead means "no criteria, no results," no folders (and therefore no
+folder-security grants) would sync while the connector reports success. If
+`--include-clm` syncs zero `clm_folder` resources against a real account, this is the
+first thing to check.
 
 # Getting Started
 

@@ -32,17 +32,27 @@
 // # Base URL resolution
 //
 // CLM's Object API base URL (a distinct host from eSignature's per-account base_uri,
-// e.g. api.{site}.{region}.clm.docusign.net) is read from an `api_base_url` field via
-// the OAuth2 token's Extra data (see ensureClmInitialized below). This needs
-// confirming against a live CLM-scoped token before relying on it: oauth2.Token.Extra
-// only surfaces fields present in the token endpoint's own JSON response body, and
-// DocuSign's documented /oauth/token response is access_token/token_type/
-// refresh_token/expires_in/scope — no api_base_url field is documented there. If the
-// real source of this value turns out to be the /oauth/userinfo response instead (the
-// endpoint eSignature's ensureInitialized/fetchUserInfo already calls), that field
-// would need to be read from UserInfoResponse/AccountInfo instead of the token Extra.
-// Until confirmed, ensureClmInitialized fails loudly with a clear error rather than
-// resolving to an empty or guessed host.
+// e.g. api.{site}.{region}.clm.docusign.net) is resolved via a separate account
+// discovery call, confirmed via DocuSign's "CLM API 101" documentation:
+//
+//	GET https://auth.springcm.com/api/v2/{accountId}/account       (production)
+//	GET https://authuat.springcm.com/api/v2/{accountId}/account    (demo/UAT)
+//
+// authenticated with the same Bearer access token this connector already obtains via
+// the unified eSignature OAuth flow (account.docusign.com/account-d.docusign.com) — no
+// separate SpringCM-specific authentication is required to call it, per that same
+// documentation. This is a different, legacy-hosted mechanism from both the token
+// response and /oauth/userinfo: neither of those was confirmed to carry the CLM base
+// URL (the token response's documented fields are access_token/token_type/
+// refresh_token/expires_in/scope; /oauth/userinfo's are sub/name/accounts[] with no
+// CLM-specific field), and an earlier version of this code incorrectly read it from
+// the token's Extra data as a result.
+//
+// This endpoint's exact response schema was not available when this was written —
+// only the endpoint, its auth requirement, and its stated purpose ("account related
+// URLs including the base CLM API URLs") were confirmed. ensureClmInitialized below
+// checks a short list of the most likely field names and fails with the actual
+// response's field names listed if none match, rather than guessing wrong silently.
 //
 // # Pagination
 //
@@ -53,6 +63,7 @@ package client
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -60,6 +71,30 @@ import (
 	"github.com/conductorone/baton-sdk/pkg/annotations"
 	"github.com/conductorone/baton-sdk/pkg/uhttp"
 )
+
+// clmAccountDiscoveryHostProd and clmAccountDiscoveryHostDemo are CLM's legacy
+// (SpringCM-hosted) account discovery hosts — see the package doc's "Base URL
+// resolution" section.
+const (
+	clmAccountDiscoveryHostProd = "https://auth.springcm.com"
+	clmAccountDiscoveryHostDemo = "https://authuat.springcm.com"
+)
+
+// clmAccountDiscoveryPath takes a single %s placeholder for the DocuSign account ID.
+const clmAccountDiscoveryPath = "/api/v2/%s/account"
+
+// clmBaseURLCandidateFields lists the response field names most likely to carry the
+// CLM Object API base URL, in priority order. ClmDiscoveryFieldAPIBaseURL mirrors the
+// field name CLM's legacy token-exchange response uses for the same concept, per the
+// CLM.CM OAuth 2.0 Web Server Flow documentation — exported so clmtest's mock can use
+// the identical constant rather than a duplicated literal.
+const ClmDiscoveryFieldAPIBaseURL = "ApiBaseUrl"
+
+var clmBaseURLCandidateFields = []string{
+	ClmDiscoveryFieldAPIBaseURL, "api_base_url",
+	"ObjectApiUrl", "object_api_url",
+	"BaseUrl", "base_url",
+}
 
 // CLM API endpoint constants.
 const (
@@ -75,11 +110,9 @@ const (
 )
 
 // ensureClmInitialized resolves the CLM Object API base URL, separately from
-// eSignature's ensureInitialized/baseURI, by reading an "api_base_url" field off the
-// OAuth2 token's Extra data — see the package doc's "Base URL resolution" section for
-// why this specific mechanism needs confirming against a live account. If the field is
-// absent, this returns a clear error rather than guessing at a URL shape, since
-// guessing wrong here would silently point every CLM call at a nonexistent host.
+// eSignature's ensureInitialized/baseURI, via CLM's account discovery endpoint — see
+// the package doc's "Base URL resolution" section for the confirmed endpoint/auth and
+// why the response field name is checked defensively rather than assumed.
 func (c *Client) ensureClmInitialized(ctx context.Context) error {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
@@ -94,21 +127,70 @@ func (c *Client) ensureClmInitialized(ctx context.Context) error {
 		return nil
 	}
 
-	tok, err := c.tokenSource.Token()
+	token, err := c.tokenSource.Token()
 	if err != nil {
 		return fmt.Errorf("baton-docusign: failed to get token for CLM base URL resolution: %w", err)
 	}
 
-	apiBaseURL, _ := tok.Extra("api_base_url").(string)
-	if apiBaseURL == "" {
-		return fmt.Errorf("baton-docusign: could not resolve the DocuSign CLM API base URL " +
-			"(expected an \"api_base_url\" field on the OAuth token)")
+	discoveryHost := clmAccountDiscoveryHostProd
+	if c.isDemo {
+		discoveryHost = clmAccountDiscoveryHostDemo
+	}
+	// baseURLOverride (testing only, see config.BaseURLField) redirects every
+	// eSignature/CLM host this connector talks to at a local mock — including this
+	// discovery call's otherwise-hardcoded auth.springcm.com/authuat.springcm.com host.
+	if c.baseURLOverride != "" {
+		discoveryHost = c.baseURLOverride
+	}
+	discoveryURL, err := url.Parse(discoveryHost + fmt.Sprintf(clmAccountDiscoveryPath, c.accountId))
+	if err != nil {
+		return fmt.Errorf("baton-docusign: invalid CLM account discovery URL: %w", err)
 	}
 
-	c.clmBaseURI = apiBaseURL
-	c.clmBaseURIReady = true
+	request, err := c.wrapper.NewRequest(ctx, http.MethodGet, discoveryURL,
+		uhttp.WithAcceptJSONHeader(),
+		uhttp.WithBearerToken(token.AccessToken),
+	)
+	if err != nil {
+		return fmt.Errorf("baton-docusign: failed to build CLM account discovery request: %w", err)
+	}
 
+	var raw map[string]json.RawMessage
+	if _, _, err := doRequestCommon(c.wrapper, request, &raw, &ClmErrorResponse{}); err != nil {
+		return fmt.Errorf("baton-docusign: failed to discover the CLM API base URL: %w", err)
+	}
+
+	baseURL, ok := clmExtractBaseURLField(raw)
+	if !ok {
+		keys := make([]string, 0, len(raw))
+		for k := range raw {
+			keys = append(keys, k)
+		}
+		return fmt.Errorf("baton-docusign: CLM account discovery response at %s did not contain a recognized "+
+			"base-URL field (checked %v); response contained these fields instead: %v", discoveryURL, clmBaseURLCandidateFields, keys)
+	}
+
+	c.clmBaseURI = baseURL
+	c.clmBaseURIReady = true
 	return nil
+}
+
+// clmExtractBaseURLField scans a CLM account discovery response for the first
+// recognized base-URL field, in clmBaseURLCandidateFields priority order. Split out
+// from ensureClmInitialized so this defensive-fallback logic can be unit tested
+// directly against hand-built responses, without needing an HTTP mock.
+func clmExtractBaseURLField(raw map[string]json.RawMessage) (string, bool) {
+	for _, field := range clmBaseURLCandidateFields {
+		fieldValue, ok := raw[field]
+		if !ok {
+			continue
+		}
+		var value string
+		if err := json.Unmarshal(fieldValue, &value); err == nil && value != "" {
+			return value, true
+		}
+	}
+	return "", false
 }
 
 // ensureClmReady runs both initialization checks every CLM method needs, in order.
@@ -133,9 +215,9 @@ func (c *Client) buildClmClientURL(path string, params ...any) (*url.URL, error)
 
 // prepareClmPagedRequest safely prepares a paged CLM request URL. extra supplies any
 // additional Sprintf placeholders in endpoint beyond accountId (e.g. a groupID/memberID
-// path segment), in order. Returns the offset it requested alongside the URL — see
+// path segment), in order. Returns what it requested alongside the URL — see
 // preparePagedRequestClm's doc for why callers need this.
-func (c *Client) prepareClmPagedRequest(endpoint string, options PageOptions, extra ...any) (*url.URL, int, error) {
+func (c *Client) prepareClmPagedRequest(endpoint string, options PageOptions, extra ...any) (*url.URL, clmRequestedPage, error) {
 	c.mutex.RLock()
 	clmBaseURI := c.clmBaseURI
 	accountId := c.accountId
@@ -143,7 +225,7 @@ func (c *Client) prepareClmPagedRequest(endpoint string, options PageOptions, ex
 
 	baseURL, err := url.Parse(clmBaseURI)
 	if err != nil {
-		return nil, 0, fmt.Errorf("baton-docusign: invalid CLM base URL: %w", err)
+		return nil, clmRequestedPage{}, fmt.Errorf("baton-docusign: invalid CLM base URL: %w", err)
 	}
 
 	formatted := fmt.Sprintf(endpoint, append([]any{accountId}, extra...)...)
@@ -186,7 +268,7 @@ func (c *Client) SearchFolders(ctx context.Context, options PageOptions) ([]ClmF
 		return nil, "", nil, err
 	}
 
-	searchURL, requestOffset, err := c.prepareClmPagedRequest(clmSearchFolders, options)
+	searchURL, requestedPage, err := c.prepareClmPagedRequest(clmSearchFolders, options)
 	if err != nil {
 		return nil, "", nil, err
 	}
@@ -197,7 +279,7 @@ func (c *Client) SearchFolders(ctx context.Context, options PageOptions) ([]ClmF
 		return nil, "", nil, fmt.Errorf("baton-docusign: failed to search CLM folders: %w", err)
 	}
 
-	return page.Items, getClmNextToken(requestOffset, len(page.Items), page.Total), anno, nil
+	return page.Items, getClmNextToken(requestedPage, len(page.Items), page.Total), anno, nil
 }
 
 // GetFolder fetches a single folder, optionally expanding Security to get its explicit
@@ -273,7 +355,7 @@ func (c *Client) ListGroups(ctx context.Context, options PageOptions) ([]ClmGrou
 		return nil, "", nil, err
 	}
 
-	listURL, requestOffset, err := c.prepareClmPagedRequest(clmGetGroups, options)
+	listURL, requestedPage, err := c.prepareClmPagedRequest(clmGetGroups, options)
 	if err != nil {
 		return nil, "", nil, err
 	}
@@ -284,7 +366,7 @@ func (c *Client) ListGroups(ctx context.Context, options PageOptions) ([]ClmGrou
 		return nil, "", nil, fmt.Errorf("baton-docusign: failed to list CLM groups: %w", err)
 	}
 
-	return page.Items, getClmNextToken(requestOffset, len(page.Items), page.Total), anno, nil
+	return page.Items, getClmNextToken(requestedPage, len(page.Items), page.Total), anno, nil
 }
 
 // GetGroupMembers lists the members of a CLM group.
@@ -295,7 +377,7 @@ func (c *Client) GetGroupMembers(ctx context.Context, groupID string, options Pa
 		return nil, "", nil, err
 	}
 
-	membersURL, requestOffset, err := c.prepareClmPagedRequest(clmGetGroupMembers, options, groupID)
+	membersURL, requestedPage, err := c.prepareClmPagedRequest(clmGetGroupMembers, options, groupID)
 	if err != nil {
 		return nil, "", nil, err
 	}
@@ -306,7 +388,7 @@ func (c *Client) GetGroupMembers(ctx context.Context, groupID string, options Pa
 		return nil, "", nil, fmt.Errorf("baton-docusign: failed to list members of CLM group %s: %w", groupID, err)
 	}
 
-	return page.Items, getClmNextToken(requestOffset, len(page.Items), page.Total), anno, nil
+	return page.Items, getClmNextToken(requestedPage, len(page.Items), page.Total), anno, nil
 }
 
 // ListMembers lists CLM members (the CLM API's principal object). Synced as its own
@@ -319,7 +401,7 @@ func (c *Client) ListMembers(ctx context.Context, options PageOptions) ([]ClmMem
 		return nil, "", nil, err
 	}
 
-	listURL, requestOffset, err := c.prepareClmPagedRequest(clmGetMembers, options)
+	listURL, requestedPage, err := c.prepareClmPagedRequest(clmGetMembers, options)
 	if err != nil {
 		return nil, "", nil, err
 	}
@@ -330,7 +412,7 @@ func (c *Client) ListMembers(ctx context.Context, options PageOptions) ([]ClmMem
 		return nil, "", nil, fmt.Errorf("baton-docusign: failed to list CLM members: %w", err)
 	}
 
-	return page.Items, getClmNextToken(requestOffset, len(page.Items), page.Total), anno, nil
+	return page.Items, getClmNextToken(requestedPage, len(page.Items), page.Total), anno, nil
 }
 
 // GetMemberGroups gets the FULL current list of groups a member belongs to — required
@@ -381,7 +463,7 @@ func (c *Client) getMemberGroupsPage(ctx context.Context, memberID string, optio
 		return nil, "", nil, err
 	}
 
-	groupsURL, requestOffset, err := c.prepareClmPagedRequest(clmGetMemberGroups, options, memberID)
+	groupsURL, requestedPage, err := c.prepareClmPagedRequest(clmGetMemberGroups, options, memberID)
 	if err != nil {
 		return nil, "", nil, err
 	}
@@ -392,7 +474,7 @@ func (c *Client) getMemberGroupsPage(ctx context.Context, memberID string, optio
 		return nil, "", nil, fmt.Errorf("baton-docusign: failed to get groups for CLM member %s: %w", memberID, err)
 	}
 
-	return page.Items, getClmNextToken(requestOffset, len(page.Items), page.Total), anno, nil
+	return page.Items, getClmNextToken(requestedPage, len(page.Items), page.Total), anno, nil
 }
 
 // PatchMemberGroups grants group membership: the CLM API adds the member to any group
@@ -453,7 +535,7 @@ func (c *Client) ListPermissionSets(ctx context.Context, options PageOptions) ([
 		return nil, "", nil, err
 	}
 
-	listURL, requestOffset, err := c.prepareClmPagedRequest(clmGetPermissionSet, options)
+	listURL, requestedPage, err := c.prepareClmPagedRequest(clmGetPermissionSet, options)
 	if err != nil {
 		return nil, "", nil, err
 	}
@@ -464,5 +546,5 @@ func (c *Client) ListPermissionSets(ctx context.Context, options PageOptions) ([
 		return nil, "", nil, fmt.Errorf("baton-docusign: failed to list CLM permission sets: %w", err)
 	}
 
-	return page.Items, getClmNextToken(requestOffset, len(page.Items), page.Total), anno, nil
+	return page.Items, getClmNextToken(requestedPage, len(page.Items), page.Total), anno, nil
 }

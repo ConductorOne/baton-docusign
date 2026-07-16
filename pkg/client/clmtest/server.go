@@ -1,23 +1,22 @@
 // Package clmtest provides an in-memory mock of the DocuSign eSignature
-// /oauth/userinfo endpoint and the DocuSign CLM Object API, for use by tests in
-// pkg/client and pkg/connector. It exists because no CLM production/sandbox tenant
-// was available to validate this integration directly (see docs/api-research.md) —
+// /oauth/userinfo endpoint, CLM's account discovery endpoint, and the DocuSign CLM
+// Object API, for use by tests in pkg/client and pkg/connector. It exists because no
+// CLM production/sandbox tenant was available to validate this integration directly —
 // this is how the CLM sync/provisioning code paths get exercised instead.
 //
 // # Anti-drift note
 //
 // This mock replicates the endpoint paths, query params, and response/request shapes
-// documented in docs/api-research.md — not whatever the connector happens to call. If
+// documented for the real CLM API — not whatever the connector happens to call. If
 // the connector and this mock ever disagree, treat that as a bug in the connector to
 // fix, not something to paper over here.
 //
 // # Auth
 //
 // NewServer (used by this package's own Go tests) mocks no real OAuth flow: it returns
-// a *client.Client already wired with a static token whose Extra("api_base_url") points
-// at the mock server, and every endpoint handler requires "Authorization: Bearer
-// <token>" matching that exact token — mirroring the strictness of the real API without
-// needing a token endpoint.
+// a *client.Client already wired with a static token, and every endpoint handler
+// requires "Authorization: Bearer <token>" matching that exact token — mirroring the
+// strictness of the real API without needing a token endpoint.
 //
 // RunStandalone (see cmd/test-server) is for manually pointing a real baton-docusign
 // binary at this mock via --clm-base-url, while the connector still authenticates for
@@ -27,6 +26,7 @@
 // # Endpoints
 //
 //	GET   /oauth/userinfo                              — eSignature account discovery (ensureInitialized)
+//	GET   /api/v2/{accountId}/account                   — CLM account discovery (ensureClmInitialized)
 //	POST  /v2/{accountId}/folders/search                — SearchFolders
 //	GET   /v2/{accountId}/folders/{id}                  — GetFolder (supports ?expand=Security)
 //	PATCH /v2/{accountId}/folders/{id}                  — PatchFolderSecurity
@@ -125,8 +125,8 @@ func (s *Server) MemberGroupsRequestCount() int {
 	return s.memberGroupsRequests
 }
 
-// URL returns the mock server's base URL (also the value of the test token's
-// "api_base_url" Extra field).
+// URL returns the mock server's base URL — also what handleClmAccountDiscovery
+// returns as the CLM API base URL.
 func (s *Server) URL() string { return s.baseURL }
 
 // FolderHref, GroupHref, MemberHref build the Href a real CLM response would use for a
@@ -185,6 +185,7 @@ func newState() *Server {
 func newMux(s *Server) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /oauth/userinfo", s.handleUserInfo)
+	mux.HandleFunc("GET /api/v2/{accountId}/account", s.requireAuth(s.handleClmAccountDiscovery))
 	mux.HandleFunc("POST /v2/{accountId}/folders/search", s.requireAuth(s.handleSearchFolders))
 	mux.HandleFunc("GET /v2/{accountId}/folders/{id}", s.requireAuth(s.handleGetFolder))
 	mux.HandleFunc("PATCH /v2/{accountId}/folders/{id}", s.requireAuth(s.handlePatchFolder))
@@ -219,9 +220,7 @@ func NewServer(t testing.TB) (*Server, *client.Client) {
 	transport := &rewriteTransport{target: mockServerURL, base: http.DefaultTransport}
 	wrapper := uhttp.NewBaseHttpClient(&http.Client{Transport: transport})
 
-	tok := (&oauth2.Token{AccessToken: testBearerToken}).WithExtra(map[string]any{
-		"api_base_url": s.srv.URL,
-	})
+	tok := &oauth2.Token{AccessToken: testBearerToken}
 	tokenSource := oauth2.StaticTokenSource(tok)
 
 	c := client.NewClient(context.Background(), false, tokenSource, "", "", wrapper)
@@ -289,6 +288,17 @@ func (s *Server) handleUserInfo(w http.ResponseWriter, _ *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(resp)
+}
+
+// handleClmAccountDiscovery mocks CLM's account discovery endpoint (GET
+// /api/v2/{accountId}/account on auth.springcm.com/authuat.springcm.com in production)
+// — see clm_client.go's ensureClmInitialized and its package doc for why this exists
+// and what's confirmed about it. The exact response schema wasn't available when this
+// was written, so this returns the field name ensureClmInitialized checks first
+// (ApiBaseUrl), matching the field name confirmed on CLM's legacy token-exchange
+// response for the same concept.
+func (s *Server) handleClmAccountDiscovery(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, map[string]string{client.ClmDiscoveryFieldAPIBaseURL: s.baseURL})
 }
 
 // pageSlice applies pageSortParams.offset/limit to an ordered ID slice and returns the
