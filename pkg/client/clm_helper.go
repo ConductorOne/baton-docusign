@@ -7,15 +7,24 @@ import (
 	"net/url"
 )
 
+// clmRequestedPage records what a paged CLM request actually asked for — offset and
+// page size — so the response can be paginated against ground truth instead of trusting
+// response fields that were never confirmed to be populated reliably (see
+// getClmNextToken).
+type clmRequestedPage struct {
+	Offset   int
+	PageSize int
+}
+
 // preparePagedRequestClm prepares a paged request URL using CLM's confirmed query
 // param names (pageSortParams.offset/limit/...) — distinct from eSignature's
-// start_position/count (see preparePagedRequest in helper.go). Returns the offset it
+// start_position/count (see preparePagedRequest in helper.go). Returns what it
 // requested alongside the URL, so callers can compute the next-page token from that
 // rather than from the response (see getClmNextToken).
-func preparePagedRequestClm(baseURL *url.URL, endpoint string, options PageOptions) (*url.URL, int, error) {
+func preparePagedRequestClm(baseURL *url.URL, endpoint string, options PageOptions) (*url.URL, clmRequestedPage, error) {
 	endpointURL, err := url.Parse(endpoint)
 	if err != nil {
-		return nil, 0, fmt.Errorf("baton-docusign: invalid CLM endpoint: %w", err)
+		return nil, clmRequestedPage{}, fmt.Errorf("baton-docusign: invalid CLM endpoint: %w", err)
 	}
 
 	fullURL := baseURL.ResolveReference(endpointURL)
@@ -25,7 +34,7 @@ func preparePagedRequestClm(baseURL *url.URL, endpoint string, options PageOptio
 	if options.PageToken != "" {
 		decoded, err := decodeClmPageToken(options.PageToken)
 		if err != nil {
-			return nil, 0, fmt.Errorf("baton-docusign: invalid CLM page token: %w", err)
+			return nil, clmRequestedPage{}, fmt.Errorf("baton-docusign: invalid CLM page token: %w", err)
 		}
 		offset = decoded.Offset
 	}
@@ -38,7 +47,7 @@ func preparePagedRequestClm(baseURL *url.URL, endpoint string, options PageOptio
 	q.Set("pageSortParams.limit", fmt.Sprintf("%d", pageSize))
 
 	fullURL.RawQuery = q.Encode()
-	return fullURL, offset, nil
+	return fullURL, clmRequestedPage{Offset: offset, PageSize: pageSize}, nil
 }
 
 // clmPageToken is the internal offset-based continuation token for CLM pagination.
@@ -66,28 +75,33 @@ func decodeClmPageToken(token string) (*clmPageToken, error) {
 	return &pt, nil
 }
 
-// getClmNextToken calculates the next-page token from a CLM collection response, using
-// two signals instead of trusting response fields that were never confirmed to be
-// populated reliably:
+// getClmNextToken calculates the next-page token from a CLM collection response.
+// requestOffset/itemCount/total were already being second-guessed for reliability; an
+// earlier version of this function also made a short page (fewer items than requested)
+// keep paginating unless Total confirmed the end, to guard against the API capping its
+// effective page size below what was requested. That traded one unconfirmed risk for a
+// more concrete one: the extra request it issued past a short page targets an
+// out-of-range offset, and if any CLM list/search endpoint rejects that with a 4xx
+// instead of an empty 200, the whole sync would fail on what was otherwise its last,
+// complete page — a regression flagged in review by two independent reviewers.
 //
-//   - An empty page (zero items) always means stop.
-//   - Total, when it's actually nonzero, stops pagination once requestOffset+itemCount
-//     reaches or passes it.
-//
-// A short page (fewer items than requested) is deliberately NOT treated as "this must
-// be the last page": if the CLM API ever caps its effective page size below what was
-// requested while more data remains server-side, assuming a short page means "done"
-// would silently truncate the sync — dropping every resource beyond it while reporting
-// success. So a short page only stops pagination if Total also confirms there's
-// nothing left; otherwise it keeps going, costing at most one extra request per page
-// that came back short, never an infinite loop, since the walk still terminates the
-// moment either signal above fires (worst case, one final empty page).
-func getClmNextToken(requestOffset, itemCount, total int) string {
+// This version stops on a short page like the original, simple behavior — the common
+// case for REST APIs that honor the requested limit — but treats hasNext (the
+// response's own Next field, non-empty) as an explicit override: if the API says there's
+// more, keep going even on a short page, without needing to guess or issue a probing
+// request that might fail. Only three signals are trusted, none of which requires an
+// extra request past the true end: itemCount == 0 always stops; Total, when nonzero,
+// stops pagination early once requestOffset+itemCount reaches or passes it; hasNext
+// keeps it going past what would otherwise look like a final short page.
+func getClmNextToken(requested clmRequestedPage, itemCount int, hasNext bool, total int) string {
 	if itemCount == 0 {
 		return ""
 	}
-	nextOffset := requestOffset + itemCount
+	nextOffset := requested.Offset + itemCount
 	if total > 0 && nextOffset >= total {
+		return ""
+	}
+	if itemCount < requested.PageSize && !hasNext {
 		return ""
 	}
 	return encodeClmPageToken(&clmPageToken{Offset: nextOffset})

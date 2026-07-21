@@ -53,8 +53,11 @@ func TestClmPermissionSetBuilder_Entitlements(t *testing.T) {
 	if len(ents) != 1 || ents[0].Slug != clmPermissionSetAssignedTag {
 		t.Fatalf("expected exactly one %q entitlement, got %+v", clmPermissionSetAssignedTag, ents)
 	}
-	if len(ents[0].GrantableTo) != 2 {
-		t.Errorf("expected the entitlement to be grantable to clm_member and clm_group, got %+v", ents[0].GrantableTo)
+	// No WithGrantableTo: there's no Grant/Revoke path anywhere in this connector for
+	// CLM permission sets, so declaring one would show this as assignable in the C1 UI
+	// when it never actually can be.
+	if len(ents[0].GrantableTo) != 0 {
+		t.Errorf("expected no GrantableTo (visibility-only entitlement), got %+v", ents[0].GrantableTo)
 	}
 }
 

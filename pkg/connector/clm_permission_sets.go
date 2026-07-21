@@ -65,11 +65,16 @@ func (b *clmPermissionSetBuilder) List(ctx context.Context, _ *v2.ResourceId, at
 	}, nil
 }
 
+// Entitlements declares the permission set as visibility-only: no WithGrantableTo,
+// since (unlike permission_profiles.go's equivalent, which is granted/revoked from the
+// user side) there is no Grant/Revoke path anywhere in this connector for CLM
+// permission sets — no assignment endpoint exists in the CLM API at all. Declaring a
+// GrantableTo here would show this as assignable in the C1 UI when it never actually
+// can be, via any principal.
 func (b *clmPermissionSetBuilder) Entitlements(_ context.Context, resource *v2.Resource, _ rs.SyncOpAttrs) ([]*v2.Entitlement, *rs.SyncOpResults, error) {
 	newEntitlement := entitlement.NewPermissionEntitlement(
 		resource,
 		clmPermissionSetAssignedTag,
-		entitlement.WithGrantableTo(clmMemberResourceType, clmGroupResourceType),
 		entitlement.WithDisplayName(resource.DisplayName),
 		entitlement.WithDescription(resource.Description),
 	)

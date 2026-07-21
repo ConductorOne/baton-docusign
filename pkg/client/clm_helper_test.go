@@ -18,36 +18,37 @@ import (
 //     failure: if Total is zero or absent, terminating as soon as
 //     requestOffset+itemCount >= total (i.e. immediately, since total is 0) would
 //     silently drop every resource beyond page one.
-//  3. An earlier fix treated a short page (fewer items than requested) as always the
-//     last page. That's also risky: if the CLM API ever caps its effective page size
-//     below what was requested while more data remains server-side, a short page
-//     wouldn't mean "done" — it would silently truncate the sync just the same. So a
-//     short page only stops pagination when Total also confirms nothing is left;
-//     otherwise it keeps going.
-//
-// The fix removes the response's Offset from the signature entirely (requestOffset is
-// always what the caller itself asked for) and only trusts Total to stop *early*, never
-// to justify stopping on a short/full page alone.
+//  3. A short page (fewer items than requested) normally means "last page" — the
+//     common case for REST APIs that honor the requested limit — so it stops
+//     pagination unless hasNext (the response's own Next field, non-empty) explicitly
+//     says otherwise. An earlier version instead kept paginating on any short page
+//     whenever Total was unreliable, which traded that hypothetical risk for a more
+//     concrete one: the extra request it issued past a short page targets an
+//     out-of-range offset, and if the API rejects that with a 4xx instead of an empty
+//     200, the whole sync would fail on what was otherwise a complete, successful
+//     result — flagged in review by two reviewers independently.
 func TestGetClmNextToken_ComputesFromRequestNotResponse(t *testing.T) {
 	tests := []struct {
-		name          string
-		requestOffset int
-		itemCount     int
-		total         int
-		wantEmpty     bool
-		wantNextOfft  int
+		name         string
+		requested    clmRequestedPage
+		itemCount    int
+		hasNext      bool
+		total        int
+		wantEmpty    bool
+		wantNextOfft int
 	}{
-		{"advances on a full page", 0, 100, 250, false, 100},
-		{"advances from a non-zero offset", 100, 100, 250, false, 200},
-		{"terminates on a short last page confirmed by total", 200, 50, 250, true, 0},
-		{"terminates when a full page reaches total exactly", 200, 100, 250, true, 0},
-		{"terminates on an empty page even if total says more remain", 100, 0, 250, true, 0},
-		{"does not terminate early on a full page when total is zero/unreliable", 0, 100, 0, false, 100},
-		{"does NOT terminate on a short page when total is zero/unreliable — total can't confirm it's actually the last page", 200, 50, 0, false, 250},
+		{"advances on a full page", clmRequestedPage{Offset: 0, PageSize: 100}, 100, false, 250, false, 100},
+		{"advances from a non-zero offset", clmRequestedPage{Offset: 100, PageSize: 100}, 100, false, 250, false, 200},
+		{"terminates on a short last page confirmed by total", clmRequestedPage{Offset: 200, PageSize: 100}, 50, false, 250, true, 0},
+		{"terminates when a full page reaches total exactly", clmRequestedPage{Offset: 200, PageSize: 100}, 100, false, 250, true, 0},
+		{"terminates on an empty page even if total/hasNext say more remain", clmRequestedPage{Offset: 100, PageSize: 100}, 0, true, 250, true, 0},
+		{"does not terminate early on a full page when total is zero/unreliable", clmRequestedPage{Offset: 0, PageSize: 100}, 100, false, 0, false, 100},
+		{"terminates on a short page when neither total nor hasNext say otherwise (the common case)", clmRequestedPage{Offset: 200, PageSize: 100}, 50, false, 0, true, 0},
+		{"does NOT terminate on a short page when hasNext explicitly says there's more", clmRequestedPage{Offset: 200, PageSize: 100}, 50, true, 0, false, 250},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := getClmNextToken(tt.requestOffset, tt.itemCount, tt.total)
+			got := getClmNextToken(tt.requested, tt.itemCount, tt.hasNext, tt.total)
 			if tt.wantEmpty {
 				if got != "" {
 					t.Fatalf("expected an empty (terminating) token, got %q", got)
@@ -72,32 +73,9 @@ func TestGetClmNextToken_ComputesFromRequestNotResponse(t *testing.T) {
 // multiple of the page size, a full page landing exactly on Total stops immediately —
 // no need to wait for an empty page in this case, since Total confirms it.
 func TestGetClmNextToken_ExactBoundaryDoesNotLoop(t *testing.T) {
-	got := getClmNextToken(100, 100, 200)
+	got := getClmNextToken(clmRequestedPage{Offset: 100, PageSize: 100}, 100, false, 200)
 	if got != "" {
 		t.Fatalf("expected termination when a full page lands exactly on total, got %q", got)
-	}
-}
-
-// TestGetClmNextToken_UnreliableTotalEventuallyTerminates documents that when Total
-// can't be trusted (zero/unpopulated) and the API caps pages below what was requested,
-// pagination still terminates — just via the empty final page rather than the short
-// page itself — so it costs a few extra requests, never an infinite loop.
-func TestGetClmNextToken_UnreliableTotalEventuallyTerminates(t *testing.T) {
-	// A short page (30 items) with no reliable Total must NOT stop here...
-	next := getClmNextToken(0, 30, 0)
-	if next == "" {
-		t.Fatal("expected pagination to continue past a short page when total can't confirm it's the last one")
-	}
-	decoded, err := decodeClmPageToken(next)
-	if err != nil {
-		t.Fatalf("decodeClmPageToken: %v", err)
-	}
-	if decoded.Offset != 30 {
-		t.Fatalf("expected next offset 30, got %d", decoded.Offset)
-	}
-	// ...but the walk still ends once the API actually runs out of items.
-	if got := getClmNextToken(decoded.Offset, 0, 0); got != "" {
-		t.Fatalf("expected termination on the eventual empty page, got %q", got)
 	}
 }
 
