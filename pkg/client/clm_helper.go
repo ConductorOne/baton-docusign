@@ -86,13 +86,16 @@ func decodeClmPageToken(token string) (*clmPageToken, error) {
 // complete page — a regression flagged in review by two independent reviewers.
 //
 // This version stops on a short page like the original, simple behavior — the common
-// case for REST APIs that honor the requested limit — but treats hasNext (the
-// response's own Next field, non-empty) as an explicit override: if the API says there's
-// more, keep going even on a short page, without needing to guess or issue a probing
-// request that might fail. Only three signals are trusted, none of which requires an
-// extra request past the true end: itemCount == 0 always stops; Total, when nonzero,
-// stops pagination early once requestOffset+itemCount reaches or passes it; hasNext
-// keeps it going past what would otherwise look like a final short page.
+// case for REST APIs that honor the requested limit — but two explicit signals can
+// override that and force it to keep going: hasNext (the response's own Next field,
+// non-empty), or Total itself, when it's nonzero and higher than what's been collected
+// so far. Without that second override, a short page with Total populated and clearly
+// indicating more remains (e.g. 60 items back on a 100-item page request, with Total
+// 250) would incorrectly stop at 60 — Total was only being used to justify stopping
+// early, never to override the short-page heuristic that fires independently of it, so
+// a positive Total signal was getting silently ignored. Total is still never used to
+// justify continuing past what it says is the actual end (the first check below), and
+// no signal here requires an extra request past the true end.
 func getClmNextToken(requested clmRequestedPage, itemCount int, hasNext bool, total int) string {
 	if itemCount == 0 {
 		return ""
@@ -101,7 +104,8 @@ func getClmNextToken(requested clmRequestedPage, itemCount int, hasNext bool, to
 	if total > 0 && nextOffset >= total {
 		return ""
 	}
-	if itemCount < requested.PageSize && !hasNext {
+	totalSaysMoreRemains := total > 0 && nextOffset < total
+	if itemCount < requested.PageSize && !hasNext && !totalSaysMoreRemains {
 		return ""
 	}
 	return encodeClmPageToken(&clmPageToken{Offset: nextOffset})

@@ -45,6 +45,7 @@ func TestGetClmNextToken_ComputesFromRequestNotResponse(t *testing.T) {
 		{"does not terminate early on a full page when total is zero/unreliable", clmRequestedPage{Offset: 0, PageSize: 100}, 100, false, 0, false, 100},
 		{"terminates on a short page when neither total nor hasNext say otherwise (the common case)", clmRequestedPage{Offset: 200, PageSize: 100}, 50, false, 0, true, 0},
 		{"does NOT terminate on a short page when hasNext explicitly says there's more", clmRequestedPage{Offset: 200, PageSize: 100}, 50, true, 0, false, 250},
+		{"does NOT terminate on a short page when total explicitly says more remains", clmRequestedPage{Offset: 0, PageSize: 100}, 60, false, 250, false, 60},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
