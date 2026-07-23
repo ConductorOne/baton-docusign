@@ -93,9 +93,19 @@ func decodeClmPageToken(token string) (*clmPageToken, error) {
 // indicating more remains (e.g. 60 items back on a 100-item page request, with Total
 // 250) would incorrectly stop at 60 — Total was only being used to justify stopping
 // early, never to override the short-page heuristic that fires independently of it, so
-// a positive Total signal was getting silently ignored. Total is still never used to
-// justify continuing past what it says is the actual end (the first check below), and
-// no signal here requires an extra request past the true end.
+// a positive Total signal was getting silently ignored.
+//
+// Conscious, documented tradeoff (per review discussion): the totalSaysMoreRemains
+// override reintroduces a bounded version of the out-of-range-probe risk that motivated
+// the earlier revert away from always trusting Total. If Total over-reports (says more
+// remains when it doesn't), this issues one extra request at an offset with no data —
+// harmless if the endpoint returns an empty 200 there, but would fail the sync if it
+// 4xxs on an out-of-range offset instead. That's strictly bounded to one extra request
+// (never a loop) and only reachable when Total is both populated and wrong, which is
+// narrower and safer than the previously-reverted version (which extended this same
+// risk to every short page whenever Total was merely unpopulated). No live CLM tenant
+// was available to confirm Total's accuracy either way, so this residual risk is
+// accepted rather than resolved.
 func getClmNextToken(requested clmRequestedPage, itemCount int, hasNext bool, total int) string {
 	if itemCount == 0 {
 		return ""
