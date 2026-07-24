@@ -10,6 +10,7 @@ import (
 	"github.com/conductorone/baton-sdk/pkg/connectorbuilder"
 	"github.com/conductorone/baton-sdk/pkg/types/grant"
 	rs "github.com/conductorone/baton-sdk/pkg/types/resource"
+	"google.golang.org/protobuf/proto"
 )
 
 var _ connectorbuilder.AccountManagerV2 = &userBuilder{}
@@ -19,17 +20,28 @@ type userBuilder struct {
 	resourceType *v2.ResourceType
 	client       *client.Client
 
-	// skipPermissionProfileResourceType gates the cross-type emission of permission_profile
-	// grants in Grants(). It is false when the customer's sync filter excludes
-	// the permission_profile resource type, so this builder never emits a
-	// grant referencing a resource type that isn't being synced. See
-	// cli.ConnectorOpts.WillSyncResourceType.
+	// skipPermissionProfileResourceType reports whether permission_profile is
+	// excluded from the sync filter. It selects the annotation: normally only
+	// entitlements are skipped, but when permission_profile is excluded the
+	// grants pass is skipped too, since it is this builder's only output.
 	skipPermissionProfileResourceType bool
 }
 
-// ResourceType returns the Baton resource type handled by this builder.
+// ResourceType returns the Baton resource type handled by this builder,
+// annotated to tell the SDK's sync engine whether it can skip calling
+// Entitlements()/Grants() for user resources. userResourceType is a
+// package-level var shared with other code, so it's cloned before its
+// annotations are mutated.
 func (b *userBuilder) ResourceType(_ context.Context) *v2.ResourceType {
-	return userResourceType
+	rt := proto.Clone(userResourceType).(*v2.ResourceType)
+	annos := annotations.Annotations(rt.Annotations)
+	if b.skipPermissionProfileResourceType {
+		annos.Update(&v2.SkipEntitlementsAndGrants{})
+	} else {
+		annos.Update(&v2.SkipEntitlements{})
+	}
+	rt.Annotations = annos
+	return rt
 }
 
 // List retrieves all users from DocuSign API and converts them to Baton resources.
@@ -85,15 +97,12 @@ func (b *userBuilder) Entitlements(_ context.Context, _ *v2.Resource, _ rs.SyncO
 // This method exists solely to emit the cross-type permission_profile grant
 // as a sync optimization (the user detail API call already returns the
 // user's permission profile ID, so permission_profiles.go doesn't need a
-// second round trip per user). If the customer's sync filter excludes
-// permission_profile, skip entirely — both to avoid emitting a grant that
-// references a resource type that isn't being synced, and to avoid the
-// wasted GetUserDetails call.
+// second round trip per user). When the customer's sync filter excludes
+// permission_profile, the SDK's sync engine skips calling Grants() entirely
+// for user resources based on the SkipEntitlementsAndGrants annotation
+// ResourceType() attaches in that case, so this method itself no longer
+// needs to guard against that case.
 func (b *userBuilder) Grants(ctx context.Context, resource *v2.Resource, _ rs.SyncOpAttrs) ([]*v2.Grant, *rs.SyncOpResults, error) {
-	if b.skipPermissionProfileResourceType {
-		return nil, nil, nil
-	}
-
 	var grants []*v2.Grant
 	var annos annotations.Annotations
 	userID := resource.Id
@@ -150,12 +159,12 @@ func (b *userBuilder) CreateAccount(
 	pMap := accountInfo.Profile.AsMap()
 	annos := annotations.Annotations{}
 
-	email, ok := pMap[profileFieldEmail].(string)
+	email, ok := pMap["email"].(string)
 	if !ok || email == "" {
 		return nil, nil, nil, fmt.Errorf("email is required")
 	}
 
-	username, ok := pMap[profileFieldUsername].(string)
+	username, ok := pMap["username"].(string)
 	if !ok || username == "" {
 		return nil, nil, nil, fmt.Errorf("username is required")
 	}
@@ -234,9 +243,9 @@ func (b *userBuilder) Delete(ctx context.Context, resourceId *v2.ResourceId) (an
 }
 
 // newUserBuilder constructs a userBuilder with the provided API client.
-// skipPermissionProfileResourceType gates the cross-type permission_profile grant
-// emission in Grants(); pass false when the customer's sync filter excludes
-// the permission_profile resource type.
+// skipPermissionProfileResourceType controls the resource-type annotation ResourceType()
+// attaches (SkipEntitlements vs. SkipEntitlementsAndGrants); pass false when
+// the customer's sync filter excludes the permission_profile resource type.
 func newUserBuilder(client *client.Client, skipPermissionProfileResourceType bool) *userBuilder {
 	return &userBuilder{
 		resourceType:                      userResourceType,
@@ -260,11 +269,11 @@ func parseIntoUserResource(user *client.User) (*v2.Resource, error) {
 	}
 
 	profile := map[string]any{
-		"userName":        user.UserName,
-		profileFieldEmail: user.Email,
-		"isAdmin":         user.IsAdmin,
-		"permission":      user.Permission,
-		"status":          user.UserStatus,
+		"userName":   user.UserName,
+		"email":      user.Email,
+		"isAdmin":    user.IsAdmin,
+		"permission": user.Permission,
+		"status":     user.UserStatus,
 	}
 
 	userTraits := []rs.UserTraitOption{
