@@ -10,6 +10,7 @@ import (
 	"github.com/conductorone/baton-sdk/pkg/connectorbuilder"
 	"github.com/conductorone/baton-sdk/pkg/types/grant"
 	rs "github.com/conductorone/baton-sdk/pkg/types/resource"
+	"google.golang.org/protobuf/proto"
 )
 
 var _ connectorbuilder.AccountManagerV2 = &userBuilder{}
@@ -19,17 +20,33 @@ type userBuilder struct {
 	resourceType *v2.ResourceType
 	client       *client.Client
 
-	// syncPermissionProfiles gates the cross-type emission of permission_profile
-	// grants in Grants(). It is false when the customer's sync filter excludes
-	// the permission_profile resource type, so this builder never emits a
-	// grant referencing a resource type that isn't being synced. See
+	// syncPermissionProfiles reflects whether the customer's sync filter
+	// includes the permission_profile resource type. It controls which
+	// resource-type-level annotation ResourceType() attaches: when true,
+	// only entitlements are skipped (Entitlements() is a no-op, but Grants()
+	// still needs to run so it can emit the cross-type permission_profile
+	// grant); when false, both entitlements and grants are skipped for user
+	// resources entirely, since permission_profile isn't being synced and
+	// there'd be nothing valid for Grants() to emit. See
 	// cli.ConnectorOpts.WillSyncResourceType.
 	syncPermissionProfiles bool
 }
 
-// ResourceType returns the Baton resource type handled by this builder.
+// ResourceType returns the Baton resource type handled by this builder,
+// annotated to tell the SDK's sync engine whether it can skip calling
+// Entitlements()/Grants() for user resources. userResourceType is a
+// package-level var shared with other code, so it's cloned before its
+// annotations are mutated.
 func (b *userBuilder) ResourceType(_ context.Context) *v2.ResourceType {
-	return userResourceType
+	rt := proto.Clone(userResourceType).(*v2.ResourceType)
+	annos := annotations.Annotations(rt.Annotations)
+	if b.syncPermissionProfiles {
+		annos.Append(&v2.SkipEntitlements{})
+	} else {
+		annos.Append(&v2.SkipEntitlementsAndGrants{})
+	}
+	rt.Annotations = annos
+	return rt
 }
 
 // List retrieves all users from DocuSign API and converts them to Baton resources.
@@ -85,15 +102,12 @@ func (b *userBuilder) Entitlements(_ context.Context, _ *v2.Resource, _ rs.SyncO
 // This method exists solely to emit the cross-type permission_profile grant
 // as a sync optimization (the user detail API call already returns the
 // user's permission profile ID, so permission_profiles.go doesn't need a
-// second round trip per user). If the customer's sync filter excludes
-// permission_profile, skip entirely — both to avoid emitting a grant that
-// references a resource type that isn't being synced, and to avoid the
-// wasted GetUserDetails call.
+// second round trip per user). When the customer's sync filter excludes
+// permission_profile, the SDK's sync engine skips calling Grants() entirely
+// for user resources based on the SkipEntitlementsAndGrants annotation
+// ResourceType() attaches in that case, so this method itself no longer
+// needs to guard against that case.
 func (b *userBuilder) Grants(ctx context.Context, resource *v2.Resource, _ rs.SyncOpAttrs) ([]*v2.Grant, *rs.SyncOpResults, error) {
-	if !b.syncPermissionProfiles {
-		return nil, nil, nil
-	}
-
 	var grants []*v2.Grant
 	var annos annotations.Annotations
 	userID := resource.Id
@@ -234,9 +248,9 @@ func (b *userBuilder) Delete(ctx context.Context, resourceId *v2.ResourceId) (an
 }
 
 // newUserBuilder constructs a userBuilder with the provided API client.
-// syncPermissionProfiles gates the cross-type permission_profile grant
-// emission in Grants(); pass false when the customer's sync filter excludes
-// the permission_profile resource type.
+// syncPermissionProfiles controls the resource-type annotation ResourceType()
+// attaches (SkipEntitlements vs. SkipEntitlementsAndGrants); pass false when
+// the customer's sync filter excludes the permission_profile resource type.
 func newUserBuilder(client *client.Client, syncPermissionProfiles bool) *userBuilder {
 	return &userBuilder{
 		resourceType:           userResourceType,

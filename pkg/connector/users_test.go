@@ -11,6 +11,7 @@ import (
 
 	"github.com/conductorone/baton-docusign/pkg/client"
 	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
+	"github.com/conductorone/baton-sdk/pkg/annotations"
 	"github.com/conductorone/baton-sdk/pkg/types/resource"
 	"github.com/conductorone/baton-sdk/pkg/uhttp"
 	"golang.org/x/oauth2"
@@ -139,12 +140,15 @@ func TestUserBuilder_Grants_SyncPermissionProfilesEnabled(t *testing.T) {
 	}
 }
 
-// TestUserBuilder_Grants_SyncPermissionProfilesDisabled verifies that when the
-// customer's sync filter excludes permission_profile (syncPermissionProfiles=false),
-// Grants() emits no grants at all and never calls GetUserDetails — it must not
-// emit a grant referencing a resource type that isn't being synced, and must
-// not waste an API call to build one.
-func TestUserBuilder_Grants_SyncPermissionProfilesDisabled(t *testing.T) {
+// TestUserBuilder_Grants_UnconditionalRegardlessOfSyncPermissionProfiles
+// verifies that Grants() itself no longer guards on syncPermissionProfiles:
+// it always fetches user details and emits the cross-type permission_profile
+// grant. The case where permission_profile is filtered out of sync is now
+// handled declaratively via the ResourceType() annotation (see
+// TestUserBuilder_ResourceType_SyncPermissionProfilesDisabled), which causes
+// the SDK sync engine to skip calling Grants() at all — not by Grants()
+// itself returning early.
+func TestUserBuilder_Grants_UnconditionalRegardlessOfSyncPermissionProfiles(t *testing.T) {
 	ctx := context.Background()
 
 	c, mockServer, callCount := newTestUserClient(t, client.UserDetail{
@@ -153,6 +157,8 @@ func TestUserBuilder_Grants_SyncPermissionProfilesDisabled(t *testing.T) {
 	})
 	defer mockServer.Close()
 
+	// syncPermissionProfiles=false here on purpose: Grants() must still emit
+	// the grant, proving the old in-Grants() guard is gone.
 	b := newUserBuilder(c, false)
 
 	grants, _, err := b.Grants(ctx, testUserResource(), resource.SyncOpAttrs{})
@@ -160,11 +166,67 @@ func TestUserBuilder_Grants_SyncPermissionProfilesDisabled(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if len(grants) != 0 {
-		t.Fatalf("expected no grants when permission_profile is filtered out of sync, got %d", len(grants))
+	if len(grants) != 1 {
+		t.Fatalf("expected exactly 1 grant even with syncPermissionProfiles=false, got %d", len(grants))
 	}
 
-	if atomic.LoadInt32(callCount) != 0 {
-		t.Errorf("expected GetUserDetails to never be called, got %d calls", atomic.LoadInt32(callCount))
+	got := grants[0]
+	if got.Entitlement.Resource.Id.ResourceType != permissionProfilesResourceType.Id {
+		t.Errorf("expected grant to reference resource type %q, got %q",
+			permissionProfilesResourceType.Id, got.Entitlement.Resource.Id.ResourceType)
+	}
+	if got.Entitlement.Resource.Id.Resource != "pp-123" {
+		t.Errorf("expected grant to reference permission profile %q, got %q",
+			"pp-123", got.Entitlement.Resource.Id.Resource)
+	}
+
+	if atomic.LoadInt32(callCount) != 1 {
+		t.Errorf("expected GetUserDetails to be called exactly once, got %d", atomic.LoadInt32(callCount))
+	}
+}
+
+// TestUserBuilder_ResourceType_SyncPermissionProfilesEnabled verifies that
+// when permission_profile is included in the sync, ResourceType() attaches
+// SkipEntitlements (Entitlements() is a no-op so it's safe to skip) but NOT
+// SkipEntitlementsAndGrants (Grants() must still run to emit the cross-type
+// permission_profile grant).
+func TestUserBuilder_ResourceType_SyncPermissionProfilesEnabled(t *testing.T) {
+	ctx := context.Background()
+	b := newUserBuilder(nil, true)
+
+	rt := b.ResourceType(ctx)
+
+	rtAnnos := annotations.Annotations(rt.Annotations)
+	if !rtAnnos.Contains(&v2.SkipEntitlements{}) {
+		t.Errorf("expected ResourceType() annotations to contain SkipEntitlements when syncPermissionProfiles=true")
+	}
+	if rtAnnos.Contains(&v2.SkipEntitlementsAndGrants{}) {
+		t.Errorf("expected ResourceType() annotations NOT to contain SkipEntitlementsAndGrants when syncPermissionProfiles=true")
+	}
+}
+
+// TestUserBuilder_ResourceType_SyncPermissionProfilesDisabled verifies that
+// when the customer's sync filter excludes permission_profile, ResourceType()
+// attaches SkipEntitlementsAndGrants (so the SDK sync engine skips calling
+// both Entitlements() and Grants() for user resources entirely) but NOT a
+// bare SkipEntitlements. It also verifies that building this annotated
+// ResourceType does not mutate the shared package-level userResourceType var.
+func TestUserBuilder_ResourceType_SyncPermissionProfilesDisabled(t *testing.T) {
+	ctx := context.Background()
+	b := newUserBuilder(nil, false)
+
+	rt := b.ResourceType(ctx)
+
+	rtAnnos := annotations.Annotations(rt.Annotations)
+	if !rtAnnos.Contains(&v2.SkipEntitlementsAndGrants{}) {
+		t.Errorf("expected ResourceType() annotations to contain SkipEntitlementsAndGrants when syncPermissionProfiles=false")
+	}
+	if rtAnnos.Contains(&v2.SkipEntitlements{}) {
+		t.Errorf("expected ResourceType() annotations NOT to contain a bare SkipEntitlements when syncPermissionProfiles=false")
+	}
+
+	if len(userResourceType.Annotations) != 0 {
+		t.Errorf("expected package-level userResourceType.Annotations to remain empty after ResourceType() call, got %d entries",
+			len(userResourceType.Annotations))
 	}
 }
