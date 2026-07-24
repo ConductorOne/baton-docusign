@@ -7,10 +7,12 @@ import (
 	"github.com/conductorone/baton-docusign/pkg/client"
 	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
 	"github.com/conductorone/baton-sdk/pkg/annotations"
-	"github.com/conductorone/baton-sdk/pkg/types/entitlement"
+	"github.com/conductorone/baton-sdk/pkg/connectorbuilder"
 	"github.com/conductorone/baton-sdk/pkg/types/grant"
 	rs "github.com/conductorone/baton-sdk/pkg/types/resource"
 )
+
+var _ connectorbuilder.StaticEntitlementSyncerV2 = (*clmGroupBuilder)(nil)
 
 // Entitlement value representing CLM group membership. Distinct constant from
 // entitlementGroupMember (groups.go) even though the slug string is the same value —
@@ -23,6 +25,8 @@ const entitlementClmGroupMember = "member"
 // granted/revoked from the MEMBER side instead:
 // PATCH .../members/{id} (additive, Grant) and PUT .../members/{id} (full-replace,
 // Revoke) — both are read-modify-write against the member's current group list.
+// Uses StaticEntitlementSyncerV2 since every CLM group shares the same single "member"
+// entitlement (see resource_types.go's SkipEntitlements annotation on this type).
 type clmGroupBuilder struct {
 	resourceType *v2.ResourceType
 	client       *client.Client
@@ -70,14 +74,22 @@ func (g *clmGroupBuilder) List(ctx context.Context, _ *v2.ResourceId, attr rs.Sy
 	}, nil
 }
 
-func (g *clmGroupBuilder) Entitlements(_ context.Context, groupResource *v2.Resource, _ rs.SyncOpAttrs) ([]*v2.Entitlement, *rs.SyncOpResults, error) {
-	ent := entitlement.NewAssignmentEntitlement(
-		groupResource,
-		entitlementClmGroupMember,
-		entitlement.WithGrantableTo(clmMemberResourceType),
-		entitlement.WithDisplayName(fmt.Sprintf("Member of %s", groupResource.DisplayName)),
-		entitlement.WithDescription(fmt.Sprintf("Member of CLM group %s", groupResource.DisplayName)),
-	)
+// Entitlements returns nil — the SDK does not call this when StaticEntitlementSyncerV2
+// is implemented (see StaticEntitlements below).
+func (g *clmGroupBuilder) Entitlements(_ context.Context, _ *v2.Resource, _ rs.SyncOpAttrs) ([]*v2.Entitlement, *rs.SyncOpResults, error) {
+	return nil, nil, nil
+}
+
+// StaticEntitlements declares the single "member" entitlement every CLM group shares,
+// stamped by the SDK onto every synced clm_group resource.
+func (g *clmGroupBuilder) StaticEntitlements(_ context.Context, _ rs.SyncOpAttrs) ([]*v2.Entitlement, *rs.SyncOpResults, error) {
+	ent := v2.Entitlement_builder{
+		Slug:        entitlementClmGroupMember,
+		DisplayName: "Member",
+		Description: "Member of this CLM group",
+		Purpose:     v2.Entitlement_PURPOSE_VALUE_ASSIGNMENT,
+		GrantableTo: []*v2.ResourceType{clmMemberResourceType},
+	}.Build()
 	return []*v2.Entitlement{ent}, nil, nil
 }
 
@@ -92,7 +104,7 @@ func (g *clmGroupBuilder) Grants(ctx context.Context, groupResource *v2.Resource
 		PageToken: pageToken,
 	})
 	if err != nil {
-		return nil, nil, fmt.Errorf("baton-docusign: failed to get members for CLM group %s: %w", groupResource.Id.Resource, err)
+		return nil, nil, fmt.Errorf("getting members for CLM group %s: %w", groupResource.Id.Resource, err)
 	}
 
 	grants := make([]*v2.Grant, 0, len(members))
@@ -139,7 +151,7 @@ func (g *clmGroupBuilder) Grant(ctx context.Context, principal *v2.Resource, ent
 
 	currentGroups, annos, err := g.client.GetMemberGroups(ctx, memberID)
 	if err != nil {
-		return nil, annos, fmt.Errorf("baton-docusign: failed to get current groups for CLM member %s: %w", memberID, err)
+		return nil, annos, fmt.Errorf("getting current groups for CLM member %s: %w", memberID, err)
 	}
 
 	for _, current := range currentGroups {
@@ -154,7 +166,7 @@ func (g *clmGroupBuilder) Grant(ctx context.Context, principal *v2.Resource, ent
 	newGroups = append(newGroups, client.ClmGroup{Href: groupHref})
 	patchAnnos, err := g.client.PatchMemberGroups(ctx, memberID, newGroups)
 	if err != nil {
-		return nil, patchAnnos, fmt.Errorf("baton-docusign: failed to grant CLM group membership: %w", err)
+		return nil, patchAnnos, fmt.Errorf("granting CLM group membership: %w", err)
 	}
 
 	return nil, patchAnnos, nil
@@ -170,7 +182,7 @@ func (g *clmGroupBuilder) Revoke(ctx context.Context, grantObj *v2.Grant) (annot
 
 	currentGroups, annos, err := g.client.GetMemberGroups(ctx, memberID)
 	if err != nil {
-		return annos, fmt.Errorf("baton-docusign: failed to get current groups for CLM member %s: %w", memberID, err)
+		return annos, fmt.Errorf("getting current groups for CLM member %s: %w", memberID, err)
 	}
 
 	remainingGroups := make([]client.ClmGroup, 0, len(currentGroups))
@@ -189,7 +201,7 @@ func (g *clmGroupBuilder) Revoke(ctx context.Context, grantObj *v2.Grant) (annot
 
 	putAnnos, err := g.client.PutMemberGroups(ctx, memberID, remainingGroups)
 	if err != nil {
-		return putAnnos, fmt.Errorf("baton-docusign: failed to revoke CLM group membership: %w", err)
+		return putAnnos, fmt.Errorf("revoking CLM group membership: %w", err)
 	}
 
 	return putAnnos, nil

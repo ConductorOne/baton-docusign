@@ -125,7 +125,7 @@ func (f *clmFolderBuilder) StaticEntitlements(_ context.Context, _ rs.SyncOpAttr
 func (f *clmFolderBuilder) Grants(ctx context.Context, folderResource *v2.Resource, _ rs.SyncOpAttrs) ([]*v2.Grant, *rs.SyncOpResults, error) {
 	folder, annos, err := f.client.GetFolder(ctx, folderResource.Id.Resource, "Security")
 	if err != nil {
-		return nil, nil, fmt.Errorf("baton-docusign: failed to get security for CLM folder %s: %w", folderResource.Id.Resource, err)
+		return nil, nil, fmt.Errorf("getting security for CLM folder %s: %w", folderResource.Id.Resource, err)
 	}
 
 	var grants []*v2.Grant
@@ -179,7 +179,7 @@ func (f *clmFolderBuilder) Grant(ctx context.Context, principal *v2.Resource, en
 	// GetFolder, since this must see the result of any write that just happened.
 	folder, getAnnos, err := f.client.GetFolderFresh(ctx, folderID, "Security")
 	if err != nil {
-		return nil, getAnnos, fmt.Errorf("baton-docusign: failed to get security for CLM folder %s: %w", folderID, err)
+		return nil, getAnnos, fmt.Errorf("getting security for CLM folder %s: %w", folderID, err)
 	}
 	// patchItem is what gets sent in the Patch call below. It defaults to the freshly
 	// constructed item, but if an existing entry for this principal is found, it's
@@ -209,7 +209,7 @@ func (f *clmFolderBuilder) Grant(ctx context.Context, principal *v2.Resource, en
 		Item:       patchItem,
 	})
 	if err != nil {
-		return nil, patchAnnos, fmt.Errorf("baton-docusign: failed to grant CLM folder security: %w", err)
+		return nil, patchAnnos, fmt.Errorf("granting CLM folder security: %w", err)
 	}
 
 	return nil, patchAnnos, nil
@@ -226,7 +226,7 @@ func (f *clmFolderBuilder) Revoke(ctx context.Context, grantObj *v2.Grant) (anno
 
 	folder, getAnnos, err := f.client.GetFolderFresh(ctx, folderID, "Security")
 	if err != nil {
-		return getAnnos, fmt.Errorf("baton-docusign: failed to get security for CLM folder %s: %w", folderID, err)
+		return getAnnos, fmt.Errorf("getting security for CLM folder %s: %w", folderID, err)
 	}
 
 	found := false
@@ -262,7 +262,7 @@ func (f *clmFolderBuilder) Revoke(ctx context.Context, grantObj *v2.Grant) (anno
 		Item:       patchItem,
 	})
 	if err != nil {
-		return patchAnnos, fmt.Errorf("baton-docusign: failed to revoke CLM folder security: %w", err)
+		return patchAnnos, fmt.Errorf("revoking CLM folder security: %w", err)
 	}
 
 	return patchAnnos, nil

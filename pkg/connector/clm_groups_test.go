@@ -36,25 +36,26 @@ func TestClmGroupBuilder_List(t *testing.T) {
 	}
 }
 
-func TestClmGroupBuilder_Entitlements(t *testing.T) {
+func TestClmGroupBuilder_StaticEntitlements(t *testing.T) {
 	_, c := clmtest.NewServer(t)
 	b := newClmGroupBuilder(c)
 	ctx := context.Background()
 
-	groupResource, err := rs.NewGroupResource("Legal", clmGroupResourceType, "group-legal", nil)
+	ents, _, err := b.StaticEntitlements(ctx, rs.SyncOpAttrs{})
 	if err != nil {
-		t.Fatalf("NewGroupResource: %v", err)
-	}
-
-	ents, _, err := b.Entitlements(ctx, groupResource, rs.SyncOpAttrs{})
-	if err != nil {
-		t.Fatalf("Entitlements: %v", err)
+		t.Fatalf("StaticEntitlements: %v", err)
 	}
 	if len(ents) != 1 || ents[0].Slug != entitlementClmGroupMember {
 		t.Fatalf("expected exactly one %q entitlement, got %+v", entitlementClmGroupMember, ents)
 	}
 	if len(ents[0].GrantableTo) != 1 || ents[0].GrantableTo[0].Id != clmMemberResourceType.Id {
 		t.Errorf("expected the entitlement to be grantable only to clm_member, got %+v", ents[0].GrantableTo)
+	}
+
+	// Entitlements() must return nil — the SDK doesn't call it when
+	// StaticEntitlementSyncerV2 is implemented, but confirm it degrades safely anyway.
+	if ents2, _, err := b.Entitlements(ctx, nil, rs.SyncOpAttrs{}); err != nil || ents2 != nil {
+		t.Errorf("Entitlements() should return (nil, nil, nil), got (%v, _, %v)", ents2, err)
 	}
 }
 

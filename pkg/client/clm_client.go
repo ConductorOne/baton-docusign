@@ -425,6 +425,13 @@ func (c *Client) ListMembers(ctx context.Context, options PageOptions) ([]ClmMem
 // callers need the complete list, not one page of it — Revoke in
 // particular does a full-replace Put using this result, so a truncated list here would
 // silently drop the member's memberships in every group beyond the first page.
+//
+// Intentional carve-out from the usual client-layer rule against looping through pages
+// internally (that's normally the connector layer's job, driving one page per call):
+// this isn't a sync List — it's a read-before-write for provisioning, where the caller
+// fundamentally needs the complete set to safely do a full-replace Put, not a page at a
+// time. The loop is bounded (maxMemberGroupPages) and guards against a non-advancing
+// token, so it can't hang even if the underlying assumption about the API is wrong.
 func (c *Client) GetMemberGroups(ctx context.Context, memberID string) ([]ClmGroup, annotations.Annotations, error) {
 	// maxMemberGroupPages bounds this loop in case the CLM API ever echoes a
 	// non-advancing Offset/Limit, which would make getClmNextToken compute the same

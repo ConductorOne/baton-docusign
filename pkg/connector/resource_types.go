@@ -52,11 +52,15 @@ var (
 	}
 
 	// clmGroupResourceType is a distinct upstream object from groupResourceType
-	// ("group", eSignature) — deliberately not reusing that id.
+	// ("group", eSignature) — deliberately not reusing that id. Uses
+	// StaticEntitlementSyncerV2 since every CLM group shares the same single "member"
+	// entitlement (see clm_groups.go's StaticEntitlements) — SkipEntitlements is
+	// required for the SDK to skip calling Entitlements() per resource.
 	clmGroupResourceType = &v2.ResourceType{
 		Id:          "clm_group",
 		DisplayName: "CLM Group",
 		Traits:      []v2.ResourceType_Trait{v2.ResourceType_TRAIT_GROUP},
+		Annotations: annotations.New(&v2.SkipEntitlements{}),
 	}
 
 	// clmPermissionSetResourceType is read-only for GRANTS — no assignment endpoint

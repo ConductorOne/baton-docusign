@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"strconv"
 )
 
 // clmRequestedPage records what a paged CLM request actually asked for — offset and
@@ -38,13 +39,13 @@ func preparePagedRequestClm(baseURL *url.URL, endpoint string, options PageOptio
 		}
 		offset = decoded.Offset
 	}
-	q.Set("pageSortParams.offset", fmt.Sprintf("%d", offset))
+	q.Set("pageSortParams.offset", strconv.Itoa(offset))
 
 	pageSize := options.PageSize
 	if pageSize <= 0 {
 		pageSize = DefaultPageSize
 	}
-	q.Set("pageSortParams.limit", fmt.Sprintf("%d", pageSize))
+	q.Set("pageSortParams.limit", strconv.Itoa(pageSize))
 
 	fullURL.RawQuery = q.Encode()
 	return fullURL, clmRequestedPage{Offset: offset, PageSize: pageSize}, nil
