@@ -4,6 +4,12 @@ import (
 	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
 )
 
+// PermissionProfileResourceTypeID is the resource type ID for permission profiles.
+// Exported so other packages (e.g. connector.go) can check whether it is
+// selected for sync via cli.ConnectorOpts.WillSyncResourceType without
+// depending on an unexported literal drifting out of sync.
+const PermissionProfileResourceTypeID = "permission_profile"
+
 var (
 	userResourceType = &v2.ResourceType{
 		Id:          "user",
@@ -18,7 +24,7 @@ var (
 	}
 
 	permissionProfilesResourceType = &v2.ResourceType{
-		Id:          "permission_profile",
+		Id:          PermissionProfileResourceTypeID,
 		DisplayName: "Permission Profile",
 	}
 

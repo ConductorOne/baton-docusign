@@ -18,6 +18,13 @@ var _ connectorbuilder.AccountManagerV2 = &userBuilder{}
 type userBuilder struct {
 	resourceType *v2.ResourceType
 	client       *client.Client
+
+	// syncPermissionProfiles gates the cross-type emission of permission_profile
+	// grants in Grants(). It is false when the customer's sync filter excludes
+	// the permission_profile resource type, so this builder never emits a
+	// grant referencing a resource type that isn't being synced. See
+	// cli.ConnectorOpts.WillSyncResourceType.
+	syncPermissionProfiles bool
 }
 
 // ResourceType returns the Baton resource type handled by this builder.
@@ -74,7 +81,19 @@ func (b *userBuilder) Entitlements(_ context.Context, _ *v2.Resource, _ rs.SyncO
 }
 
 // Grants assigns permissions to users based on their DocuSign settings.
+//
+// This method exists solely to emit the cross-type permission_profile grant
+// as a sync optimization (the user detail API call already returns the
+// user's permission profile ID, so permission_profiles.go doesn't need a
+// second round trip per user). If the customer's sync filter excludes
+// permission_profile, skip entirely — both to avoid emitting a grant that
+// references a resource type that isn't being synced, and to avoid the
+// wasted GetUserDetails call.
 func (b *userBuilder) Grants(ctx context.Context, resource *v2.Resource, _ rs.SyncOpAttrs) ([]*v2.Grant, *rs.SyncOpResults, error) {
+	if !b.syncPermissionProfiles {
+		return nil, nil, nil
+	}
+
 	var grants []*v2.Grant
 	var annos annotations.Annotations
 	userID := resource.Id
@@ -215,10 +234,14 @@ func (b *userBuilder) Delete(ctx context.Context, resourceId *v2.ResourceId) (an
 }
 
 // newUserBuilder constructs a userBuilder with the provided API client.
-func newUserBuilder(client *client.Client) *userBuilder {
+// syncPermissionProfiles gates the cross-type permission_profile grant
+// emission in Grants(); pass false when the customer's sync filter excludes
+// the permission_profile resource type.
+func newUserBuilder(client *client.Client, syncPermissionProfiles bool) *userBuilder {
 	return &userBuilder{
-		resourceType: userResourceType,
-		client:       client,
+		resourceType:           userResourceType,
+		client:                 client,
+		syncPermissionProfiles: syncPermissionProfiles,
 	}
 }
 

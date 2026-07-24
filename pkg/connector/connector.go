@@ -19,8 +19,9 @@ import (
 )
 
 type Connector struct {
-	client               *client.Client
-	includeSigningGroups bool
+	client                 *client.Client
+	includeSigningGroups   bool
+	syncPermissionProfiles bool
 }
 
 // Configure handles the OAuth2 authorization flow to obtain a refresh token.
@@ -63,7 +64,7 @@ func Configure(ctx context.Context, docusignCfg *cfg.Docusign) error {
 
 func (d *Connector) ResourceSyncers(_ context.Context) []connectorbuilder.ResourceSyncerV2 {
 	syncers := []connectorbuilder.ResourceSyncerV2{
-		newUserBuilder(d.client),
+		newUserBuilder(d.client, d.syncPermissionProfiles),
 		newGroupBuilder(d.client),
 		newPermissionProfilesBuilder(d.client),
 	}
@@ -120,7 +121,7 @@ func (d *Connector) Validate(_ context.Context) (annotations.Annotations, error)
 	return nil, nil
 }
 
-func NewWithRefreshToken(ctx context.Context, isDemo bool, clientId, clientSecret, redirectURI, refreshToken, accountId string, includeSigningGroups bool) (*Connector, error) {
+func NewWithRefreshToken(ctx context.Context, isDemo bool, clientId, clientSecret, redirectURI, refreshToken, accountId string, includeSigningGroups bool, syncPermissionProfiles bool) (*Connector, error) {
 	l := ctxzap.Extract(ctx)
 
 	docusignClient, err := client.New(ctx, isDemo, clientId, clientSecret, redirectURI, refreshToken, accountId)
@@ -130,24 +131,27 @@ func NewWithRefreshToken(ctx context.Context, isDemo bool, clientId, clientSecre
 	}
 
 	return &Connector{
-		client:               docusignClient,
-		includeSigningGroups: includeSigningGroups,
+		client:                 docusignClient,
+		includeSigningGroups:   includeSigningGroups,
+		syncPermissionProfiles: syncPermissionProfiles,
 	}, nil
 }
 
-func NewWithClient(client *client.Client, includeSigningGroups bool) (*Connector, error) {
+func NewWithClient(client *client.Client, includeSigningGroups bool, syncPermissionProfiles bool) (*Connector, error) {
 	return &Connector{
-		client:               client,
-		includeSigningGroups: includeSigningGroups,
+		client:                 client,
+		includeSigningGroups:   includeSigningGroups,
+		syncPermissionProfiles: syncPermissionProfiles,
 	}, nil
 }
 
-func NewWithTokenSource(ctx context.Context, isDemo bool, tokenSource oauth2.TokenSource, accountId string, includeSigningGroups bool) (*Connector, error) {
+func NewWithTokenSource(ctx context.Context, isDemo bool, tokenSource oauth2.TokenSource, accountId string, includeSigningGroups bool, syncPermissionProfiles bool) (*Connector, error) {
 	docusignClient := client.NewClient(ctx, isDemo, tokenSource, accountId)
 
 	return &Connector{
-		client:               docusignClient,
-		includeSigningGroups: includeSigningGroups,
+		client:                 docusignClient,
+		includeSigningGroups:   includeSigningGroups,
+		syncPermissionProfiles: syncPermissionProfiles,
 	}, nil
 }
 
@@ -164,8 +168,18 @@ func New(ctx context.Context, docusignCfg *cfg.Docusign, opts *cli.ConnectorOpts
 	// client ID is provided (GUI demo group selection).
 	isDemo := docusignCfg.Demo || opts.SelectedAuthMethod == "demo"
 
+	// syncPermissionProfiles gates the userBuilder's cross-type emission of
+	// permission_profile grants. If opts is nil (defensive: not expected from
+	// the CLI entrypoint, which always passes a real *cli.ConnectorOpts, but
+	// guarded here since opts is a pointer param), default to true so
+	// behavior is unchanged from before this gate existed.
+	syncPermissionProfiles := true
+	if opts != nil {
+		syncPermissionProfiles = opts.WillSyncResourceType(PermissionProfileResourceTypeID)
+	}
+
 	if opts.TokenSource != nil {
-		cbWithTokenSource, err := NewWithTokenSource(ctx, isDemo, opts.TokenSource, docusignCfg.AccountId, docusignCfg.IncludeSigningGroups)
+		cbWithTokenSource, err := NewWithTokenSource(ctx, isDemo, opts.TokenSource, docusignCfg.AccountId, docusignCfg.IncludeSigningGroups, syncPermissionProfiles)
 		if err != nil {
 			l.Error("error creating connector with token source", zap.Error(err))
 			return nil, nil, err
@@ -194,6 +208,7 @@ func New(ctx context.Context, docusignCfg *cfg.Docusign, opts *cli.ConnectorOpts
 			docusignCfg.RefreshToken,
 			docusignCfg.AccountId,
 			docusignCfg.IncludeSigningGroups,
+			syncPermissionProfiles,
 		)
 		if err != nil {
 			l.Error("error creating connector", zap.Error(err))
