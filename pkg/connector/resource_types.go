@@ -40,6 +40,7 @@ var (
 		Id:          "clm_member",
 		DisplayName: "CLM Member",
 		Traits:      []v2.ResourceType_Trait{v2.ResourceType_TRAIT_USER},
+		Annotations: annotations.New(&v2.OptInRequired{}),
 	}
 
 	// clmRoleResourceType represents the 5 fixed CLM account-level Member.Role values.
@@ -49,6 +50,7 @@ var (
 		Id:          "clm_role",
 		DisplayName: "CLM Role",
 		Traits:      []v2.ResourceType_Trait{v2.ResourceType_TRAIT_ROLE},
+		Annotations: annotations.New(&v2.OptInRequired{}),
 	}
 
 	// clmGroupResourceType is a distinct upstream object from groupResourceType
@@ -60,7 +62,7 @@ var (
 		Id:          "clm_group",
 		DisplayName: "CLM Group",
 		Traits:      []v2.ResourceType_Trait{v2.ResourceType_TRAIT_GROUP},
-		Annotations: annotations.New(&v2.SkipEntitlements{}),
+		Annotations: annotations.New(&v2.SkipEntitlements{}, &v2.OptInRequired{}),
 	}
 
 	// clmPermissionSetResourceType is read-only for GRANTS — no assignment endpoint
@@ -71,6 +73,7 @@ var (
 		Id:          "clm_permission_set",
 		DisplayName: "CLM Permission Set",
 		Traits:      []v2.ResourceType_Trait{v2.ResourceType_TRAIT_ROLE},
+		Annotations: annotations.New(&v2.OptInRequired{}),
 	}
 
 	// clmFolderResourceType represents CLM folders and their security assignments
@@ -78,6 +81,6 @@ var (
 	clmFolderResourceType = &v2.ResourceType{
 		Id:          "clm_folder",
 		DisplayName: "CLM Folder",
-		Annotations: annotations.New(&v2.SkipEntitlements{}),
+		Annotations: annotations.New(&v2.SkipEntitlements{}, &v2.OptInRequired{}),
 	}
 )
