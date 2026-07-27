@@ -70,6 +70,7 @@ import (
 
 	"github.com/conductorone/baton-sdk/pkg/annotations"
 	"github.com/conductorone/baton-sdk/pkg/uhttp"
+	"github.com/grpc-ecosystem/go-grpc-middleware/logging/zap/ctxzap"
 )
 
 // clmAccountDiscoveryHostProd and clmAccountDiscoveryHostDemo are CLM's legacy
@@ -281,6 +282,19 @@ func (c *Client) SearchFolders(ctx context.Context, options PageOptions) ([]ClmF
 	anno, err := c.doClmRequest(ctx, http.MethodPost, searchURL, struct{}{}, &page)
 	if err != nil {
 		return nil, "", nil, fmt.Errorf("baton-docusign: failed to search CLM folders: %w", err)
+	}
+
+	// The request body is empty (no search criteria) because the schema for scoping
+	// this search to "all folders" was never confirmed against a live CLM tenant. If
+	// that empty body means "no criteria -> no matches" rather than "match all", the
+	// very first page would come back empty and every folder/folder-security sync
+	// would silently report success while syncing zero folders. Surface that
+	// possibility in the logs rather than fail silently, without treating it as a
+	// hard error since an account with genuinely zero folders is also a valid state.
+	if requestedPage.Offset == 0 && len(page.Items) == 0 {
+		ctxzap.Extract(ctx).Debug("baton-docusign: CLM folder search returned zero results on the first page; " +
+			"if this account has CLM folders, this may indicate the empty search body is being interpreted as " +
+			"'no criteria -> no matches' rather than 'match all' — please report this to ConductorOne")
 	}
 
 	return page.Items, getClmNextToken(requestedPage, len(page.Items), page.Next != "", page.Total), anno, nil
