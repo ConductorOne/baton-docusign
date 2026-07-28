@@ -10,6 +10,8 @@ import (
 	"github.com/conductorone/baton-sdk/pkg/connectorbuilder"
 	"github.com/conductorone/baton-sdk/pkg/types/grant"
 	rs "github.com/conductorone/baton-sdk/pkg/types/resource"
+	"github.com/grpc-ecosystem/go-grpc-middleware/logging/zap/ctxzap"
+	"go.uber.org/zap"
 )
 
 var _ connectorbuilder.StaticEntitlementSyncerV2 = (*clmGroupBuilder)(nil)
@@ -49,6 +51,10 @@ func (g *clmGroupBuilder) List(ctx context.Context, _ *v2.ResourceId, attr rs.Sy
 		PageToken: pageToken,
 	})
 	if err != nil {
+		if attr.PageToken.Token == "" && isOptInFeatureUnavailableError(err) {
+			ctxzap.Extract(ctx).Info("baton-docusign: CLM is not available for this account or token, skipping clm_group sync", zap.Error(err))
+			return nil, &rs.SyncOpResults{}, nil
+		}
 		return nil, nil, err
 	}
 

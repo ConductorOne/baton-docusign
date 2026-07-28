@@ -19,9 +19,10 @@ import (
 )
 
 type Connector struct {
-	client               *client.Client
-	includeSigningGroups bool
-	includeClm           bool
+	client *client.Client
+	// includeClm is retained only to control which OAuth scopes are requested (see
+	// oauth.go) — it no longer gates resource-type registration (see ResourceSyncers).
+	includeClm bool
 }
 
 // Configure handles the OAuth2 authorization flow to obtain a refresh token.
@@ -62,30 +63,33 @@ func Configure(ctx context.Context, docusignCfg *cfg.Docusign) error {
 	return nil
 }
 
+// ResourceSyncers registers every resource type this connector can ever sync,
+// unconditionally — including the opt-in ones (signing_group and the 5 CLM types).
+//
+// This is deliberate: previously, signing_group and the CLM types were only appended
+// here when includeSigningGroups/includeClm were set, which meant flipping either flag
+// off on a later sync makes ListResourceTypes() advertise fewer types than a prior
+// sync did — C1 would then see zero resources of that type and could bucket every
+// previously-synced resource and grant of it as deleted. Registering unconditionally
+// and relying on &v2.OptInRequired{} (see resource_types.go) as the gate instead avoids
+// that. For accounts/tokens that genuinely can't use one of these features (no CLM
+// subscription, signing groups not enabled, or include-clm's OAuth scopes not
+// requested), each opt-in builder's List() tolerates the resulting permission error on
+// its first page and skips gracefully — see isOptInFeatureUnavailableError in
+// helper.go. includeClm itself is retained only to control the OAuth scopes requested
+// (see oauth.go) — it no longer gates registration here.
 func (d *Connector) ResourceSyncers(_ context.Context) []connectorbuilder.ResourceSyncerV2 {
-	syncers := []connectorbuilder.ResourceSyncerV2{
+	return []connectorbuilder.ResourceSyncerV2{
 		newUserBuilder(d.client),
 		newGroupBuilder(d.client),
 		newPermissionProfilesBuilder(d.client),
+		newSigningGroupBuilder(d.client),
+		newClmMemberBuilder(d.client),
+		newClmRoleBuilder(d.client),
+		newClmGroupBuilder(d.client),
+		newClmPermissionSetBuilder(d.client),
+		newClmFolderBuilder(d.client),
 	}
-
-	// Only include signing groups if opted in
-	if d.includeSigningGroups {
-		syncers = append(syncers, newSigningGroupBuilder(d.client))
-	}
-
-	// Only include CLM resources if opted in (requires a DocuSign CLM production subscription)
-	if d.includeClm {
-		syncers = append(syncers,
-			newClmMemberBuilder(d.client),
-			newClmRoleBuilder(d.client),
-			newClmGroupBuilder(d.client),
-			newClmPermissionSetBuilder(d.client),
-			newClmFolderBuilder(d.client),
-		)
-	}
-
-	return syncers
 }
 
 func (d *Connector) Asset(_ context.Context, _ *v2.AssetRef) (string, io.ReadCloser, error) {
@@ -93,13 +97,13 @@ func (d *Connector) Asset(_ context.Context, _ *v2.AssetRef) (string, io.ReadClo
 }
 
 func (d *Connector) Metadata(_ context.Context) (*v2.ConnectorMetadata, error) {
-	description := "Connector syncs data from Users, Permission Profiles, and Groups. It also allows the creation of users in DocuSign"
-	if d.includeSigningGroups {
-		description = "Connector syncs data from Users, Permission Profiles, Groups, and Signing Groups. It also allows the creation of users in DocuSign"
-	}
-	if d.includeClm {
-		description += ". Also syncs DocuSign CLM members, roles, groups, folders, folder security, and permission sets"
-	}
+	// Signing groups and CLM are always registered as resource types (see
+	// ResourceSyncers) and are gated by &v2.OptInRequired{} rather than this
+	// description, so the description no longer branches on includeSigningGroups/
+	// includeClm — it always lists everything the connector can sync.
+	description := "Connector syncs data from Users, Permission Profiles, Groups, and Signing Groups (if enabled on your account). " +
+		"Also syncs DocuSign CLM members, roles, groups, folders, folder security, and permission sets (if your account has a CLM subscription). " +
+		"It also allows the creation of users in DocuSign"
 
 	return &v2.ConnectorMetadata{
 		DisplayName: "DocuSign",
@@ -135,10 +139,13 @@ func (d *Connector) Validate(_ context.Context) (annotations.Annotations, error)
 	return nil, nil
 }
 
+// includeSigningGroups is accepted for call-site compatibility but no longer used —
+// signing_group is now registered unconditionally (see ResourceSyncers).
 func NewWithRefreshToken(
 	ctx context.Context, isDemo bool, clientId, clientSecret, redirectURI, refreshToken, accountId string,
 	includeSigningGroups, includeClm bool, clmBaseURLOverride, baseURLOverride string,
 ) (*Connector, error) {
+	_ = includeSigningGroups
 	l := ctxzap.Extract(ctx)
 
 	docusignClient, err := client.New(
@@ -151,30 +158,33 @@ func NewWithRefreshToken(
 	}
 
 	return &Connector{
-		client:               docusignClient,
-		includeSigningGroups: includeSigningGroups,
-		includeClm:           includeClm,
+		client:     docusignClient,
+		includeClm: includeClm,
 	}, nil
 }
 
+// includeSigningGroups is accepted for call-site compatibility but no longer used —
+// signing_group is now registered unconditionally (see ResourceSyncers).
 func NewWithClient(client *client.Client, includeSigningGroups, includeClm bool) (*Connector, error) {
+	_ = includeSigningGroups
 	return &Connector{
-		client:               client,
-		includeSigningGroups: includeSigningGroups,
-		includeClm:           includeClm,
+		client:     client,
+		includeClm: includeClm,
 	}, nil
 }
 
+// includeSigningGroups is accepted for call-site compatibility but no longer used —
+// signing_group is now registered unconditionally (see ResourceSyncers).
 func NewWithTokenSource(
 	ctx context.Context, isDemo bool, tokenSource oauth2.TokenSource, accountId string,
 	includeSigningGroups, includeClm bool, clmBaseURLOverride string,
 ) (*Connector, error) {
+	_ = includeSigningGroups
 	docusignClient := client.NewClient(ctx, isDemo, tokenSource, accountId, clmBaseURLOverride)
 
 	return &Connector{
-		client:               docusignClient,
-		includeSigningGroups: includeSigningGroups,
-		includeClm:           includeClm,
+		client:     docusignClient,
+		includeClm: includeClm,
 	}, nil
 }
 

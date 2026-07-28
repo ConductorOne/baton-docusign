@@ -37,6 +37,29 @@ func TestClmMemberBuilder_List_Pagination(t *testing.T) {
 	}
 }
 
+func TestClmMemberBuilder_List_SkipsGracefullyWhenClmUnavailable(t *testing.T) {
+	// Regression test for the wipe-risk fix: clm_member (and the other CLM/signing_group
+	// builders) is now registered unconditionally in ResourceSyncers() rather than
+	// gated by a config flag, so an account/token that genuinely can't use CLM must
+	// have its List() tolerate the resulting auth error and skip gracefully instead of
+	// failing the whole sync — see isOptInFeatureUnavailableError in helper.go.
+	s, _ := clmtest.NewServer(t)
+	badClient := s.NewClientWithToken("wrong-token")
+	b := newClmMemberBuilder(badClient)
+	ctx := context.Background()
+
+	resources, res, err := b.List(ctx, nil, rs.SyncOpAttrs{PageToken: pagination.Token{Size: 10}})
+	if err != nil {
+		t.Fatalf("expected List to tolerate an unavailable CLM account and skip gracefully, got error: %v", err)
+	}
+	if len(resources) != 0 {
+		t.Errorf("expected zero resources when CLM is unavailable, got %d", len(resources))
+	}
+	if res == nil || res.NextPageToken != "" {
+		t.Errorf("expected an empty (non-paginating) result, got %+v", res)
+	}
+}
+
 func TestClmMemberBuilder_EntitlementsAndGrants_AreNoop(t *testing.T) {
 	// clm_member is a pure principal: it holds no entitlements of its own, and any
 	// membership/role grants it's part of are emitted from the other side (clm_group,

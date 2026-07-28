@@ -228,6 +228,22 @@ func NewServer(t testing.TB) (*Server, *client.Client) {
 	return s, c
 }
 
+// NewClientWithToken builds another *client.Client wired to this same running server
+// (via the identical rewriteTransport, so it reaches the mock regardless of which real
+// host it thinks it's talking to) but presenting an arbitrary bearer token instead of
+// the fixed testBearerToken NewServer uses. Used to simulate an account/token that
+// can't use CLM (wrong OAuth scope, no subscription) — requireAuth's strict mode
+// rejects anything but the exact testBearerToken, so any other value exercises the
+// connector's handling of a 401 from CLM.
+func (s *Server) NewClientWithToken(token string) *client.Client {
+	mockServerURL, _ := url.Parse(s.baseURL)
+	transport := &rewriteTransport{target: mockServerURL, base: http.DefaultTransport}
+	wrapper := uhttp.NewBaseHttpClient(&http.Client{Transport: transport})
+
+	tokenSource := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: token})
+	return client.NewClient(context.Background(), false, tokenSource, "", "", wrapper)
+}
+
 // RunStandalone starts the same CLM mock as NewServer, but as a real, long-lived HTTP
 // server on addr (e.g. "localhost:8765") instead of an ephemeral in-process
 // httptest.Server — for manually pointing a real baton-docusign binary at it via

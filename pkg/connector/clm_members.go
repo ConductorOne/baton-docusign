@@ -6,6 +6,8 @@ import (
 	"github.com/conductorone/baton-docusign/pkg/client"
 	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
 	rs "github.com/conductorone/baton-sdk/pkg/types/resource"
+	"github.com/grpc-ecosystem/go-grpc-middleware/logging/zap/ctxzap"
+	"go.uber.org/zap"
 )
 
 // clmMemberBuilder syncs CLM Members — CLM's own principal object. Synced as its own
@@ -33,6 +35,10 @@ func (b *clmMemberBuilder) List(ctx context.Context, _ *v2.ResourceId, attr rs.S
 		PageToken: pageToken,
 	})
 	if err != nil {
+		if attr.PageToken.Token == "" && isOptInFeatureUnavailableError(err) {
+			ctxzap.Extract(ctx).Info("baton-docusign: CLM is not available for this account or token, skipping clm_member sync", zap.Error(err))
+			return nil, &rs.SyncOpResults{}, nil
+		}
 		return nil, nil, err
 	}
 
