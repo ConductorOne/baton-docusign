@@ -116,6 +116,12 @@ Requirements:
   will have any effect. Contact ConductorOne if enabling `--include-clm` doesn't sync
   any CLM data in this mode.
 
+The 5 CLM resource types are always registered and visible to C1, regardless of
+`--include-clm` — this avoids a C1 sync engine treating CLM resources as deleted if the
+flag is later turned off (see [CHANGE_TYPES.md](CHANGE_TYPES.md) if you're touching
+this). Without the CLM OAuth scopes (or without a CLM subscription on the account),
+each CLM resource type's sync is skipped gracefully rather than erroring the whole sync.
+
 CLM permission sets sync for visibility only — DocuSign's CLM API has no endpoint to
 assign or unassign a permission set, so they cannot be granted or revoked through this
 connector.
@@ -267,8 +273,8 @@ Flags:
       --external-resource-entitlement-id-filter string   The entitlement that external users, groups must have access to sync external baton resources ($BATON_EXTERNAL_RESOURCE_ENTITLEMENT_ID_FILTER)
   -f, --file string                                      The path to the c1z file to sync with ($BATON_FILE) (default "sync.c1z")
   -h, --help                                             help for baton-docusign
-      --include-clm                                      Set to true to include syncing DocuSign CLM folders, folder security, groups, and permission sets. Requires a DocuSign CLM production subscription. When using the default OAuth Authentication method, this also requires ConductorOne's managed OAuth app to be granted the CLM API scope — contact ConductorOne if enabling this has no effect. ($BATON_INCLUDE_CLM)
-      --include-signing-groups                           Set to true to include syncing signing groups (for customers with signing groups feature enabled) ($BATON_INCLUDE_SIGNING_GROUPS)
+      --include-clm                                      Set to true to request the additional OAuth scopes DocuSign CLM needs (spring_read/spring_write). CLM folders, folder security, groups, and permission sets sync automatically once those scopes are granted and the account has a DocuSign CLM production subscription — without this set, CLM sync is skipped rather than erroring. When using the default OAuth Authentication method, this also requires ConductorOne's managed OAuth app to be granted the CLM API scope — contact ConductorOne if enabling this has no effect. ($BATON_INCLUDE_CLM)
+      --include-signing-groups                           Deprecated: signing groups now sync automatically whenever the account has the feature enabled. This setting no longer has any effect and is kept only for backward compatibility with existing configurations. ($BATON_INCLUDE_SIGNING_GROUPS)
       --log-format string                                The output format for logs: json, console ($BATON_LOG_FORMAT) (default "json")
       --log-level string                                 The log level: debug, info, warn, error ($BATON_LOG_LEVEL) (default "info")
       --oauth2-token string                              OAuth 2.0 Authentication for DocuSign ($BATON_OAUTH2_TOKEN)

@@ -60,17 +60,25 @@ var (
 			"If you want to synchronize different accounts, create different connectors."),
 	)
 
+	// IncludeSigningGroupsField is deprecated and kept only so existing configs that
+	// set it don't break: signing groups now sync automatically whenever the account
+	// has the feature enabled, regardless of this value (see connector.go's
+	// ResourceSyncers). Retained in the schema rather than removed to avoid breaking
+	// existing customer configs; has no effect on what the connector syncs.
 	IncludeSigningGroupsField = field.BoolField(
 		"include-signing-groups",
-		field.WithDisplayName("Include Signing Groups"),
-		field.WithDescription("Set to true to include syncing signing groups (for customers with signing groups feature enabled)"),
+		field.WithDisplayName("Include Signing Groups (deprecated, no effect)"),
+		field.WithDescription("Deprecated: signing groups now sync automatically whenever the account has the feature enabled. "+
+			"This setting no longer has any effect and is kept only for backward compatibility with existing configurations."),
 		field.WithDefaultValue(false),
 	)
 
 	IncludeClmField = field.BoolField(
 		"include-clm",
 		field.WithDisplayName("Include CLM"),
-		field.WithDescription("Set to true to include syncing DocuSign CLM folders, folder security, groups, and permission sets. Requires a DocuSign CLM production subscription. "+
+		field.WithDescription("Set to true to request the additional OAuth scopes DocuSign CLM needs (spring_read/spring_write). "+
+			"CLM folders, folder security, groups, and permission sets sync automatically once those scopes are granted and the account "+
+			"has a DocuSign CLM production subscription — without this set, CLM sync is skipped rather than erroring. "+
 			"When using the default OAuth Authentication method, this also requires ConductorOne's managed OAuth app to be granted the CLM API scope — "+
 			"contact ConductorOne if enabling this has no effect."),
 		field.WithDefaultValue(false),
