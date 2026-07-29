@@ -98,12 +98,18 @@ func TestGetClmNextToken_ExactBoundaryDoesNotLoop(t *testing.T) {
 // return a wrong answer, so it's worth a dedicated test even though the earlier
 // table test already covers the "does not terminate" branches this reaches through.
 //
-// The cap is derived from Offset/PageSize rather than a separately-persisted counter
-// (see getClmNextToken's doc), specifically so it still fires correctly even when
-// Offset alone is all that's known — e.g. a token that predates this cap, or one whose
-// unrecognized fields didn't survive a round trip. The second sub-test below exercises
-// exactly that: an incoming request already sitting at a high offset, with no history
-// of how it got there, still triggers the cap on its very next page.
+// The cap uses the larger of two independent estimates (see getClmNextToken's doc):
+// requested.Requests, an actual per-request counter carried in the token, and
+// nextOffset/PageSize, a floor recoverable from Offset alone with no history. Each
+// sub-test below targets the scenario the other estimate alone would miss:
+//   - "reaches the cap through normal advancement" / "does not fire just below the
+//     cap": full pages, where both estimates agree — the ordinary case.
+//   - "fires from a resumed request with no persisted page history": Requests is 0
+//     (a pre-cap or round-tripped token), so only the offset floor catches it.
+//   - "fires from a short-page runaway that the offset floor alone would miss": pages
+//     far short of PageSize kept alive by hasNext, so nextOffset advances by far less
+//     than PageSize per request — the offset floor alone would let this run up to
+//     PageSize times longer than intended; only requested.Requests catches it promptly.
 func TestGetClmNextToken_CapsRunawayPagination(t *testing.T) {
 	t.Run("reaches the cap through normal advancement", func(t *testing.T) {
 		requested := clmRequestedPage{Offset: (maxClmListPages - 1) * 100, PageSize: 100}
@@ -125,12 +131,25 @@ func TestGetClmNextToken_CapsRunawayPagination(t *testing.T) {
 	})
 
 	t.Run("fires from a resumed request with no persisted page history", func(t *testing.T) {
-		// Offset alone, with no Page field set (the zero value, as a pre-cap or
+		// Offset alone, with Requests at its zero value (as a pre-cap or
 		// round-tripped token would decode to), must still trigger the cap.
 		requested := clmRequestedPage{Offset: maxClmListPages * 100, PageSize: 100}
 		_, err := getClmNextToken(requested, 100, false, 0)
 		if err == nil {
 			t.Fatal("expected the cap to fire from Offset alone, got nil error")
+		}
+	})
+
+	t.Run("fires from a short-page runaway that the offset floor alone would miss", func(t *testing.T) {
+		// itemCount (1) is far short of PageSize (100) but hasNext keeps forcing
+		// continuation, so nextOffset only advances by 1 per request — the offset
+		// floor (nextOffset/PageSize) would need PageSize times more requests than
+		// requested.Requests to reach the same cap. Set Requests to exactly one below
+		// the cap to isolate that it alone is what trips it here.
+		requested := clmRequestedPage{Offset: maxClmListPages - 1, PageSize: 100, Requests: maxClmListPages - 1}
+		_, err := getClmNextToken(requested, 1, true, 0)
+		if err == nil {
+			t.Fatal("expected the request-count estimate to trip the cap even though the offset floor would not have")
 		}
 	})
 }
