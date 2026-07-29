@@ -297,7 +297,11 @@ func (c *Client) SearchFolders(ctx context.Context, options PageOptions) ([]ClmF
 			"'no criteria -> no matches' rather than 'match all' — please report this to ConductorOne")
 	}
 
-	return page.Items, getClmNextToken(requestedPage, len(page.Items), page.Next != "", page.Total), anno, nil
+	nextToken, err := getClmNextToken(requestedPage, len(page.Items), page.Next != "", page.Total)
+	if err != nil {
+		return nil, "", anno, err
+	}
+	return page.Items, nextToken, anno, nil
 }
 
 // GetFolder fetches a single folder, optionally expanding Security to get its explicit
@@ -343,10 +347,14 @@ func (c *Client) getFolder(ctx context.Context, folderID string, noCache bool, e
 	return &folder, anno, nil
 }
 
-// PatchFolderSecurity grants or revokes folder security by setting a single
-// {AccessType, Item} entry on the folder. Grant: AccessType is the target tier
-// (e.g. "View", "ViewEdit"). Revoke: AccessType is "NoAccess".
-func (c *Client) PatchFolderSecurity(ctx context.Context, folderID string, entry ClmSecurityEntry) (annotations.Annotations, error) {
+// PatchFolderSecurity grants or revokes folder security. entries must be the folder's
+// complete Security list (see the connector-layer callers — clmFolderSecurityWithEntry
+// builds this from a fresh read plus one changed/added entry), not just the one entry
+// being changed: Folders.Patch's merge-vs-replace semantics for this field are
+// undocumented, and sending the complete list is correct under either interpretation,
+// whereas sending only the one changed entry would wipe every other principal's access
+// to the folder if the real API replaces rather than merges.
+func (c *Client) PatchFolderSecurity(ctx context.Context, folderID string, entries []ClmSecurityEntry) (annotations.Annotations, error) {
 	if err := c.ensureClmReady(ctx); err != nil {
 		return nil, err
 	}
@@ -356,7 +364,7 @@ func (c *Client) PatchFolderSecurity(ctx context.Context, folderID string, entry
 		return nil, err
 	}
 
-	body := ClmFolderSecurityPatch{Security: []ClmSecurityEntry{entry}}
+	body := ClmFolderSecurityPatch{Security: entries}
 	anno, err := c.doClmRequest(ctx, http.MethodPatch, folderURL, body, nil)
 	if err != nil {
 		return anno, fmt.Errorf("baton-docusign: failed to update CLM folder %s security: %w", folderID, err)
@@ -384,7 +392,11 @@ func (c *Client) ListGroups(ctx context.Context, options PageOptions) ([]ClmGrou
 		return nil, "", nil, fmt.Errorf("baton-docusign: failed to list CLM groups: %w", err)
 	}
 
-	return page.Items, getClmNextToken(requestedPage, len(page.Items), page.Next != "", page.Total), anno, nil
+	nextToken, err := getClmNextToken(requestedPage, len(page.Items), page.Next != "", page.Total)
+	if err != nil {
+		return nil, "", anno, err
+	}
+	return page.Items, nextToken, anno, nil
 }
 
 // GetGroupMembers lists the members of a CLM group.
@@ -406,7 +418,11 @@ func (c *Client) GetGroupMembers(ctx context.Context, groupID string, options Pa
 		return nil, "", nil, fmt.Errorf("baton-docusign: failed to list members of CLM group %s: %w", groupID, err)
 	}
 
-	return page.Items, getClmNextToken(requestedPage, len(page.Items), page.Next != "", page.Total), anno, nil
+	nextToken, err := getClmNextToken(requestedPage, len(page.Items), page.Next != "", page.Total)
+	if err != nil {
+		return nil, "", anno, err
+	}
+	return page.Items, nextToken, anno, nil
 }
 
 // ListMembers lists CLM members (the CLM API's principal object). Synced as its own
@@ -430,7 +446,11 @@ func (c *Client) ListMembers(ctx context.Context, options PageOptions) ([]ClmMem
 		return nil, "", nil, fmt.Errorf("baton-docusign: failed to list CLM members: %w", err)
 	}
 
-	return page.Items, getClmNextToken(requestedPage, len(page.Items), page.Next != "", page.Total), anno, nil
+	nextToken, err := getClmNextToken(requestedPage, len(page.Items), page.Next != "", page.Total)
+	if err != nil {
+		return nil, "", anno, err
+	}
+	return page.Items, nextToken, anno, nil
 }
 
 // GetMemberGroups gets the FULL current list of groups a member belongs to — required
@@ -499,7 +519,11 @@ func (c *Client) getMemberGroupsPage(ctx context.Context, memberID string, optio
 		return nil, "", nil, fmt.Errorf("baton-docusign: failed to get groups for CLM member %s: %w", memberID, err)
 	}
 
-	return page.Items, getClmNextToken(requestedPage, len(page.Items), page.Next != "", page.Total), anno, nil
+	nextToken, err := getClmNextToken(requestedPage, len(page.Items), page.Next != "", page.Total)
+	if err != nil {
+		return nil, "", anno, err
+	}
+	return page.Items, nextToken, anno, nil
 }
 
 // PatchMemberGroups grants group membership: the CLM API adds the member to any group
@@ -571,5 +595,9 @@ func (c *Client) ListPermissionSets(ctx context.Context, options PageOptions) ([
 		return nil, "", nil, fmt.Errorf("baton-docusign: failed to list CLM permission sets: %w", err)
 	}
 
-	return page.Items, getClmNextToken(requestedPage, len(page.Items), page.Next != "", page.Total), anno, nil
+	nextToken, err := getClmNextToken(requestedPage, len(page.Items), page.Next != "", page.Total)
+	if err != nil {
+		return nil, "", anno, err
+	}
+	return page.Items, nextToken, anno, nil
 }

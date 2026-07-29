@@ -68,17 +68,22 @@ func TestGetFolder_ExpandSecurity(t *testing.T) {
 	})
 }
 
-func TestPatchFolderSecurity_UpsertsByItem(t *testing.T) {
+// TestPatchFolderSecurity_SendsExactEntries confirms PatchFolderSecurity's basic
+// plumbing: the entries slice it's given is exactly what a subsequent read reflects.
+// Multi-principal preservation (the reason callers must pass the complete Security
+// list, not just the one changed entry) is covered by
+// clm_folders_test.go's TestClmFolderBuilder_GrantAndRevoke_PreservesOtherPrincipals.
+func TestPatchFolderSecurity_SendsExactEntries(t *testing.T) {
 	srv, c := clmtest.NewServer(t)
 	ctx := context.Background()
 
 	groupItem := srv.GroupHref("group-ops")
 
 	// folder-templates starts with no Security entries.
-	if _, err := c.PatchFolderSecurity(ctx, "folder-templates", client.ClmSecurityEntry{
+	if _, err := c.PatchFolderSecurity(ctx, "folder-templates", []client.ClmSecurityEntry{{
 		AccessType: client.ClmAccessTypeView,
 		Item:       groupItem,
-	}); err != nil {
+	}}); err != nil {
 		t.Fatalf("PatchFolderSecurity (grant): %v", err)
 	}
 
@@ -87,12 +92,11 @@ func TestPatchFolderSecurity_UpsertsByItem(t *testing.T) {
 		t.Fatalf("expected one View entry for %s, got %+v", groupItem, entries)
 	}
 
-	// Patching the SAME Item again updates the existing entry (revoke path) rather
-	// than appending a duplicate.
-	if _, err := c.PatchFolderSecurity(ctx, "folder-templates", client.ClmSecurityEntry{
+	// Sending a single-entry list for the same Item again replaces the prior entry.
+	if _, err := c.PatchFolderSecurity(ctx, "folder-templates", []client.ClmSecurityEntry{{
 		AccessType: client.ClmAccessTypeNoAccess,
 		Item:       groupItem,
-	}); err != nil {
+	}}); err != nil {
 		t.Fatalf("PatchFolderSecurity (revoke): %v", err)
 	}
 

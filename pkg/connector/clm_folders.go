@@ -210,15 +210,33 @@ func (f *clmFolderBuilder) Grant(ctx context.Context, principal *v2.Resource, en
 		}
 	}
 
-	patchAnnos, err := f.client.PatchFolderSecurity(ctx, folderID, client.ClmSecurityEntry{
-		AccessType: accessType,
-		Item:       patchItem,
-	})
+	newEntry := client.ClmSecurityEntry{AccessType: accessType, Item: patchItem}
+	patchAnnos, err := f.client.PatchFolderSecurity(ctx, folderID, clmFolderSecurityWithEntry(folder.Security, patchItem, newEntry))
 	if err != nil {
 		return nil, patchAnnos, fmt.Errorf("granting CLM folder security: %w", err)
 	}
 
 	return nil, patchAnnos, nil
+}
+
+// clmFolderSecurityWithEntry returns a copy of existing (a folder's full Security
+// list) with the entry matching targetItem (compared via clmIDFromHref, like Grant/
+// Revoke's own existence checks) replaced by newEntry, or newEntry appended if no
+// match is found. Grant/Revoke always send this complete list back to
+// PatchFolderSecurity rather than just the one changed entry — see that function's
+// doc for why: undocumented merge-vs-replace semantics on the API side make sending
+// the complete list the only construction that's safe either way.
+func clmFolderSecurityWithEntry(existing []client.ClmSecurityEntry, targetItem string, newEntry client.ClmSecurityEntry) []client.ClmSecurityEntry {
+	result := make([]client.ClmSecurityEntry, len(existing))
+	copy(result, existing)
+
+	for i, entry := range result {
+		if clmIDFromHref(entry.Item) == clmIDFromHref(targetItem) {
+			result[i] = newEntry
+			return result
+		}
+	}
+	return append(result, newEntry)
 }
 
 // Revoke sets the principal's folder-security entry to NoAccess — same endpoint as
@@ -263,10 +281,8 @@ func (f *clmFolderBuilder) Revoke(ctx context.Context, grantObj *v2.Grant) (anno
 		return annotations.New(&v2.GrantAlreadyRevoked{}), nil
 	}
 
-	patchAnnos, err := f.client.PatchFolderSecurity(ctx, folderID, client.ClmSecurityEntry{
-		AccessType: client.ClmAccessTypeNoAccess,
-		Item:       patchItem,
-	})
+	newEntry := client.ClmSecurityEntry{AccessType: client.ClmAccessTypeNoAccess, Item: patchItem}
+	patchAnnos, err := f.client.PatchFolderSecurity(ctx, folderID, clmFolderSecurityWithEntry(folder.Security, patchItem, newEntry))
 	if err != nil {
 		return patchAnnos, fmt.Errorf("revoking CLM folder security: %w", err)
 	}

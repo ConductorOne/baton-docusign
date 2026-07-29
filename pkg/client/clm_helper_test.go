@@ -11,9 +11,10 @@ import (
 //
 //  1. getClmNextToken used to derive the next offset from the response's own Offset
 //     field. If the API doesn't echo that back accurately, the token never advances,
-//     looping the SDK's own pagination driver indefinitely (none of SearchFolders,
-//     ListGroups, ListMembers, ListPermissionSets, GetGroupMembers have their own
-//     non-advancing-token guard the way GetMemberGroups does internally).
+//     looping the SDK's own pagination driver indefinitely. Deriving nextOffset from
+//     the request instead of the response fixes that specific case; maxClmListPages
+//     (see TestGetClmNextToken_CapsRunawayPagination) is the backstop for the more
+//     general case where the API ignores the offset entirely.
 //  2. Trusting the response's Total field to decide when to stop risks the opposite
 //     failure: if Total is zero or absent, terminating as soon as
 //     requestOffset+itemCount >= total (i.e. immediately, since total is 0) would
@@ -49,7 +50,10 @@ func TestGetClmNextToken_ComputesFromRequestNotResponse(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := getClmNextToken(tt.requested, tt.itemCount, tt.hasNext, tt.total)
+			got, err := getClmNextToken(tt.requested, tt.itemCount, tt.hasNext, tt.total)
+			if err != nil {
+				t.Fatalf("getClmNextToken: %v", err)
+			}
 			if tt.wantEmpty {
 				if got != "" {
 					t.Fatalf("expected an empty (terminating) token, got %q", got)
@@ -74,9 +78,30 @@ func TestGetClmNextToken_ComputesFromRequestNotResponse(t *testing.T) {
 // multiple of the page size, a full page landing exactly on Total stops immediately —
 // no need to wait for an empty page in this case, since Total confirms it.
 func TestGetClmNextToken_ExactBoundaryDoesNotLoop(t *testing.T) {
-	got := getClmNextToken(clmRequestedPage{Offset: 100, PageSize: 100}, 100, false, 200)
+	got, err := getClmNextToken(clmRequestedPage{Offset: 100, PageSize: 100}, 100, false, 200)
+	if err != nil {
+		t.Fatalf("getClmNextToken: %v", err)
+	}
 	if got != "" {
 		t.Fatalf("expected termination when a full page lands exactly on total, got %q", got)
+	}
+}
+
+// TestGetClmNextToken_CapsRunawayPagination is a regression test for a scenario raised
+// in review: if a CLM list endpoint ignores pageSortParams.offset (always returning a
+// full page) and Total is unpopulated, nextOffset advances in this function's own
+// accounting forever even though the server-side data never changes — unlike
+// GetMemberGroups, these SDK-driven paths have no way to detect the response itself
+// isn't advancing (the SDK drives one page per call, with no cross-call memory beyond
+// the token), so maxClmListPages is the only local safeguard. This confirms the cap
+// actually fires — a real regression here would otherwise page forever, not just
+// return a wrong answer, so it's worth a dedicated test even though the earlier
+// table test already covers the "does not terminate" branches this reaches through.
+func TestGetClmNextToken_CapsRunawayPagination(t *testing.T) {
+	requested := clmRequestedPage{Offset: 0, PageSize: 100, Page: maxClmListPages - 1}
+	_, err := getClmNextToken(requested, 100, false, 0)
+	if err == nil {
+		t.Fatal("expected an error once maxClmListPages is reached, got nil")
 	}
 }
 

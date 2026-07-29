@@ -2,6 +2,7 @@ package connector
 
 import (
 	"context"
+	"reflect"
 	"testing"
 
 	"github.com/conductorone/baton-docusign/pkg/client"
@@ -299,6 +300,83 @@ func TestClmFolderBuilder_GrantAndRevoke_Idempotent(t *testing.T) {
 	}
 }
 
+// TestClmFolderBuilder_GrantAndRevoke_PreservesOtherPrincipals is a regression test
+// for a folder-wide data-loss risk: Folders.Patch's merge-vs-replace semantics for the
+// Security field are undocumented, so Grant/Revoke always send the folder's complete
+// Security list back (via clmFolderSecurityWithEntry), not just the one changed entry.
+// The clmtest mock models the pessimistic "replace" interpretation specifically to
+// catch a regression to sending just one entry — that would make this test fail with
+// the other 3 principals' entries disappearing. folder-contracts is seeded with 4
+// entries (see seed.go); this grants and revokes access for a 5th, previously-absent
+// principal ("group-ops") and confirms the original 4 are untouched throughout.
+func TestClmFolderBuilder_GrantAndRevoke_PreservesOtherPrincipals(t *testing.T) {
+	srv, c := clmtest.NewServer(t)
+	b := newClmFolderBuilder(c)
+	ctx := context.Background()
+
+	before := srv.FolderSecurity("folder-contracts")
+	if len(before) != 4 {
+		t.Fatalf("expected folder-contracts seeded with 4 entries, got %d: %+v", len(before), before)
+	}
+
+	folderResource, err := rs.NewResource("Contracts", clmFolderResourceType, "folder-contracts")
+	if err != nil {
+		t.Fatalf("NewResource: %v", err)
+	}
+	groupResource, err := parseIntoClmGroupResource(&client.ClmGroup{Name: "Operations", Href: srv.GroupHref("group-ops")})
+	if err != nil {
+		t.Fatalf("parseIntoClmGroupResource: %v", err)
+	}
+	ent := &v2.Entitlement{Slug: "view", Resource: folderResource}
+
+	if _, annos, err := b.Grant(ctx, groupResource, ent); err != nil {
+		t.Fatalf("Grant: %v", err)
+	} else if hasAlreadyExists(annos) {
+		t.Error("first Grant should not report GrantAlreadyExists")
+	}
+
+	afterGrant := srv.FolderSecurity("folder-contracts")
+	if len(afterGrant) != 5 {
+		t.Fatalf("expected 5 entries after granting a 5th principal, got %d: %+v", len(afterGrant), afterGrant)
+	}
+	for _, want := range before {
+		if !containsSecurityEntry(afterGrant, want) {
+			t.Errorf("expected pre-existing entry %+v to survive Grant, but it's gone; got %+v", want, afterGrant)
+		}
+	}
+
+	grantObj := &v2.Grant{Principal: groupResource, Entitlement: ent}
+	if annos, err := b.Revoke(ctx, grantObj); err != nil {
+		t.Fatalf("Revoke: %v", err)
+	} else if hasAlreadyRevoked(annos) {
+		t.Error("first Revoke should not report GrantAlreadyRevoked")
+	}
+
+	afterRevoke := srv.FolderSecurity("folder-contracts")
+	if len(afterRevoke) != 5 {
+		t.Fatalf("expected still 5 entries after Revoke (NoAccess, not removed), got %d: %+v", len(afterRevoke), afterRevoke)
+	}
+	for _, want := range before {
+		if !containsSecurityEntry(afterRevoke, want) {
+			t.Errorf("expected pre-existing entry %+v to survive Revoke, but it's gone; got %+v", want, afterRevoke)
+		}
+	}
+}
+
+// containsSecurityEntry uses reflect.DeepEqual rather than == because
+// client.ClmSecurityEntry's bool flags are *bool: entries round-tripped through this
+// test's HTTP calls (JSON marshal/unmarshal) get freshly allocated pointers even when
+// the underlying values are unchanged, so pointer-identity comparison would spuriously
+// fail even for identical entries.
+func containsSecurityEntry(entries []client.ClmSecurityEntry, want client.ClmSecurityEntry) bool {
+	for _, e := range entries {
+		if reflect.DeepEqual(e, want) {
+			return true
+		}
+	}
+	return false
+}
+
 // TestClmFolderBuilder_GrantAndRevoke_ToleratesBareIDOnRead is a regression test: the
 // CLM API's read-side Item representation isn't confirmed to always match the exact
 // Href shape clmItemForPrincipal constructs on the write side (see clmPrincipalIDForItem,
@@ -315,10 +393,10 @@ func TestClmFolderBuilder_GrantAndRevoke_ToleratesBareIDOnRead(t *testing.T) {
 
 	// Seed folder-templates' Security entry with a bare group ID, not the full Href
 	// clmItemForPrincipal would construct.
-	if _, err := c.PatchFolderSecurity(ctx, "folder-templates", client.ClmSecurityEntry{
+	if _, err := c.PatchFolderSecurity(ctx, "folder-templates", []client.ClmSecurityEntry{{
 		AccessType: client.ClmAccessTypeViewEdit,
 		Item:       "group-ops",
-	}); err != nil {
+	}}); err != nil {
 		t.Fatalf("PatchFolderSecurity (seed): %v", err)
 	}
 

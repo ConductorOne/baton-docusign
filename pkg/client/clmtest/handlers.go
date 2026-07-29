@@ -54,6 +54,15 @@ func (s *Server) handleGetFolder(w http.ResponseWriter, r *http.Request) {
 }
 
 // Doc URL: https://developers.docusign.com/docs/clm-api/reference/objects/folders/patch/
+//
+// Replaces the folder's entire Security list with whatever body.Security contains,
+// rather than merging/upserting into the existing list. The real API's merge-vs-
+// replace semantics here are genuinely undocumented either way, so this picks the
+// stricter of the two equally-plausible interpretations deliberately: the connector
+// (clm_folders.go's Grant/Revoke) always sends the complete list back, specifically
+// because it's safe under replace semantics too. Modeling this endpoint as a merge
+// would hide a regression to sending just the one changed entry — replace surfaces it
+// immediately as other principals' entries disappearing.
 func (s *Server) handlePatchFolder(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -71,19 +80,7 @@ func (s *Server) handlePatchFolder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	for _, incoming := range body.Security {
-		updated := false
-		for i, existing := range f.Security {
-			if existing.Item == incoming.Item {
-				f.Security[i] = incoming
-				updated = true
-				break
-			}
-		}
-		if !updated {
-			f.Security = append(f.Security, incoming)
-		}
-	}
+	f.Security = body.Security
 
 	writeJSON(w, *f)
 }

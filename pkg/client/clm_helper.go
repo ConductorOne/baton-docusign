@@ -11,10 +11,12 @@ import (
 // clmRequestedPage records what a paged CLM request actually asked for — offset and
 // page size — so the response can be paginated against ground truth instead of trusting
 // response fields that were never confirmed to be populated reliably (see
-// getClmNextToken).
+// getClmNextToken). Page is this request's position in the pagination sequence (0 for
+// the first page), carried through so getClmNextToken can enforce maxClmListPages.
 type clmRequestedPage struct {
 	Offset   int
 	PageSize int
+	Page     int
 }
 
 // preparePagedRequestClm prepares a paged request URL using CLM's confirmed query
@@ -32,12 +34,14 @@ func preparePagedRequestClm(baseURL *url.URL, endpoint string, options PageOptio
 	q := fullURL.Query()
 
 	offset := 0
+	page := 0
 	if options.PageToken != "" {
 		decoded, err := decodeClmPageToken(options.PageToken)
 		if err != nil {
 			return nil, clmRequestedPage{}, fmt.Errorf("baton-docusign: invalid CLM page token: %w", err)
 		}
 		offset = decoded.Offset
+		page = decoded.Page
 	}
 	q.Set("pageSortParams.offset", strconv.Itoa(offset))
 
@@ -48,12 +52,15 @@ func preparePagedRequestClm(baseURL *url.URL, endpoint string, options PageOptio
 	q.Set("pageSortParams.limit", strconv.Itoa(pageSize))
 
 	fullURL.RawQuery = q.Encode()
-	return fullURL, clmRequestedPage{Offset: offset, PageSize: pageSize}, nil
+	return fullURL, clmRequestedPage{Offset: offset, PageSize: pageSize, Page: page}, nil
 }
 
 // clmPageToken is the internal offset-based continuation token for CLM pagination.
+// Page counts how many pages have been fetched so far in this sequence — see
+// maxClmListPages.
 type clmPageToken struct {
 	Offset int `json:"offset"`
+	Page   int `json:"page"`
 }
 
 func encodeClmPageToken(pt *clmPageToken) string {
@@ -107,17 +114,37 @@ func decodeClmPageToken(token string) (*clmPageToken, error) {
 // risk to every short page whenever Total was merely unpopulated). No live CLM tenant
 // was available to confirm Total's accuracy either way, so this residual risk is
 // accepted rather than resolved.
-func getClmNextToken(requested clmRequestedPage, itemCount int, hasNext bool, total int) string {
+//
+// maxClmListPages bounds the total pages any single SDK-driven List() pagination
+// sequence can walk (SearchFolders/ListGroups/GetGroupMembers/ListMembers/
+// ListPermissionSets, plus GetMemberGroups' own internal loop, which already had this
+// exact protection independently — see maxMemberGroupPages in clm_client.go). Without
+// it, a CLM endpoint that ignores pageSortParams.offset (always returning the same
+// full first page) combined with an unpopulated Total would make nextOffset advance
+// forever in our own accounting while the server-side data never actually changes —
+// unlike GetMemberGroups, these paths can't compare successive responses for
+// non-advancement (the SDK drives one page per List() call, with no request-to-request
+// memory beyond the token), so a hard page cap is the only local safeguard available.
+// Reaching it fails the sync loudly rather than paginating indefinitely.
+const maxClmListPages = 1000
+
+func getClmNextToken(requested clmRequestedPage, itemCount int, hasNext bool, total int) (string, error) {
 	if itemCount == 0 {
-		return ""
+		return "", nil
 	}
 	nextOffset := requested.Offset + itemCount
 	if total > 0 && nextOffset >= total {
-		return ""
+		return "", nil
 	}
 	totalSaysMoreRemains := total > 0 && nextOffset < total
 	if itemCount < requested.PageSize && !hasNext && !totalSaysMoreRemains {
-		return ""
+		return "", nil
 	}
-	return encodeClmPageToken(&clmPageToken{Offset: nextOffset})
+
+	nextPage := requested.Page + 1
+	if nextPage >= maxClmListPages {
+		return "", fmt.Errorf("baton-docusign: exceeded %d pages paginating a CLM list — the API may be ignoring the requested offset", maxClmListPages)
+	}
+
+	return encodeClmPageToken(&clmPageToken{Offset: nextOffset, Page: nextPage}), nil
 }
