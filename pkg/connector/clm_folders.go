@@ -225,18 +225,51 @@ func (f *clmFolderBuilder) Grant(ctx context.Context, principal *v2.Resource, en
 // match is found. Grant/Revoke always send this complete list back to
 // PatchFolderSecurity rather than just the one changed entry — see that function's
 // doc for why: undocumented merge-vs-replace semantics on the API side make sending
-// the complete list the only construction that's safe either way.
+// the complete list the only construction that's safe either way. Every preserved
+// entry is passed through clmNormalizeSecurityEntryForWrite first — see its doc for
+// why a verbatim copy of a read-side entry isn't safe to send in a write.
 func clmFolderSecurityWithEntry(existing []client.ClmSecurityEntry, targetItem string, newEntry client.ClmSecurityEntry) []client.ClmSecurityEntry {
-	result := make([]client.ClmSecurityEntry, len(existing))
-	copy(result, existing)
-
-	for i, entry := range result {
+	result := make([]client.ClmSecurityEntry, 0, len(existing)+1)
+	replaced := false
+	for _, entry := range existing {
 		if clmIDFromHref(entry.Item) == clmIDFromHref(targetItem) {
-			result[i] = newEntry
-			return result
+			result = append(result, newEntry)
+			replaced = true
+			continue
 		}
+		result = append(result, clmNormalizeSecurityEntryForWrite(entry))
 	}
-	return append(result, newEntry)
+	if !replaced {
+		result = append(result, newEntry)
+	}
+	return result
+}
+
+// clmNormalizeSecurityEntryForWrite converts a folder-security entry as returned by a
+// GET (which may represent access via granular boolean flags with AccessType left
+// empty — see clmSlugForEntry's doc) into the AccessType-based shape Patch writes are
+// confirmed to use (see PatchFolderSecurity's doc). Grant/Revoke only ever construct
+// entries this way themselves; re-sending an untouched entry verbatim from a read
+// would send a flags-only, AccessType-empty body on a write, which was never
+// confirmed to round-trip correctly.
+//
+// Entries that don't match any of the 5 known tiers (clmSlugForEntry returns false —
+// e.g. a "Custom" flag combination) can't be normalized this way and are passed
+// through unchanged. That's a residual, unconfirmed risk for exactly those entries,
+// accepted for lack of a live CLM tenant to verify what a flags-only write does.
+func clmNormalizeSecurityEntryForWrite(entry client.ClmSecurityEntry) client.ClmSecurityEntry {
+	if entry.AccessType != "" {
+		return entry
+	}
+	slug, ok := clmSlugForEntry(entry)
+	if !ok {
+		return entry
+	}
+	accessType, ok := clmAccessTypeForSlug(slug)
+	if !ok {
+		return entry
+	}
+	return client.ClmSecurityEntry{AccessType: accessType, Item: entry.Item}
 }
 
 // Revoke sets the principal's folder-security entry to NoAccess — same endpoint as

@@ -2,7 +2,6 @@ package connector
 
 import (
 	"context"
-	"reflect"
 	"testing"
 
 	"github.com/conductorone/baton-docusign/pkg/client"
@@ -86,6 +85,33 @@ func TestClmAccessTypeForSlug_RoundTrips(t *testing.T) {
 	if _, ok := clmAccessTypeForSlug("not_a_real_slug"); ok {
 		t.Error("expected clmAccessTypeForSlug to reject an unknown slug")
 	}
+}
+
+func TestClmNormalizeSecurityEntryForWrite(t *testing.T) {
+	t.Run("AccessType already set passes through unchanged", func(t *testing.T) {
+		entry := client.ClmSecurityEntry{AccessType: client.ClmAccessTypeViewEdit, Item: "group-legal"}
+		got := clmNormalizeSecurityEntryForWrite(entry)
+		if got != entry {
+			t.Errorf("expected an AccessType-based entry to pass through unchanged, got %+v", got)
+		}
+	})
+
+	t.Run("resolvable flags-only entry is normalized to AccessType", func(t *testing.T) {
+		entry := client.ClmSecurityEntry{Item: "member-bob", Read: boolPtr(true), See: boolPtr(true)}
+		got := clmNormalizeSecurityEntryForWrite(entry)
+		want := client.ClmSecurityEntry{AccessType: client.ClmAccessTypeView, Item: "member-bob"}
+		if got != want {
+			t.Errorf("clmNormalizeSecurityEntryForWrite(%+v) = %+v, want %+v", entry, got, want)
+		}
+	})
+
+	t.Run("unresolvable (Custom) flags-only entry passes through unchanged", func(t *testing.T) {
+		entry := client.ClmSecurityEntry{Item: "group-finance", Create: boolPtr(true)}
+		got := clmNormalizeSecurityEntryForWrite(entry)
+		if *got.Create != *entry.Create || got.Item != entry.Item || got.AccessType != "" {
+			t.Errorf("expected an unresolvable flags entry to pass through unchanged, got %+v", got)
+		}
+	})
 }
 
 func TestClmPrincipalIDForItem(t *testing.T) {
@@ -340,9 +366,12 @@ func TestClmFolderBuilder_GrantAndRevoke_PreservesOtherPrincipals(t *testing.T) 
 		t.Fatalf("expected 5 entries after granting a 5th principal, got %d: %+v", len(afterGrant), afterGrant)
 	}
 	for _, want := range before {
-		if !containsSecurityEntry(afterGrant, want) {
-			t.Errorf("expected pre-existing entry %+v to survive Grant, but it's gone; got %+v", want, afterGrant)
+		got, ok := findSecurityEntryByItem(afterGrant, want.Item)
+		if !ok {
+			t.Errorf("expected pre-existing entry for %s to survive Grant, but it's gone; got %+v", want.Item, afterGrant)
+			continue
 		}
+		assertSameEffectiveAccess(t, want, got, "Grant")
 	}
 
 	grantObj := &v2.Grant{Principal: groupResource, Entitlement: ent}
@@ -357,24 +386,41 @@ func TestClmFolderBuilder_GrantAndRevoke_PreservesOtherPrincipals(t *testing.T) 
 		t.Fatalf("expected still 5 entries after Revoke (NoAccess, not removed), got %d: %+v", len(afterRevoke), afterRevoke)
 	}
 	for _, want := range before {
-		if !containsSecurityEntry(afterRevoke, want) {
-			t.Errorf("expected pre-existing entry %+v to survive Revoke, but it's gone; got %+v", want, afterRevoke)
+		got, ok := findSecurityEntryByItem(afterRevoke, want.Item)
+		if !ok {
+			t.Errorf("expected pre-existing entry for %s to survive Revoke, but it's gone; got %+v", want.Item, afterRevoke)
+			continue
 		}
+		assertSameEffectiveAccess(t, want, got, "Revoke")
 	}
 }
 
-// containsSecurityEntry uses reflect.DeepEqual rather than == because
-// client.ClmSecurityEntry's bool flags are *bool: entries round-tripped through this
-// test's HTTP calls (JSON marshal/unmarshal) get freshly allocated pointers even when
-// the underlying values are unchanged, so pointer-identity comparison would spuriously
-// fail even for identical entries.
-func containsSecurityEntry(entries []client.ClmSecurityEntry, want client.ClmSecurityEntry) bool {
+// findSecurityEntryByItem finds the entry for the same principal as item, comparing
+// via clmIDFromHref like Grant/Revoke's own existence checks (a bare ID and a Href
+// ending in that ID must still match).
+func findSecurityEntryByItem(entries []client.ClmSecurityEntry, item string) (client.ClmSecurityEntry, bool) {
 	for _, e := range entries {
-		if reflect.DeepEqual(e, want) {
-			return true
+		if clmIDFromHref(e.Item) == clmIDFromHref(item) {
+			return e, true
 		}
 	}
-	return false
+	return client.ClmSecurityEntry{}, false
+}
+
+// assertSameEffectiveAccess confirms want and got resolve to the same effective tier
+// via clmSlugForEntry, rather than requiring exact struct equality: preserved entries
+// get normalized from their read-side shape (flags, no AccessType) to the write-side
+// shape (AccessType) by clmNormalizeSecurityEntryForWrite, so a flags-based entry and
+// its AccessType-based equivalent are expected to differ byte-for-byte while
+// representing the same access.
+func assertSameEffectiveAccess(t *testing.T, want, got client.ClmSecurityEntry, when string) {
+	t.Helper()
+	wantSlug, wantOK := clmSlugForEntry(want)
+	gotSlug, gotOK := clmSlugForEntry(got)
+	if wantOK != gotOK || wantSlug != gotSlug {
+		t.Errorf("after %s: entry for %s changed effective access — before: %+v (slug=%q resolvable=%v), after: %+v (slug=%q resolvable=%v)",
+			when, want.Item, want, wantSlug, wantOK, got, gotSlug, gotOK)
+	}
 }
 
 // TestClmFolderBuilder_GrantAndRevoke_ToleratesBareIDOnRead is a regression test: the
