@@ -52,6 +52,7 @@ var clmFolderEntitlements = []clmFolderEntitlement{
 type clmFolderBuilder struct {
 	resourceType *v2.ResourceType
 	client       *client.Client
+	includeClm   bool
 }
 
 func (f *clmFolderBuilder) ResourceType(_ context.Context) *v2.ResourceType {
@@ -61,6 +62,12 @@ func (f *clmFolderBuilder) ResourceType(_ context.Context) *v2.ResourceType {
 // List discovers folders via Search — CLM's Folders object has no flat list-all
 // endpoint, unlike Groups/Members/PermissionSets.
 func (f *clmFolderBuilder) List(ctx context.Context, _ *v2.ResourceId, attr rs.SyncOpAttrs) ([]*v2.Resource, *rs.SyncOpResults, error) {
+	// See clmMemberBuilder.List's identical guard for why this must happen before any
+	// client call, not just before registration.
+	if !f.includeClm {
+		return nil, &rs.SyncOpResults{}, nil
+	}
+
 	var resources []*v2.Resource
 
 	bag, pageToken, err := parsePageToken(attr.PageToken.Token, &v2.ResourceId{ResourceType: clmFolderResourceType.Id})
@@ -323,10 +330,11 @@ func (f *clmFolderBuilder) Revoke(ctx context.Context, grantObj *v2.Grant) (anno
 	return patchAnnos, nil
 }
 
-func newClmFolderBuilder(c *client.Client) *clmFolderBuilder {
+func newClmFolderBuilder(c *client.Client, includeClm bool) *clmFolderBuilder {
 	return &clmFolderBuilder{
 		resourceType: clmFolderResourceType,
 		client:       c,
+		includeClm:   includeClm,
 	}
 }
 

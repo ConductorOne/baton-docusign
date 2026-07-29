@@ -153,7 +153,7 @@ func TestClmFolderBuilder_List_SkipsGracefullyWhenClmUnavailable(t *testing.T) {
 	// See clm_members_test.go's identical test for the full rationale.
 	s, _ := clmtest.NewServer(t)
 	badClient := s.NewClientWithToken("wrong-token")
-	b := newClmFolderBuilder(badClient)
+	b := newClmFolderBuilder(badClient, true)
 	ctx := context.Background()
 
 	resources, res, err := b.List(ctx, nil, rs.SyncOpAttrs{PageToken: pagination.Token{Size: 10}})
@@ -170,7 +170,7 @@ func TestClmFolderBuilder_List_SkipsGracefullyWhenClmUnavailable(t *testing.T) {
 
 func TestClmFolderBuilder_List(t *testing.T) {
 	_, c := clmtest.NewServer(t)
-	b := newClmFolderBuilder(c)
+	b := newClmFolderBuilder(c, true)
 	ctx := context.Background()
 
 	var all []*v2.Resource
@@ -194,7 +194,7 @@ func TestClmFolderBuilder_List(t *testing.T) {
 
 func TestClmFolderBuilder_StaticEntitlements(t *testing.T) {
 	_, c := clmtest.NewServer(t)
-	b := newClmFolderBuilder(c)
+	b := newClmFolderBuilder(c, true)
 	ctx := context.Background()
 
 	ents, _, err := b.StaticEntitlements(ctx, rs.SyncOpAttrs{})
@@ -223,7 +223,7 @@ func TestClmFolderBuilder_Grants_MapsAndSkipsCorrectly(t *testing.T) {
 	// known tier ("Custom" — Create=true only). Grants() must emit exactly 3 grants,
 	// skipping the unmatched one rather than approximating it.
 	srv, c := clmtest.NewServer(t)
-	b := newClmFolderBuilder(c)
+	b := newClmFolderBuilder(c, true)
 	ctx := context.Background()
 
 	folderResource, err := rs.NewResource("Contracts", clmFolderResourceType, "folder-contracts")
@@ -270,7 +270,7 @@ func TestClmFolderBuilder_Grants_MapsAndSkipsCorrectly(t *testing.T) {
 
 func TestClmFolderBuilder_GrantAndRevoke_Idempotent(t *testing.T) {
 	srv, c := clmtest.NewServer(t)
-	b := newClmFolderBuilder(c)
+	b := newClmFolderBuilder(c, true)
 	ctx := context.Background()
 
 	// folder-templates starts with no Security entries.
@@ -337,7 +337,7 @@ func TestClmFolderBuilder_GrantAndRevoke_Idempotent(t *testing.T) {
 // principal ("group-ops") and confirms the original 4 are untouched throughout.
 func TestClmFolderBuilder_GrantAndRevoke_PreservesOtherPrincipals(t *testing.T) {
 	srv, c := clmtest.NewServer(t)
-	b := newClmFolderBuilder(c)
+	b := newClmFolderBuilder(c, true)
 	ctx := context.Background()
 
 	before := srv.FolderSecurity("folder-contracts")
@@ -434,7 +434,7 @@ func assertSameEffectiveAccess(t *testing.T, want, got client.ClmSecurityEntry, 
 // Item directly (bypassing Grant) to simulate that read-side shape.
 func TestClmFolderBuilder_GrantAndRevoke_ToleratesBareIDOnRead(t *testing.T) {
 	srv, c := clmtest.NewServer(t)
-	b := newClmFolderBuilder(c)
+	b := newClmFolderBuilder(c, true)
 	ctx := context.Background()
 
 	// Seed folder-templates' Security entry with a bare group ID, not the full Href

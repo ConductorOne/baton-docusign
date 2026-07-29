@@ -13,7 +13,7 @@ import (
 
 func TestClmGroupBuilder_List(t *testing.T) {
 	_, c := clmtest.NewServer(t)
-	b := newClmGroupBuilder(c)
+	b := newClmGroupBuilder(c, true)
 	ctx := context.Background()
 
 	var all []*v2.Resource
@@ -40,7 +40,7 @@ func TestClmGroupBuilder_List_SkipsGracefullyWhenClmUnavailable(t *testing.T) {
 	// See clm_members_test.go's identical test for the full rationale.
 	s, _ := clmtest.NewServer(t)
 	badClient := s.NewClientWithToken("wrong-token")
-	b := newClmGroupBuilder(badClient)
+	b := newClmGroupBuilder(badClient, true)
 	ctx := context.Background()
 
 	resources, res, err := b.List(ctx, nil, rs.SyncOpAttrs{PageToken: pagination.Token{Size: 10}})
@@ -57,7 +57,7 @@ func TestClmGroupBuilder_List_SkipsGracefullyWhenClmUnavailable(t *testing.T) {
 
 func TestClmGroupBuilder_StaticEntitlements(t *testing.T) {
 	_, c := clmtest.NewServer(t)
-	b := newClmGroupBuilder(c)
+	b := newClmGroupBuilder(c, true)
 	ctx := context.Background()
 
 	ents, _, err := b.StaticEntitlements(ctx, rs.SyncOpAttrs{})
@@ -82,7 +82,7 @@ func TestClmGroupBuilder_Grants_Pagination(t *testing.T) {
 	// Regression test: clmGroupBuilder.Grants() must thread GetGroupMembers'
 	// pagination token, not just return the first page.
 	_, c := clmtest.NewServer(t)
-	b := newClmGroupBuilder(c)
+	b := newClmGroupBuilder(c, true)
 	ctx := context.Background()
 
 	groupResource, err := rs.NewGroupResource("Legal", clmGroupResourceType, "group-legal", nil)
@@ -121,7 +121,7 @@ func TestClmGroupBuilder_GrantAndRevoke_Idempotent(t *testing.T) {
 	// read-before-write used by both Grant and Revoke, so a cached response from an
 	// earlier call in this same sequence must not be served back stale.
 	srv, c := clmtest.NewServer(t)
-	b := newClmGroupBuilder(c)
+	b := newClmGroupBuilder(c, true)
 	ctx := context.Background()
 
 	// member-carol starts in group-finance only (see clmtest/seed.go).

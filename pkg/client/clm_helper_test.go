@@ -97,12 +97,42 @@ func TestGetClmNextToken_ExactBoundaryDoesNotLoop(t *testing.T) {
 // actually fires — a real regression here would otherwise page forever, not just
 // return a wrong answer, so it's worth a dedicated test even though the earlier
 // table test already covers the "does not terminate" branches this reaches through.
+//
+// The cap is derived from Offset/PageSize rather than a separately-persisted counter
+// (see getClmNextToken's doc), specifically so it still fires correctly even when
+// Offset alone is all that's known — e.g. a token that predates this cap, or one whose
+// unrecognized fields didn't survive a round trip. The second sub-test below exercises
+// exactly that: an incoming request already sitting at a high offset, with no history
+// of how it got there, still triggers the cap on its very next page.
 func TestGetClmNextToken_CapsRunawayPagination(t *testing.T) {
-	requested := clmRequestedPage{Offset: 0, PageSize: 100, Page: maxClmListPages - 1}
-	_, err := getClmNextToken(requested, 100, false, 0)
-	if err == nil {
-		t.Fatal("expected an error once maxClmListPages is reached, got nil")
-	}
+	t.Run("reaches the cap through normal advancement", func(t *testing.T) {
+		requested := clmRequestedPage{Offset: (maxClmListPages - 1) * 100, PageSize: 100}
+		_, err := getClmNextToken(requested, 100, false, 0)
+		if err == nil {
+			t.Fatal("expected an error once maxClmListPages is reached, got nil")
+		}
+	})
+
+	t.Run("does not fire just below the cap", func(t *testing.T) {
+		requested := clmRequestedPage{Offset: (maxClmListPages - 2) * 100, PageSize: 100}
+		got, err := getClmNextToken(requested, 100, false, 0)
+		if err != nil {
+			t.Fatalf("expected no error just below the cap, got: %v", err)
+		}
+		if got == "" {
+			t.Fatal("expected a continuation token just below the cap, got empty")
+		}
+	})
+
+	t.Run("fires from a resumed request with no persisted page history", func(t *testing.T) {
+		// Offset alone, with no Page field set (the zero value, as a pre-cap or
+		// round-tripped token would decode to), must still trigger the cap.
+		requested := clmRequestedPage{Offset: maxClmListPages * 100, PageSize: 100}
+		_, err := getClmNextToken(requested, 100, false, 0)
+		if err == nil {
+			t.Fatal("expected the cap to fire from Offset alone, got nil error")
+		}
+	})
 }
 
 // rawJSONFields builds a map[string]json.RawMessage from plain Go values, for

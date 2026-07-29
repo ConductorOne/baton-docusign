@@ -2,6 +2,7 @@ package clmtest
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"strings"
 
@@ -74,8 +75,34 @@ func (s *Server) handlePatchFolder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	bodyBytes, err := io.ReadAll(r.Body)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	// Reject an explicit empty-string AccessType before the normal decode: Go's
+	// encoding/json can't otherwise distinguish "AccessType key present but empty"
+	// from "key absent," and ClmSecurityEntry.AccessType's omitempty tag means a real
+	// client should never produce the former — decoding into a raw representation
+	// here is the only way this mock can actually catch a regression to sending it.
+	var rawBody struct {
+		Security []map[string]any `json:"Security"`
+	}
+	if json.Unmarshal(bodyBytes, &rawBody) == nil {
+		for _, entry := range rawBody.Security {
+			if v, present := entry["AccessType"]; present {
+				if str, ok := v.(string); ok && str == "" {
+					w.WriteHeader(http.StatusBadRequest)
+					_ = json.NewEncoder(w).Encode(client.ClmErrorResponse{})
+					return
+				}
+			}
+		}
+	}
+
 	var body client.ClmFolderSecurityPatch
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	if err := json.Unmarshal(bodyBytes, &body); err != nil {
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}

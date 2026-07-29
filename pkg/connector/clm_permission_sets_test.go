@@ -14,7 +14,7 @@ func TestClmPermissionSetBuilder_List_SkipsGracefullyWhenClmUnavailable(t *testi
 	// See clm_members_test.go's identical test for the full rationale.
 	s, _ := clmtest.NewServer(t)
 	badClient := s.NewClientWithToken("wrong-token")
-	b := newClmPermissionSetBuilder(badClient)
+	b := newClmPermissionSetBuilder(badClient, true)
 	ctx := context.Background()
 
 	resources, res, err := b.List(ctx, nil, rs.SyncOpAttrs{PageToken: pagination.Token{Size: 10}})
@@ -33,7 +33,7 @@ func TestClmPermissionSetBuilder_List_Pagination(t *testing.T) {
 	// Regression test: clmPermissionSetBuilder.List() previously didn't thread
 	// ListPermissionSets' pagination token and always returned only the first page.
 	_, c := clmtest.NewServer(t)
-	b := newClmPermissionSetBuilder(c)
+	b := newClmPermissionSetBuilder(c, true)
 	ctx := context.Background()
 
 	var all []*v2.Resource
@@ -57,7 +57,7 @@ func TestClmPermissionSetBuilder_List_Pagination(t *testing.T) {
 
 func TestClmPermissionSetBuilder_Entitlements(t *testing.T) {
 	_, c := clmtest.NewServer(t)
-	b := newClmPermissionSetBuilder(c)
+	b := newClmPermissionSetBuilder(c, true)
 	ctx := context.Background()
 
 	psResource, err := rs.NewRoleResource("Administrator", clmPermissionSetResourceType, "ps-admin", nil)
@@ -84,7 +84,7 @@ func TestClmPermissionSetBuilder_Grants_IsAlwaysEmpty(t *testing.T) {
 	// Confirmed unsupported by the API: no endpoint links a member/group to a
 	// permission set as an assignment, so Grants() must be a hard no-op, not an error.
 	_, c := clmtest.NewServer(t)
-	b := newClmPermissionSetBuilder(c)
+	b := newClmPermissionSetBuilder(c, true)
 	ctx := context.Background()
 
 	psResource, err := rs.NewRoleResource("Administrator", clmPermissionSetResourceType, "ps-admin", nil)

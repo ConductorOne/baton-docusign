@@ -72,23 +72,33 @@ func Configure(ctx context.Context, docusignCfg *cfg.Docusign) error {
 // sync did — C1 would then see zero resources of that type and could bucket every
 // previously-synced resource and grant of it as deleted. Registering unconditionally
 // and relying on &v2.OptInRequired{} (see resource_types.go) as the gate instead avoids
-// that. For accounts/tokens that genuinely can't use one of these features (no CLM
-// subscription, signing groups not enabled, or include-clm's OAuth scopes not
-// requested), each opt-in builder's List() tolerates the resulting permission error on
-// its first page and skips gracefully — see isOptInFeatureUnavailableError in
-// helper.go. includeClm itself is retained only to control the OAuth scopes requested
-// (see oauth.go) — it no longer gates registration here.
+// that.
+//
+// includeClm is still passed to each CLM builder, though — unlike signing_group, which
+// has no equivalent flag — because it gates whether their List() bodies do any work at
+// all, not just whether the type is registered. Without it, every CLM builder's List()
+// would run on every sync for every account, and the first thing each does is resolve
+// the CLM base URL via an unconfirmed discovery call (see clm_client.go's package
+// doc) — isOptInFeatureUnavailableError only tolerates a 401/403 from that, so any
+// other failure (404, 5xx, a response schema that matches none of the candidate
+// fields, a transport error) would fail the whole sync for every account that never
+// opted into CLM. Gating on includeClm before any client call avoids that entirely for
+// the default (opted-out) case; the isOptInFeatureUnavailableError tolerance still
+// matters for accounts that DID opt in but genuinely lack a CLM subscription.
+// includeClm also still controls which OAuth scopes get requested (see oauth.go).
+// signing_group has no such runtime gate — it relies solely on
+// isOptInFeatureUnavailableError's narrower tolerance, a known gap not addressed here.
 func (d *Connector) ResourceSyncers(_ context.Context) []connectorbuilder.ResourceSyncerV2 {
 	return []connectorbuilder.ResourceSyncerV2{
 		newUserBuilder(d.client),
 		newGroupBuilder(d.client),
 		newPermissionProfilesBuilder(d.client),
 		newSigningGroupBuilder(d.client),
-		newClmMemberBuilder(d.client),
-		newClmRoleBuilder(d.client),
-		newClmGroupBuilder(d.client),
-		newClmPermissionSetBuilder(d.client),
-		newClmFolderBuilder(d.client),
+		newClmMemberBuilder(d.client, d.includeClm),
+		newClmRoleBuilder(d.client, d.includeClm),
+		newClmGroupBuilder(d.client, d.includeClm),
+		newClmPermissionSetBuilder(d.client, d.includeClm),
+		newClmFolderBuilder(d.client, d.includeClm),
 	}
 }
 

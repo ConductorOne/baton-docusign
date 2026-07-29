@@ -23,6 +23,7 @@ const clmPermissionSetAssignedTag = "assigned"
 type clmPermissionSetBuilder struct {
 	resourceType *v2.ResourceType
 	client       *client.Client
+	includeClm   bool
 }
 
 func (b *clmPermissionSetBuilder) ResourceType(_ context.Context) *v2.ResourceType {
@@ -30,6 +31,12 @@ func (b *clmPermissionSetBuilder) ResourceType(_ context.Context) *v2.ResourceTy
 }
 
 func (b *clmPermissionSetBuilder) List(ctx context.Context, _ *v2.ResourceId, attr rs.SyncOpAttrs) ([]*v2.Resource, *rs.SyncOpResults, error) {
+	// See clmMemberBuilder.List's identical guard for why this must happen before any
+	// client call, not just before registration.
+	if !b.includeClm {
+		return nil, &rs.SyncOpResults{}, nil
+	}
+
 	var resources []*v2.Resource
 
 	bag, pageToken, err := parsePageToken(attr.PageToken.Token, &v2.ResourceId{ResourceType: clmPermissionSetResourceType.Id})
@@ -94,10 +101,11 @@ func (b *clmPermissionSetBuilder) Grants(_ context.Context, _ *v2.Resource, _ rs
 	return nil, nil, nil
 }
 
-func newClmPermissionSetBuilder(c *client.Client) *clmPermissionSetBuilder {
+func newClmPermissionSetBuilder(c *client.Client, includeClm bool) *clmPermissionSetBuilder {
 	return &clmPermissionSetBuilder{
 		resourceType: clmPermissionSetResourceType,
 		client:       c,
+		includeClm:   includeClm,
 	}
 }
 

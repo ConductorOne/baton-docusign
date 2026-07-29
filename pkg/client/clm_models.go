@@ -67,7 +67,11 @@ type ClmFolderPage struct {
 // granular boolean flags below; both represent the same underlying permission via two
 // different shapes.
 type ClmSecurityEntry struct {
-	AccessType string `json:"AccessType"`
+	// omitempty: an entry that couldn't be normalized to an AccessType on write (see
+	// clmNormalizeSecurityEntryForWrite in pkg/connector/clm_folders.go — the "Custom"
+	// flags-only case) must not serialize an explicit empty-string AccessType, which is
+	// a payload shape no read would ever produce and was never confirmed safe to write.
+	AccessType string `json:"AccessType,omitempty"`
 	// Item identifies the grantee — a Role, Group, or User depending on security
 	// type. The reference format (Href vs raw ID) is handled defensively in
 	// clmPrincipalIDForItem/clmItemForPrincipal (see pkg/connector/clm_folders.go).

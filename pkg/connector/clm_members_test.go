@@ -15,7 +15,7 @@ func TestClmMemberBuilder_List_Pagination(t *testing.T) {
 	// member-frank has 105 synthetic groups but is just one member row among 6 — this
 	// confirms ListMembers' own pagination (not GetMemberGroups') is threaded correctly.
 	_, c := clmtest.NewServer(t)
-	b := newClmMemberBuilder(c)
+	b := newClmMemberBuilder(c, true)
 	ctx := context.Background()
 
 	var all []*v2.Resource
@@ -37,6 +37,26 @@ func TestClmMemberBuilder_List_Pagination(t *testing.T) {
 	}
 }
 
+func TestClmMemberBuilder_List_SkipsWithoutAnyClientCallWhenIncludeClmUnset(t *testing.T) {
+	// Regression test for the "unconditional registration exposes every eSignature-only
+	// account to the unverified CLM base-URL discovery call" finding: includeClm=false
+	// must skip before ever touching the client, not just tolerate a specific error
+	// code from it. A nil client proves this — any client call here would panic.
+	b := newClmMemberBuilder(nil, false)
+	ctx := context.Background()
+
+	resources, res, err := b.List(ctx, nil, rs.SyncOpAttrs{PageToken: pagination.Token{Size: 10}})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(resources) != 0 {
+		t.Errorf("expected zero resources when includeClm is unset, got %d", len(resources))
+	}
+	if res == nil || res.NextPageToken != "" {
+		t.Errorf("expected an empty (non-paginating) result, got %+v", res)
+	}
+}
+
 func TestClmMemberBuilder_List_SkipsGracefullyWhenClmUnavailable(t *testing.T) {
 	// Regression test for the wipe-risk fix: clm_member (and the other CLM/signing_group
 	// builders) is now registered unconditionally in ResourceSyncers() rather than
@@ -45,7 +65,7 @@ func TestClmMemberBuilder_List_SkipsGracefullyWhenClmUnavailable(t *testing.T) {
 	// failing the whole sync — see isOptInFeatureUnavailableError in helper.go.
 	s, _ := clmtest.NewServer(t)
 	badClient := s.NewClientWithToken("wrong-token")
-	b := newClmMemberBuilder(badClient)
+	b := newClmMemberBuilder(badClient, true)
 	ctx := context.Background()
 
 	resources, res, err := b.List(ctx, nil, rs.SyncOpAttrs{PageToken: pagination.Token{Size: 10}})
@@ -65,7 +85,7 @@ func TestClmMemberBuilder_EntitlementsAndGrants_AreNoop(t *testing.T) {
 	// membership/role grants it's part of are emitted from the other side (clm_group,
 	// clm_folder) per this project's own "emit from whichever side is cheapest" pattern.
 	_, c := clmtest.NewServer(t)
-	b := newClmMemberBuilder(c)
+	b := newClmMemberBuilder(c, true)
 	ctx := context.Background()
 
 	memberResource, err := rs.NewResource("Alice", clmMemberResourceType, "member-alice")
