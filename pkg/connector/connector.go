@@ -20,9 +20,13 @@ import (
 
 type Connector struct {
 	client *client.Client
-	// includeClm is retained only to control which OAuth scopes are requested (see
-	// oauth.go) — it no longer gates resource-type registration (see ResourceSyncers).
+	// includeClm gates whether the CLM builders' List() bodies do any work (see
+	// ResourceSyncers) and which OAuth scopes are requested (see oauth.go); it does
+	// not gate resource-type registration.
 	includeClm bool
+	// includeSigningGroups gates whether signingGroupBuilder.List() does any work —
+	// same runtime-gate pattern as includeClm, not a registration gate either.
+	includeSigningGroups bool
 }
 
 // Configure handles the OAuth2 authorization flow to obtain a refresh token.
@@ -74,26 +78,25 @@ func Configure(ctx context.Context, docusignCfg *cfg.Docusign) error {
 // and relying on &v2.OptInRequired{} (see resource_types.go) as the gate instead avoids
 // that.
 //
-// includeClm is still passed to each CLM builder, though — unlike signing_group, which
-// has no equivalent flag — because it gates whether their List() bodies do any work at
-// all, not just whether the type is registered. Without it, every CLM builder's List()
-// would run on every sync for every account, and the first thing each does is resolve
-// the CLM base URL via an unconfirmed discovery call (see clm_client.go's package
-// doc) — isOptInFeatureUnavailableError only tolerates a 401/403 from that, so any
-// other failure (404, 5xx, a response schema that matches none of the candidate
-// fields, a transport error) would fail the whole sync for every account that never
-// opted into CLM. Gating on includeClm before any client call avoids that entirely for
-// the default (opted-out) case; the isOptInFeatureUnavailableError tolerance still
-// matters for accounts that DID opt in but genuinely lack a CLM subscription.
-// includeClm also still controls which OAuth scopes get requested (see oauth.go).
-// signing_group has no such runtime gate — it relies solely on
-// isOptInFeatureUnavailableError's narrower tolerance, a known gap not addressed here.
+// includeClm and includeSigningGroups are both passed to their respective builders as
+// runtime gates on whether List() does any work at all, not just whether the type is
+// registered. Without that, every builder's List() would run on every sync for every
+// account: for CLM, the first thing each of the 5 builders does is resolve the CLM
+// base URL via an unconfirmed discovery call (see clm_client.go's package doc); for
+// signing_group, GetSigningGroups hits an endpoint that may not be enabled on the
+// account. isOptInFeatureUnavailableError only tolerates a 401/403 from either — any
+// other failure (404, 5xx, a response schema matching none of the candidate fields, a
+// transport error) would fail the whole sync for every account that never opted in.
+// Gating on the flag before any client call avoids that entirely for the default
+// (opted-out) case; the isOptInFeatureUnavailableError tolerance still matters for
+// accounts that DID opt in but genuinely can't use the feature. includeClm also
+// controls which OAuth scopes get requested (see oauth.go).
 func (d *Connector) ResourceSyncers(_ context.Context) []connectorbuilder.ResourceSyncerV2 {
 	return []connectorbuilder.ResourceSyncerV2{
 		newUserBuilder(d.client),
 		newGroupBuilder(d.client),
 		newPermissionProfilesBuilder(d.client),
-		newSigningGroupBuilder(d.client),
+		newSigningGroupBuilder(d.client, d.includeSigningGroups),
 		newClmMemberBuilder(d.client, d.includeClm),
 		newClmRoleBuilder(d.client, d.includeClm),
 		newClmGroupBuilder(d.client, d.includeClm),
@@ -149,13 +152,10 @@ func (d *Connector) Validate(_ context.Context) (annotations.Annotations, error)
 	return nil, nil
 }
 
-// includeSigningGroups is accepted for call-site compatibility but no longer used —
-// signing_group is now registered unconditionally (see ResourceSyncers).
 func NewWithRefreshToken(
 	ctx context.Context, isDemo bool, clientId, clientSecret, redirectURI, refreshToken, accountId string,
 	includeSigningGroups, includeClm bool, clmBaseURLOverride, baseURLOverride string,
 ) (*Connector, error) {
-	_ = includeSigningGroups
 	l := ctxzap.Extract(ctx)
 
 	docusignClient, err := client.New(
@@ -168,33 +168,30 @@ func NewWithRefreshToken(
 	}
 
 	return &Connector{
-		client:     docusignClient,
-		includeClm: includeClm,
+		client:               docusignClient,
+		includeClm:           includeClm,
+		includeSigningGroups: includeSigningGroups,
 	}, nil
 }
 
-// includeSigningGroups is accepted for call-site compatibility but no longer used —
-// signing_group is now registered unconditionally (see ResourceSyncers).
 func NewWithClient(client *client.Client, includeSigningGroups, includeClm bool) (*Connector, error) {
-	_ = includeSigningGroups
 	return &Connector{
-		client:     client,
-		includeClm: includeClm,
+		client:               client,
+		includeClm:           includeClm,
+		includeSigningGroups: includeSigningGroups,
 	}, nil
 }
 
-// includeSigningGroups is accepted for call-site compatibility but no longer used —
-// signing_group is now registered unconditionally (see ResourceSyncers).
 func NewWithTokenSource(
 	ctx context.Context, isDemo bool, tokenSource oauth2.TokenSource, accountId string,
 	includeSigningGroups, includeClm bool, clmBaseURLOverride string,
 ) (*Connector, error) {
-	_ = includeSigningGroups
 	docusignClient := client.NewClient(ctx, isDemo, tokenSource, accountId, clmBaseURLOverride)
 
 	return &Connector{
-		client:     docusignClient,
-		includeClm: includeClm,
+		client:               docusignClient,
+		includeSigningGroups: includeSigningGroups,
+		includeClm:           includeClm,
 	}, nil
 }
 

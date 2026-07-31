@@ -26,7 +26,7 @@ The Docusign connector supports [automatic account provisioning and deprovisioni
 
 Every Docusign account must be assigned at least one permission profile. If all other permission profiles are revoked, the account will be automatically assigned the **DocuSign Viewer** profile, which cannot be revoked.
 
-*Signing groups sync automatically whenever the account has the signing groups feature enabled — no configuration needed. The **Include Signing Groups** setting is deprecated and kept only for backward compatibility with existing configurations; it has no effect.
+*By default, signing groups are not synced. Enable the **Include Signing Groups** setting to sync signing groups, if your account has the feature enabled.
 
 **DocuSign CLM (Contract Lifecycle Management) is a separate, separately-licensed DocuSign product. CLM resources sync automatically once the **Include CLM** setting is enabled (it requests the additional OAuth scopes CLM needs) and the account has a DocuSign CLM production subscription. CLM permission sets sync for visibility only; DocuSign's CLM API has no endpoint to assign or unassign one.
 
@@ -130,7 +130,7 @@ To complete this task, you'll need the **Connector Administrator** or **Super Ad
   **If you selected Custom App (Demo Environment):** Enter the **Client ID** and **Client Secret** from your DocuSign developer app.
   </Step>
   <Step>
-  Signing groups sync automatically whenever your account has the feature enabled — no setup needed here. (The **Sync signing groups** toggle shown in older setups is deprecated and has no effect.)
+  **Optional.** Click to **Sync signing groups**, if your account has the feature enabled and you'd like to sync them.
   </Step>
   <Step>
   **Optional.** If your DocuSign account has a CLM (Contract Lifecycle Management) production subscription and you want to review CLM folders, folder security, groups, and permission sets alongside eSignature, click to enable **Include CLM**.
@@ -238,8 +238,8 @@ stringData:
   # Optional: include if you want C1 to provision access using this connector
   BATON_PROVISIONING: true
 
-  # Signing groups sync automatically whenever the account has the feature enabled —
-  # no configuration needed. BATON_INCLUDE_SIGNING_GROUPS is deprecated and has no effect.
+  # Optional: include if you want C1 to sync signing groups
+  BATON_INCLUDE_SIGNING_GROUPS: true
 
   # Optional: include if you want C1 to sync DocuSign CLM (Contract Lifecycle
   # Management) folders, folder security, groups, and permission sets. Requests the

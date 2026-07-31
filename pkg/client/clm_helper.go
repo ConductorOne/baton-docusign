@@ -147,6 +147,28 @@ func decodeClmPageToken(token string) (*clmPageToken, error) {
 // every page is full advances both signals together; a pathological short-page sequence
 // is caught by requested.Requests; a resumed sequence with no counter history is caught
 // by the offset floor.
+//
+// Known, accepted limitations (per review discussion — consciously not fixed, so the
+// eventual "exceeded 1000 pages" support ticket has a pointer here):
+//
+//   - This cannot distinguish a genuinely non-advancing endpoint from a legitimately
+//     huge tenant. With DefaultPageSize=100, that's a hard ceiling of ~100k objects in
+//     any single CLM type (folders being the most plausible one to approach it) before
+//     an otherwise-healthy sync starts failing with an error that blames the API for
+//     ignoring offsets. A narrower check (comparing the response's own echoed Offset,
+//     or requested.Offset against Total, to detect non-advancement directly on page 2)
+//     would avoid this, but this codebase already reverted trusting response.Offset
+//     once in this same review cycle — none of Offset/Total/Next were ever confirmed
+//     populated reliably against a live CLM tenant, so a comparison like that risks a
+//     false positive on a healthy sync where the field is simply unpopulated, which is
+//     a worse failure mode than the rare true positive it would catch sooner.
+//   - The offset floor (nextOffset/PageSize) assumes PageSize is constant across the
+//     whole pagination sequence. That holds within one run, but a sync resumed with a
+//     different configured page size than the run that minted the carried-over token
+//     would divide a large Offset by a different PageSize than it was accumulated
+//     under, which can inflate or deflate the floor's estimate. requested.Requests is
+//     unaffected by this (it counts requests, not offset distance), so this only
+//     matters when the floor is the larger of the two estimates.
 const maxClmListPages = 1000
 
 func getClmNextToken(requested clmRequestedPage, itemCount int, hasNext bool, total int) (string, error) {

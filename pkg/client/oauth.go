@@ -18,17 +18,20 @@ var (
 	tokenURLProd = "https://account.docusign.com/oauth/token" //nolint:gosec // token URL does not contain sensitive credentials.
 	defaultScope = "signature"
 	// clmScopes are additional OAuth scopes required to call the DocuSign CLM API.
-	// Confirmed via the CLM Authentication Overview docs: CLM scopes combine with
-	// eSignature's "signature" scope on the same authorization request.
-	//
-	// UNVERIFIED against a real CLM tenant: DocuSign's own docs for the separate
-	// account-discovery endpoint (auth.springcm.com/api/v2/{accountId}/account,
-	// called from ensureClmInitialized) list the required scope as "springcm_read",
-	// not "spring_read" - possibly a docs typo, possibly a genuinely distinct scope
-	// given CLM/SpringCM's inconsistent legacy naming. If they're different, token
-	// discovery could 401/403 in production even though the rest of CLM works.
-	// Confirm against a real CLM sandbox/production token before relying on this.
-	clmScopes = []string{"spring_read", "spring_write"}
+	// "spring_read"/"spring_write" are confirmed via the CLM Authentication Overview
+	// docs (combine with eSignature's "signature" scope on the same authorization
+	// request); "springcm_read"/"springcm_write" are ALSO requested defensively
+	// because a separate DocuSign docs page (for the account-discovery endpoint
+	// ensureClmInitialized calls, auth.springcm.com/api/v2/{accountId}/account) lists
+	// the required scope as "springcm_read" instead — possibly a docs typo, possibly
+	// a genuinely distinct scope given CLM/SpringCM's inconsistent legacy naming, and
+	// unconfirmed against a real CLM tenant either way. Requesting all 4 covers both
+	// possibilities at once: an unrecognized/unauthorized scope name is expected to be
+	// dropped by DocuSign's OAuth consent rather than rejecting the whole
+	// authorization (standard OAuth2 behavior), so this is a low-risk hedge, not a
+	// confirmed-safe one — the same "check every plausible candidate" pattern
+	// ensureClmInitialized uses for the base-URL response field name.
+	clmScopes = []string{"spring_read", "spring_write", "springcm_read", "springcm_write"}
 )
 
 // buildScopes returns the OAuth scopes to request, adding CLM scopes when includeClm is set.

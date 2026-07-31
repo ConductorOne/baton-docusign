@@ -60,16 +60,13 @@ var (
 			"If you want to synchronize different accounts, create different connectors."),
 	)
 
-	// IncludeSigningGroupsField is deprecated and kept only so existing configs that
-	// set it don't break: signing groups now sync automatically whenever the account
-	// has the feature enabled, regardless of this value (see connector.go's
-	// ResourceSyncers). Retained in the schema rather than removed to avoid breaking
-	// existing customer configs; has no effect on what the connector syncs.
+	// IncludeSigningGroupsField gates whether signingGroupBuilder.List() does any
+	// work (see connector.go's ResourceSyncers) — the resource type itself is always
+	// registered, so this is a runtime gate, not a registration gate.
 	IncludeSigningGroupsField = field.BoolField(
 		"include-signing-groups",
-		field.WithDisplayName("Include Signing Groups (deprecated, no effect)"),
-		field.WithDescription("Deprecated: signing groups now sync automatically whenever the account has the feature enabled. "+
-			"This setting no longer has any effect and is kept only for backward compatibility with existing configurations."),
+		field.WithDisplayName("Include Signing Groups"),
+		field.WithDescription("Set to true to sync signing groups (for customers with the signing groups feature enabled on their account)."),
 		field.WithDefaultValue(false),
 	)
 

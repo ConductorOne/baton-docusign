@@ -11,6 +11,25 @@ import (
 	rs "github.com/conductorone/baton-sdk/pkg/types/resource"
 )
 
+func TestClmGroupBuilder_List_SkipsWithoutAnyClientCallWhenIncludeClmUnset(t *testing.T) {
+	// See clm_members_test.go's identical test for the full rationale. A nil client
+	// proves the guard fires before any client call — the 401-tolerance test below
+	// only proves tolerance of a specific error *after* the client is reached.
+	b := newClmGroupBuilder(nil, false)
+	ctx := context.Background()
+
+	resources, res, err := b.List(ctx, nil, rs.SyncOpAttrs{PageToken: pagination.Token{Size: 10}})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(resources) != 0 {
+		t.Errorf("expected zero resources when includeClm is unset, got %d", len(resources))
+	}
+	if res == nil || res.NextPageToken != "" {
+		t.Errorf("expected an empty (non-paginating) result, got %+v", res)
+	}
+}
+
 func TestClmGroupBuilder_List(t *testing.T) {
 	_, c := clmtest.NewServer(t)
 	b := newClmGroupBuilder(c, true)

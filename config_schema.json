@@ -123,8 +123,8 @@
     },
     {
       "name": "include-signing-groups",
-      "displayName": "Include Signing Groups (deprecated, no effect)",
-      "description": "Deprecated: signing groups now sync automatically whenever the account has the feature enabled. This setting no longer has any effect and is kept only for backward compatibility with existing configurations.",
+      "displayName": "Include Signing Groups",
+      "description": "Set to true to sync signing groups (for customers with the signing groups feature enabled on their account).",
       "boolField": {}
     },
     {
