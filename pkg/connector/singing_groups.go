@@ -212,8 +212,7 @@ func parseIntoSigningGroupResource(group *client.SigningGroup) (*v2.Resource, er
 		group.GroupName,
 		signingGroupResourceType,
 		group.SigningGroupId,
-		[]rs.GroupTraitOption{
-			rs.WithGroupProfile(profile),
-		},
+		[]rs.GroupTraitOption{},
+		rs.WithResourceProfile(profile),
 	)
 }
