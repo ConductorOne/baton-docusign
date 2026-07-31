@@ -28,7 +28,11 @@ Every Docusign account must be assigned at least one permission profile. If all 
 
 *By default, signing groups are not synced. Enable the **Include Signing Groups** setting to sync signing groups, if your account has the feature enabled.
 
-**DocuSign CLM (Contract Lifecycle Management) is a separate, separately-licensed DocuSign product. CLM resources sync automatically once the **Include CLM** setting is enabled (it requests the additional OAuth scopes CLM needs) and the account has a DocuSign CLM production subscription. CLM permission sets sync for visibility only; DocuSign's CLM API has no endpoint to assign or unassign one.
+**DocuSign CLM (Contract Lifecycle Management) is a separate, separately-licensed DocuSign product. CLM resources sync automatically if the account has a DocuSign CLM production subscription and the credential has been granted the OAuth scopes CLM needs; accounts without CLM simply sync no CLM resources. CLM permission sets sync for visibility only; DocuSign's CLM API has no endpoint to assign or unassign one.
+
+<Warning>
+If you use **OAuth Authentication** (the default, managed method), syncing CLM data requires ConductorOne's managed OAuth app to be granted the CLM API scopes on the platform side. If CLM data doesn't appear after setup, contact ConductorOne. This doesn't apply to **Custom App (Demo Environment)**, where the connector requests the CLM scopes directly using your own DocuSign app credentials.
+</Warning>
 
 ## Gather Docusign credentials
 
@@ -89,7 +93,7 @@ To complete this task, you'll need the **Connector Administrator** or **Super Ad
 
 - To sync access data and provision accounts (READ/WRITE): Create users plus read users, groups, and permissions.
 
-- If enabling **Include CLM**: your DocuSign account needs a CLM production subscription, and the credential used must have read (and, for folder security and CLM group provisioning, write) access to CLM folders, groups, and members.
+- To sync CLM data: your DocuSign account needs a CLM production subscription, and the credential used must have read (and, for folder security and CLM group provisioning, write) access to CLM folders, groups, and members.
 </Warning>
 
 <Tabs>
@@ -131,13 +135,6 @@ To complete this task, you'll need the **Connector Administrator** or **Super Ad
   </Step>
   <Step>
   **Optional.** Click to **Sync signing groups**, if your account has the feature enabled and you'd like to sync them.
-  </Step>
-  <Step>
-  **Optional.** If your DocuSign account has a CLM (Contract Lifecycle Management) production subscription and you want to review CLM folders, folder security, groups, and permission sets alongside eSignature, click to enable **Include CLM**.
-
-  <Warning>
-  If you selected **OAuth Authentication** (the default, managed method) above, enabling **Include CLM** also requires ConductorOne's managed OAuth app to be granted the CLM API scope on the platform side. If CLM data doesn't appear after completing setup, contact ConductorOne. This limitation doesn't apply to **Custom App (Demo Environment)**, where the connector requests the CLM scope directly using your own DocuSign app credentials.
-  </Warning>
   </Step>
   <Step>
   **Optional.** If your organization has multiple DocuSign accounts under the same tenant, enter the **API Account ID** (UUID) of the account you want to sync. Leave blank to use your default account. To sync multiple accounts, create a separate connector for each one.
@@ -240,12 +237,6 @@ stringData:
 
   # Optional: include if you want C1 to sync signing groups
   BATON_INCLUDE_SIGNING_GROUPS: true
-
-  # Optional: include if you want C1 to sync DocuSign CLM (Contract Lifecycle
-  # Management) folders, folder security, groups, and permission sets. Requests the
-  # additional OAuth scopes CLM needs; also requires a DocuSign CLM production
-  # subscription on the account.
-  BATON_INCLUDE_CLM: true
 
   # Optional: set to true to connect to the DocuSign demo/UAT environment (account-d.docusign.com)
   # When omitted or false, the connector targets DocuSign production (account.docusign.com)

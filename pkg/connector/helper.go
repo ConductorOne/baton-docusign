@@ -37,11 +37,11 @@ func parsePageToken(i string, resourceID *v2.ResourceId) (*pagination.Bag, strin
 // isOptInFeatureUnavailableError reports whether err indicates this account/token
 // simply can't use an optional DocuSign feature — no subscription (CLM), the feature
 // isn't enabled on the account (signing groups), or the OAuth token lacks the scopes it
-// needs (CLM's spring_read/spring_write, gated by include-clm — see oauth.go) — rather
-// than an unexpected failure.
+// needs (CLM's spring_read/spring_write — see oauth.go) — rather than an unexpected
+// failure.
 //
-// The opt-in resource types (the 5 CLM types, signing_group) are registered
-// unconditionally in ResourceSyncers() rather than gated by a config flag, specifically
+// The 5 CLM resource types are registered unconditionally in ResourceSyncers() and their
+// List() bodies always run, with no config flag gating them, specifically
 // so that disabling a flag never makes C1 see a resource type disappear and treat every
 // previously-synced resource/grant of that type as deleted. Tolerating this error on
 // the first page of List() (see call sites) is what makes unconditional registration

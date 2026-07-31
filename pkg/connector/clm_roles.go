@@ -13,7 +13,6 @@ import (
 type clmRoleBuilder struct {
 	resourceType *v2.ResourceType
 	client       *client.Client
-	includeClm   bool
 }
 
 func (b *clmRoleBuilder) ResourceType(_ context.Context) *v2.ResourceType {
@@ -21,15 +20,8 @@ func (b *clmRoleBuilder) ResourceType(_ context.Context) *v2.ResourceType {
 }
 
 // List returns the fixed set of CLM roles. No pagination needed — the set is small
-// and hardcoded, not fetched from the API. Still gated on include-clm even though this
-// makes no client call itself: without it, every eSignature-only account would sync 5
-// "CLM Role" resources that correspond to nothing in their account and can never be
-// granted (Grants is a no-op below) — cosmetic, but needless noise in the C1 UI.
+// and hardcoded, not fetched from the API.
 func (b *clmRoleBuilder) List(_ context.Context, _ *v2.ResourceId, _ rs.SyncOpAttrs) ([]*v2.Resource, *rs.SyncOpResults, error) {
-	if !b.includeClm {
-		return nil, &rs.SyncOpResults{}, nil
-	}
-
 	var resources []*v2.Resource
 	for _, role := range client.ClmRoles {
 		roleResource, err := rs.NewRoleResource(
@@ -58,10 +50,9 @@ func (b *clmRoleBuilder) Grants(_ context.Context, _ *v2.Resource, _ rs.SyncOpAt
 	return nil, nil, nil
 }
 
-func newClmRoleBuilder(c *client.Client, includeClm bool) *clmRoleBuilder {
+func newClmRoleBuilder(c *client.Client) *clmRoleBuilder {
 	return &clmRoleBuilder{
 		resourceType: clmRoleResourceType,
 		client:       c,
-		includeClm:   includeClm,
 	}
 }

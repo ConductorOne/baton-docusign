@@ -16,7 +16,6 @@ import (
 type clmMemberBuilder struct {
 	resourceType *v2.ResourceType
 	client       *client.Client
-	includeClm   bool
 }
 
 func (b *clmMemberBuilder) ResourceType(_ context.Context) *v2.ResourceType {
@@ -24,18 +23,6 @@ func (b *clmMemberBuilder) ResourceType(_ context.Context) *v2.ResourceType {
 }
 
 func (b *clmMemberBuilder) List(ctx context.Context, _ *v2.ResourceId, attr rs.SyncOpAttrs) ([]*v2.Resource, *rs.SyncOpResults, error) {
-	// include-clm gates whether this does any work at all — not just registration
-	// (clm_member is always registered, see connector.go's ResourceSyncers). Without
-	// it, skip before ever calling the client: ensureClmReady's CLM base-URL discovery
-	// call is itself unconfirmed against a live tenant, and the narrow
-	// isOptInFeatureUnavailableError tolerance below only covers a 401/403 from that
-	// call, not every other way it could fail (404, 5xx, an unrecognized response
-	// schema, a transport error) — those would otherwise fail this whole sync for
-	// every account that never opted into CLM.
-	if !b.includeClm {
-		return nil, &rs.SyncOpResults{}, nil
-	}
-
 	var resources []*v2.Resource
 
 	bag, pageToken, err := parsePageToken(attr.PageToken.Token, &v2.ResourceId{ResourceType: clmMemberResourceType.Id})
@@ -89,11 +76,10 @@ func (b *clmMemberBuilder) Grants(_ context.Context, _ *v2.Resource, _ rs.SyncOp
 	return nil, nil, nil
 }
 
-func newClmMemberBuilder(c *client.Client, includeClm bool) *clmMemberBuilder {
+func newClmMemberBuilder(c *client.Client) *clmMemberBuilder {
 	return &clmMemberBuilder{
 		resourceType: clmMemberResourceType,
 		client:       c,
-		includeClm:   includeClm,
 	}
 }
 

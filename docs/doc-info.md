@@ -10,7 +10,7 @@
    — Groups  
    — Signing Groups
    — Permissions Profile
-   — (Optional, `--include-clm`) CLM Members, Roles, Groups, Folders, Folder Security, and Permission Sets
+   — CLM Members, Roles, Groups, Folders, Folder Security, and Permission Sets (accounts with a DocuSign CLM subscription)
 
 2. **Can the connector provision any resources? If so, which ones?**
 
@@ -25,16 +25,16 @@
    - Group membership (add users to groups)
    - Signing group membership (add users to signing groups)
    - Permission profile assignment (assign permission profiles to users)
-   - CLM group membership (optional, `--include-clm`)
-   - CLM folder security (optional, `--include-clm`)
+   - CLM group membership (requires a CLM subscription)
+   - CLM folder security (requires a CLM subscription)
 
    **Revoke (Remove Access):**
 
    - Group membership (remove users from groups)
    - Signing group membership (remove users from signing groups)
    - Permission profile revoke (assigns "DocuSign Viewer" - the default read-only profile)
-   - CLM group membership (optional, `--include-clm`)
-   - CLM folder security (optional, `--include-clm`; sets the entry's access to "No Access")
+   - CLM group membership (requires a CLM subscription)
+   - CLM folder security (requires a CLM subscription; sets the entry's access to "No Access")
 
    **Important Note about Permission Profiles:**
 
@@ -45,7 +45,7 @@
 
    **Important Note about CLM:**
 
-   - CLM (Contract Lifecycle Management) is a separate, separately-licensed DocuSign product with its own API. It is off by default; enable it with `--include-clm`.
+   - CLM (Contract Lifecycle Management) is a separate, separately-licensed DocuSign product with its own API. There is no config flag to enable it: CLM resources sync whenever the account and credential can reach the CLM API, and accounts without CLM sync no CLM resources.
    - Requires a DocuSign CLM production subscription.
    - When using ConductorOne's managed OAuth app (the default cloud-hosted authentication method), CLM also requires that managed app to be granted the CLM API scope on ConductorOne's platform side — this is outside the connector's own configuration. Self-hosted or demo-environment setups using a customer-supplied DocuSign app do not have this extra requirement.
    - CLM permission sets sync for visibility only; DocuSign's CLM API has no endpoint to assign or unassign one, so they cannot be granted or revoked.
@@ -170,12 +170,12 @@ DocuSign Signing Groups are an optional feature. To sync signing groups:
 DocuSign CLM is a separate, separately-licensed DocuSign product. To sync CLM data:
 
 1. Confirm your DocuSign account has a CLM production subscription.
-2. Add the `--include-clm` flag (or set `BATON_INCLUDE_CLM=true`) when running the connector.
-3. The connector will additionally sync CLM Members, Roles, Groups, Folders, Folder Security, and Permission Sets.
+2. Confirm the credential has been granted the CLM OAuth scopes (`spring_read`/`spring_write`).
+3. The connector then syncs CLM Members, Roles, Groups, Folders, Folder Security, and Permission Sets automatically — there is no flag to set.
 
 If running against ConductorOne's managed OAuth app (the default cloud-hosted
-production authentication method), the managed app also needs the CLM API scope
-granted on ConductorOne's platform side before this flag has any effect — this is not
+production authentication method), the managed app also needs the CLM API scopes
+granted on ConductorOne's platform side before any CLM data syncs — this is not
 something the connector's own configuration controls.
 
 ### Environment Selection

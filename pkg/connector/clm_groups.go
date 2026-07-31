@@ -32,7 +32,6 @@ const entitlementClmGroupMember = "member"
 type clmGroupBuilder struct {
 	resourceType *v2.ResourceType
 	client       *client.Client
-	includeClm   bool
 }
 
 func (g *clmGroupBuilder) ResourceType(_ context.Context) *v2.ResourceType {
@@ -40,12 +39,6 @@ func (g *clmGroupBuilder) ResourceType(_ context.Context) *v2.ResourceType {
 }
 
 func (g *clmGroupBuilder) List(ctx context.Context, _ *v2.ResourceId, attr rs.SyncOpAttrs) ([]*v2.Resource, *rs.SyncOpResults, error) {
-	// See clmMemberBuilder.List's identical guard for why this must happen before any
-	// client call, not just before registration.
-	if !g.includeClm {
-		return nil, &rs.SyncOpResults{}, nil
-	}
-
 	var resources []*v2.Resource
 
 	bag, pageToken, err := parsePageToken(attr.PageToken.Token, &v2.ResourceId{ResourceType: clmGroupResourceType.Id})
@@ -220,11 +213,10 @@ func (g *clmGroupBuilder) Revoke(ctx context.Context, grantObj *v2.Grant) (annot
 	return putAnnos, nil
 }
 
-func newClmGroupBuilder(c *client.Client, includeClm bool) *clmGroupBuilder {
+func newClmGroupBuilder(c *client.Client) *clmGroupBuilder {
 	return &clmGroupBuilder{
 		resourceType: clmGroupResourceType,
 		client:       c,
-		includeClm:   includeClm,
 	}
 }
 

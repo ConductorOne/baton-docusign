@@ -2,7 +2,7 @@
 
 # `baton-docusign` [![Go Reference](https://pkg.go.dev/badge/github.com/conductorone/baton-docusign.svg)](https://pkg.go.dev/github.com/conductorone/baton-docusign) ![ci](https://github.com/conductorone/baton-docusign/actions/workflows/ci.yaml/badge.svg) ![verify](https://github.com/conductorone/baton-docusign/actions/workflows/verify.yaml/badge.svg)
 
-`baton-docusign` is a connector for DocuSign built using the [Baton SDK](https://github.com/conductorone/baton-sdk). It communicates with the DocuSign eSignature REST API v2.1 to sync users, groups, signing groups, and permission profiles. It can optionally also sync DocuSign CLM (Contract Lifecycle Management) folders, folder security, groups, and permission sets — see [CLM Support](#clm-support-optional) below.
+`baton-docusign` is a connector for DocuSign built using the [Baton SDK](https://github.com/conductorone/baton-sdk). It communicates with the DocuSign eSignature REST API v2.1 to sync users, groups, signing groups, and permission profiles. It also syncs DocuSign CLM (Contract Lifecycle Management) folders, folder security, groups, and permission sets for accounts with a CLM subscription — see [CLM Support](#clm-support) below.
 
 Check out [Baton](https://github.com/conductorone/baton) to learn more about the project in general.
 
@@ -14,7 +14,7 @@ Check out [Baton](https://github.com/conductorone/baton) to learn more about the
 - Groups
 - Signing Groups
 - Permission Profiles
-- CLM Members, Roles, Groups, Folders, Folder Security, and Permission Sets (optional — see [CLM Support](#clm-support-optional))
+- CLM Members, Roles, Groups, Folders, Folder Security, and Permission Sets (requires a DocuSign CLM subscription — see [CLM Support](#clm-support))
 
 ### Provisioning Support
 
@@ -22,8 +22,8 @@ Check out [Baton](https://github.com/conductorone/baton) to learn more about the
 - Group membership (grant/revoke)
 - Signing group membership (grant/revoke)
 - Permission profiles (grant only - users must always have a profile assigned)
-- CLM group membership (grant/revoke, optional)
-- CLM folder security (grant/revoke, optional)
+- CLM group membership (grant/revoke, requires a CLM subscription)
+- CLM folder security (grant/revoke, requires a CLM subscription)
 - CLM permission sets are synced for visibility only — the CLM API has no assignment endpoint, so they cannot be granted or revoked
 
 ## Connector Credentials
@@ -97,30 +97,29 @@ http://example.com/callback?code=AUTHORIZATION_CODE
 
 Copy the `code` parameter value and paste it when prompted. Save the refresh token for future use.
 
-## CLM Support (optional)
+## CLM Support
 
 DocuSign CLM (Contract Lifecycle Management) is a separate DocuSign product from
-eSignature, with its own API and a separate production subscription. Set the
-`--include-clm` flag (or `BATON_INCLUDE_CLM=true`) to sync CLM members, roles, groups,
-folders, folder security, and permission sets alongside the standard eSignature
-resources.
+eSignature, with its own API and a separate production subscription. CLM members, roles,
+groups, folders, folder security, and permission sets sync alongside the standard
+eSignature resources, with no config flag to enable — accounts that don't have CLM simply
+sync no CLM resources.
 
 Requirements:
 
 - Your DocuSign account must have a CLM production subscription.
 - **Demo environment or self-hosted with your own DocuSign app**: no extra setup — the
   connector requests the additional CLM OAuth scopes (`spring_read`/`spring_write`)
-  automatically when `--include-clm` is set.
+  automatically.
 - **Cloud-hosted production (ConductorOne's managed OAuth app)**: the managed app must
-  also be granted the CLM API scope on ConductorOne's platform side before this flag
-  will have any effect. Contact ConductorOne if enabling `--include-clm` doesn't sync
-  any CLM data in this mode.
+  also be granted the CLM API scopes on ConductorOne's platform side before any CLM data
+  will sync. Contact ConductorOne if no CLM data appears in this mode.
 
-The 5 CLM resource types are always registered and visible to C1, regardless of
-`--include-clm` — this avoids a C1 sync engine treating CLM resources as deleted if the
-flag is later turned off (see [CHANGE_TYPES.md](CHANGE_TYPES.md) if you're touching
-this). Without the CLM OAuth scopes (or without a CLM subscription on the account),
-each CLM resource type's sync is skipped gracefully rather than erroring the whole sync.
+The 5 CLM resource types are always registered and visible to C1 — this avoids a C1 sync
+engine treating CLM resources as deleted if they stop appearing (see
+[CHANGE_TYPES.md](CHANGE_TYPES.md) if you're touching this). Without the CLM OAuth scopes
+(or without a CLM subscription on the account), each CLM resource type's sync is skipped
+gracefully rather than erroring the whole sync.
 
 CLM permission sets sync for visibility only — DocuSign's CLM API has no endpoint to
 assign or unassign a permission set, so they cannot be granted or revoked through this
@@ -133,14 +132,13 @@ documentation. That endpoint's exact response schema was not available at
 implementation time, so the connector checks a short list of likely field names
 (`ApiBaseUrl`, `api_base_url`, `ObjectApiUrl`, and similar) and fails with the actual
 field names it received if none match — that error message is the first thing to check
-if `--include-clm` can't resolve the CLM base URL against a real account.
+if the connector can't resolve the CLM base URL against a real account.
 
 Folder discovery (`SearchFolders`) sends an empty search body, on the assumption that
 no criteria means "match all folders." This has not been confirmed against a live CLM
 account — if it instead means "no criteria, no results," no folders (and therefore no
-folder-security grants) would sync while the connector reports success. If
-`--include-clm` syncs zero `clm_folder` resources against a real account, this is the
-first thing to check.
+folder-security grants) would sync while the connector reports success. If a real CLM
+account syncs zero `clm_folder` resources, this is the first thing to check.
 
 # Getting Started
 
@@ -234,7 +232,7 @@ baton resources
 - Groups
 - Signing Groups
 - Permission Profiles
-- CLM Members, Roles, Groups, Folders, Folder Security, and Permission Sets (optional, requires `--include-clm` and a DocuSign CLM subscription)
+- CLM Members, Roles, Groups, Folders, Folder Security, and Permission Sets (requires a DocuSign CLM subscription)
 
 # Contributing, Support and Issues
 
@@ -263,6 +261,7 @@ Available Commands:
 
 Flags:
       --account-id string                                API account ID (UUID format) of the DocuSign account to be used for synchronization. Leave blank to use your default account. Warning: changing this ID between different synchronizations may result in data loss. If you want to synchronize different accounts, create different connectors. ($BATON_ACCOUNT_ID)
+      --auth-method string                               ($BATON_AUTH_METHOD)
       --client-id string                                 The client ID used to authenticate with ConductorOne ($BATON_CLIENT_ID)
       --client-secret string                             The client secret used to authenticate with ConductorOne ($BATON_CLIENT_SECRET)
       --configure                                        Get the refresh token the first time you run the connector. ($BATON_CONFIGURE)
@@ -272,23 +271,34 @@ Flags:
       --external-resource-c1z string                     The path to the c1z file to sync external baton resources with ($BATON_EXTERNAL_RESOURCE_C1Z)
       --external-resource-entitlement-id-filter string   The entitlement that external users, groups must have access to sync external baton resources ($BATON_EXTERNAL_RESOURCE_ENTITLEMENT_ID_FILTER)
   -f, --file string                                      The path to the c1z file to sync with ($BATON_FILE) (default "sync.c1z")
+      --health-check                                     Enable the HTTP health check endpoint ($BATON_HEALTH_CHECK)
+      --health-check-port int                            Port for the HTTP health check endpoint ($BATON_HEALTH_CHECK_PORT) (default 8081)
   -h, --help                                             help for baton-docusign
-      --include-clm                                      Set to true to request the additional OAuth scopes DocuSign CLM needs (spring_read/spring_write). CLM folders, folder security, groups, and permission sets sync automatically once those scopes are granted and the account has a DocuSign CLM production subscription — without this set, CLM sync is skipped rather than erroring. When using the default OAuth Authentication method, this also requires ConductorOne's managed OAuth app to be granted the CLM API scope — contact ConductorOne if enabling this has no effect. ($BATON_INCLUDE_CLM)
+      --http-timeout-seconds int                         HTTP client timeout in seconds (max 1800) ($BATON_HTTP_TIMEOUT_SECONDS) (default 300)
       --include-signing-groups                           Set to true to sync signing groups (for customers with the signing groups feature enabled on their account). ($BATON_INCLUDE_SIGNING_GROUPS)
+      --keep-previous-sync-c1z                           Keep the previously synced c1z on disk to enable ETag replay across service-mode syncs (requires a connector that supports ETag replay; costs one c1z of local disk) ($BATON_KEEP_PREVIOUS_SYNC_C1Z)
       --log-format string                                The output format for logs: json, console ($BATON_LOG_FORMAT) (default "json")
       --log-level string                                 The log level: debug, info, warn, error ($BATON_LOG_LEVEL) (default "info")
+      --log-level-debug-expires-at string                The timestamp indicating when debug-level logging should expire ($BATON_LOG_LEVEL_DEBUG_EXPIRES_AT)
+      --log-path strings                                 The file path to write logs to ($BATON_LOG_PATH)
       --oauth2-token string                              OAuth 2.0 Authentication for DocuSign ($BATON_OAUTH2_TOKEN)
       --otel-collector-endpoint string                   The endpoint of the OpenTelemetry collector to send observability data to (used for both tracing and logging if specific endpoints are not provided) ($BATON_OTEL_COLLECTOR_ENDPOINT)
+      --parallel-sync                                    Deprecated: use --workers instead. ($BATON_PARALLEL_SYNC)
   -p, --provisioning                                     This must be set in order for provisioning actions to be enabled ($BATON_PROVISIONING)
       --redirect-uri string                              Redirect URI registered in your DocuSign integration ($BATON_REDIRECT_URI)
       --refresh-token string                             OAuth 2.0 Refresh Token for DocuSign ($BATON_REFRESH_TOKEN)
+      --skip-entitlements-and-grants                     This must be set to skip syncing of entitlements and grants ($BATON_SKIP_ENTITLEMENTS_AND_GRANTS)
       --skip-full-sync                                   This must be set to skip a full sync ($BATON_SKIP_FULL_SYNC)
+      --storage-engine string                            The storage engine to use when opening the sync c1z file: sqlite or pebble. Leave unset to use the baton-sdk default. ($BATON_STORAGE_ENGINE)
+      --sync-resource-types strings                      The resource type IDs to sync ($BATON_SYNC_RESOURCE_TYPES)
+      --sync-resources strings                           The resource IDs to sync ($BATON_SYNC_RESOURCES)
+      --task-concurrency int                             The number of Baton tasks to run concurrently in service mode. Tasks may include sync, grant, revoke, and more. Minimum value is 1, maximum value is 100. ($BATON_TASK_CONCURRENCY) (default 3)
       --ticketing                                        This must be set to enable ticketing support ($BATON_TICKETING)
   -v, --version                                          version for baton-docusign
+      --workers int                                      The number of sync workers to use. -1 for auto-detect, 0 for sequential, >0 for parallel ($BATON_WORKERS)
 
 Use "baton-docusign [command] --help" for more information about a command.
 ```
 
-> Additional flags inherited from the Baton SDK (health checks, worker/concurrency
-> tuning, storage engine selection, etc.) are omitted above for brevity — run
-> `baton-docusign --help` for the full list.
+> Generated from `baton-docusign --help` against baton-sdk v0.17.0. Hidden flags
+> (`--base-url`, `--clm-base-url`) are testing-only and intentionally absent.

@@ -70,17 +70,6 @@ var (
 		field.WithDefaultValue(false),
 	)
 
-	IncludeClmField = field.BoolField(
-		"include-clm",
-		field.WithDisplayName("Include CLM"),
-		field.WithDescription("Set to true to request the additional OAuth scopes DocuSign CLM needs (spring_read/spring_write). "+
-			"CLM folders, folder security, groups, and permission sets sync automatically once those scopes are granted and the account "+
-			"has a DocuSign CLM production subscription — without this set, CLM sync is skipped rather than erroring. "+
-			"When using the default OAuth Authentication method, this also requires ConductorOne's managed OAuth app to be granted the CLM API scope — "+
-			"contact ConductorOne if enabling this has no effect."),
-		field.WithDefaultValue(false),
-	)
-
 	// ClmBaseURLField is ops-only and for testing: it lets ConductorOne's own
 	// deployment/support tooling point the connector at a local CLM mock (see
 	// cmd/test-server) when the authenticated account has no CLM subscription of its
@@ -91,7 +80,7 @@ var (
 		field.WithDisplayName("CLM Base URL Override"),
 		field.WithDescription("Testing only: overrides the DocuSign CLM API base URL instead of resolving it from the OAuth token's api_base_url. "+
 			"Use to point CLM API calls at a local mock server (see cmd/test-server) when the connected account has no CLM subscription."),
-		field.WithExportTarget(field.ExportTargetOps),
+		field.WithExportTarget(field.ExportTargetCLIOnly),
 		field.WithHidden(true),
 	)
 
@@ -108,7 +97,7 @@ var (
 		field.WithDisplayName("Base URL Override"),
 		field.WithDescription("Testing only: overrides the DocuSign eSignature API base URL and skips the real OAuth token refresh "+
 			"(refresh-token is used verbatim as a static bearer token instead). Use with clm-base-url to point the whole connector at a local mock server (see cmd/test-server)."),
-		field.WithExportTarget(field.ExportTargetOps),
+		field.WithExportTarget(field.ExportTargetCLIOnly),
 		field.WithHidden(true),
 	)
 
@@ -130,7 +119,6 @@ var (
 		ConfigureField,
 		AccountIdField,
 		IncludeSigningGroupsField,
-		IncludeClmField,
 		ClmBaseURLField,
 		BaseURLField,
 		Oauth2TokenField,
@@ -153,14 +141,14 @@ var (
 			DisplayName: "OAuth Authentication",
 			HelpText:    "Authenticate using ConductorOne's managed DocuSign OAuth app (production environment).",
 			Default:     true,
-			Fields:      []field.SchemaField{Oauth2TokenField, AccountIdField, IncludeSigningGroupsField, IncludeClmField},
+			Fields:      []field.SchemaField{Oauth2TokenField, AccountIdField, IncludeSigningGroupsField},
 		},
 		{
 			Name:        "demo",
 			DisplayName: "Custom App (Demo Environment)",
 			HelpText: "Authenticate using your own DocuSign developer app against DocuSign's demo environment. " +
 				"Provide your app's Client ID and Client Secret, then click the OAuth button to authorize.",
-			Fields: []field.SchemaField{ClientIdField, ClientSecretField, Oauth2TokenField, AccountIdField, IncludeSigningGroupsField, IncludeClmField},
+			Fields: []field.SchemaField{ClientIdField, ClientSecretField, Oauth2TokenField, AccountIdField, IncludeSigningGroupsField},
 		},
 	}
 )

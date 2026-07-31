@@ -57,30 +57,11 @@ func TestClmAccessTypeForSlug_RoundTrips(t *testing.T) {
 
 // --- Integration tests against the clmtest mock server ---
 
-func TestClmFolderBuilder_List_SkipsWithoutAnyClientCallWhenIncludeClmUnset(t *testing.T) {
-	// See clm_members_test.go's identical test for the full rationale. A nil client
-	// proves the guard fires before any client call — the 401-tolerance test below
-	// only proves tolerance of a specific error *after* the client is reached.
-	b := newClmFolderBuilder(nil, false)
-	ctx := context.Background()
-
-	resources, res, err := b.List(ctx, nil, rs.SyncOpAttrs{PageToken: pagination.Token{Size: 10}})
-	if err != nil {
-		t.Fatalf("List: %v", err)
-	}
-	if len(resources) != 0 {
-		t.Errorf("expected zero resources when includeClm is unset, got %d", len(resources))
-	}
-	if res == nil || res.NextPageToken != "" {
-		t.Errorf("expected an empty (non-paginating) result, got %+v", res)
-	}
-}
-
 func TestClmFolderBuilder_List_SkipsGracefullyWhenClmUnavailable(t *testing.T) {
 	// See clm_members_test.go's identical test for the full rationale.
 	s, _ := clmtest.NewServer(t)
 	badClient := s.NewClientWithToken("wrong-token")
-	b := newClmFolderBuilder(badClient, true)
+	b := newClmFolderBuilder(badClient)
 	ctx := context.Background()
 
 	resources, res, err := b.List(ctx, nil, rs.SyncOpAttrs{PageToken: pagination.Token{Size: 10}})
@@ -97,7 +78,7 @@ func TestClmFolderBuilder_List_SkipsGracefullyWhenClmUnavailable(t *testing.T) {
 
 func TestClmFolderBuilder_List(t *testing.T) {
 	_, c := clmtest.NewServer(t)
-	b := newClmFolderBuilder(c, true)
+	b := newClmFolderBuilder(c)
 	ctx := context.Background()
 
 	var all []*v2.Resource
@@ -121,7 +102,7 @@ func TestClmFolderBuilder_List(t *testing.T) {
 
 func TestClmFolderBuilder_StaticEntitlements(t *testing.T) {
 	_, c := clmtest.NewServer(t)
-	b := newClmFolderBuilder(c, true)
+	b := newClmFolderBuilder(c)
 	ctx := context.Background()
 
 	ents, _, err := b.StaticEntitlements(ctx, rs.SyncOpAttrs{})
@@ -150,7 +131,7 @@ func TestClmFolderBuilder_Grants_MapsAndSkipsCorrectly(t *testing.T) {
 	// known-tier role, and a known-tier member. Grants() must emit exactly 3 grants,
 	// skipping the Custom entry rather than approximating it.
 	_, c := clmtest.NewServer(t)
-	b := newClmFolderBuilder(c, true)
+	b := newClmFolderBuilder(c)
 	ctx := context.Background()
 
 	folderResource, err := rs.NewResource("Contracts", clmFolderResourceType, "folder-contracts")
@@ -196,7 +177,7 @@ func TestClmFolderBuilder_Grants_MapsAndSkipsCorrectly(t *testing.T) {
 
 func TestClmFolderBuilder_GrantAndRevoke_Idempotent(t *testing.T) {
 	srv, c := clmtest.NewServer(t)
-	b := newClmFolderBuilder(c, true)
+	b := newClmFolderBuilder(c)
 	ctx := context.Background()
 
 	// folder-templates starts with no Security entries.
@@ -264,7 +245,7 @@ func TestClmFolderBuilder_GrantAndRevoke_Idempotent(t *testing.T) {
 // untouched throughout.
 func TestClmFolderBuilder_GrantAndRevoke_PreservesOtherPrincipals(t *testing.T) {
 	srv, c := clmtest.NewServer(t)
-	b := newClmFolderBuilder(c, true)
+	b := newClmFolderBuilder(c)
 	ctx := context.Background()
 
 	before := srv.FolderSecurity("folder-contracts")
@@ -366,7 +347,7 @@ func assertUsersPreserved(t *testing.T, before, after []client.ClmUserSecurityEn
 // that read-side shape.
 func TestClmFolderBuilder_GrantAndRevoke_ToleratesBareIDOnRead(t *testing.T) {
 	srv, c := clmtest.NewServer(t)
-	b := newClmFolderBuilder(c, true)
+	b := newClmFolderBuilder(c)
 	ctx := context.Background()
 
 	// Seed folder-templates' group Security entry with a bare group ID, not the full

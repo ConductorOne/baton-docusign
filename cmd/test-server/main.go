@@ -7,7 +7,7 @@
 // Usage:
 //
 //	go run ./cmd/test-server
-//	baton-docusign --refresh-token=... --include-clm=true \
+//	baton-docusign --refresh-token=... \
 //	    --clm-base-url=http://localhost:8765 -f sync.c1z
 package main
 

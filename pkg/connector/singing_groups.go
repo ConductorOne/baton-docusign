@@ -17,7 +17,6 @@ import (
 type signingGroupBuilder struct {
 	resourceType         *v2.ResourceType
 	client               *client.Client
-	includeSigningGroups bool
 }
 
 func (g *signingGroupBuilder) ResourceType(_ context.Context) *v2.ResourceType {
@@ -25,16 +24,6 @@ func (g *signingGroupBuilder) ResourceType(_ context.Context) *v2.ResourceType {
 }
 
 func (g *signingGroupBuilder) List(ctx context.Context, _ *v2.ResourceId, attr rs.SyncOpAttrs) ([]*v2.Resource, *rs.SyncOpResults, error) {
-	// See clmMemberBuilder.List's identical guard (helper.go) for why this must
-	// happen before any client call, not just before registration: without it, every
-	// account's sync would hit GetSigningGroups even when the feature isn't enabled,
-	// and isOptInFeatureUnavailableError below only tolerates a 401/403 from that —
-	// any other failure would fail the whole sync for every account that never opted
-	// in.
-	if !g.includeSigningGroups {
-		return nil, &rs.SyncOpResults{}, nil
-	}
-
 	var (
 		sGroups []*v2.Resource
 		anno    annotations.Annotations
@@ -208,11 +197,10 @@ func buildSigningGroupRequest(userDetails *client.UserDetail) client.SigningGrou
 }
 
 // newSigningGroupBuilder constructs a signingGroupBuilder with the provided API client.
-func newSigningGroupBuilder(client *client.Client, includeSigningGroups bool) *signingGroupBuilder {
+func newSigningGroupBuilder(client *client.Client) *signingGroupBuilder {
 	return &signingGroupBuilder{
 		resourceType:         signingGroupResourceType,
 		client:               client,
-		includeSigningGroups: includeSigningGroups,
 	}
 }
 

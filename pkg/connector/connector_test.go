@@ -7,45 +7,77 @@ import (
 	"github.com/conductorone/baton-docusign/pkg/client/clmtest"
 )
 
-// TestResourceSyncers_AlwaysRegistersEveryBuilder is a regression test for the
-// wipe-risk fix: ResourceSyncers() must register every resource type unconditionally
-// — including the opt-in ones (signing_group and the 5 CLM types) — regardless of
-// includeClm, so that toggling a config flag never makes a resource type disappear
-// from ListResourceTypes() and get treated as fully deleted by C1. Gating now happens
-// via &v2.OptInRequired{} (resource_types.go) and each opt-in builder's List()
-// tolerating an unavailable-feature error (helper.go), not by omitting the builder.
-func TestResourceSyncers_AlwaysRegistersEveryBuilder(t *testing.T) {
+// alwaysRegisteredTypeIDs are the resource types ResourceSyncers registers on every
+// sync, with no config flag gating them. The CLM types belong here deliberately:
+// registering conditionally would make ListResourceTypes() advertise fewer types than a
+// prior sync did, and C1 can then bucket every previously-synced resource and grant of a
+// vanished type as deleted. Gating happens via &v2.OptInRequired{} (resource_types.go)
+// and each opt-in builder's List() tolerating an unavailable-feature error (helper.go),
+// not by omitting the builder.
+var alwaysRegisteredTypeIDs = []string{
+	"user",
+	"group",
+	"permission_profile",
+	"clm_member",
+	"clm_role",
+	"clm_group",
+	"clm_permission_set",
+	"clm_folder",
+}
+
+func registeredTypeIDs(ctx context.Context, d *Connector) map[string]bool {
+	syncers := d.ResourceSyncers(ctx)
+	got := make(map[string]bool, len(syncers))
+	for _, s := range syncers {
+		got[s.ResourceType(ctx).Id] = true
+	}
+	return got
+}
+
+func TestResourceSyncers_AlwaysRegistersCoreAndClmBuilders(t *testing.T) {
 	_, c := clmtest.NewServer(t)
 	ctx := context.Background()
 
-	wantTypeIDs := map[string]bool{
-		"user":               true,
-		"group":              true,
-		"permission_profile": true,
-		"signing_group":      true,
-		"clm_member":         true,
-		"clm_role":           true,
-		"clm_group":          true,
-		"clm_permission_set": true,
-		"clm_folder":         true,
-	}
+	for _, includeSigningGroups := range []bool{false, true} {
+		d := &Connector{client: c, includeSigningGroups: includeSigningGroups}
+		got := registeredTypeIDs(ctx, d)
 
-	for _, includeClm := range []bool{false, true} {
-		d := &Connector{client: c, includeClm: includeClm}
-		syncers := d.ResourceSyncers(ctx)
-
-		if len(syncers) != len(wantTypeIDs) {
-			t.Fatalf("includeClm=%v: expected %d registered syncers, got %d", includeClm, len(wantTypeIDs), len(syncers))
-		}
-
-		got := make(map[string]bool, len(syncers))
-		for _, s := range syncers {
-			got[s.ResourceType(ctx).Id] = true
-		}
-		for id := range wantTypeIDs {
+		for _, id := range alwaysRegisteredTypeIDs {
 			if !got[id] {
-				t.Errorf("includeClm=%v: expected resource type %q to be registered, but it wasn't", includeClm, id)
+				t.Errorf("includeSigningGroups=%v: expected resource type %q to always be registered, but it wasn't",
+					includeSigningGroups, id)
 			}
+		}
+	}
+}
+
+// TestResourceSyncers_SigningGroupRegistrationFollowsFlag pins the CURRENT behaviour,
+// not the desired one: unlike the CLM types, signing_group is registered only when
+// includeSigningGroups is set, so ListResourceTypes() varies between syncs and carries
+// the same delete-bucketing risk the CLM types were changed to avoid. If signing_group
+// registration is made unconditional (moving the gate to an &v2.OptInRequired{}
+// annotation, as the CLM types do), fold "signing_group" into alwaysRegisteredTypeIDs
+// and delete this test.
+func TestResourceSyncers_SigningGroupRegistrationFollowsFlag(t *testing.T) {
+	_, c := clmtest.NewServer(t)
+	ctx := context.Background()
+
+	for _, includeSigningGroups := range []bool{false, true} {
+		d := &Connector{client: c, includeSigningGroups: includeSigningGroups}
+		got := registeredTypeIDs(ctx, d)
+
+		if got["signing_group"] != includeSigningGroups {
+			t.Errorf("includeSigningGroups=%v: expected signing_group registered=%v, got %v",
+				includeSigningGroups, includeSigningGroups, got["signing_group"])
+		}
+
+		wantLen := len(alwaysRegisteredTypeIDs)
+		if includeSigningGroups {
+			wantLen++
+		}
+		if len(got) != wantLen {
+			t.Errorf("includeSigningGroups=%v: expected %d registered syncers, got %d (%v)",
+				includeSigningGroups, wantLen, len(got), got)
 		}
 	}
 }

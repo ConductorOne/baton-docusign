@@ -128,26 +128,6 @@
       "boolField": {}
     },
     {
-      "name": "include-clm",
-      "displayName": "Include CLM",
-      "description": "Set to true to request the additional OAuth scopes DocuSign CLM needs (spring_read/spring_write). CLM folders, folder security, groups, and permission sets sync automatically once those scopes are granted and the account has a DocuSign CLM production subscription — without this set, CLM sync is skipped rather than erroring. When using the default OAuth Authentication method, this also requires ConductorOne's managed OAuth app to be granted the CLM API scope — contact ConductorOne if enabling this has no effect.",
-      "boolField": {}
-    },
-    {
-      "name": "clm-base-url",
-      "displayName": "CLM Base URL Override",
-      "description": "Testing only: overrides the DocuSign CLM API base URL instead of resolving it from the OAuth token's api_base_url. Use to point CLM API calls at a local mock server (see cmd/test-server) when the connected account has no CLM subscription.",
-      "isOps": true,
-      "stringField": {}
-    },
-    {
-      "name": "base-url",
-      "displayName": "Base URL Override",
-      "description": "Testing only: overrides the DocuSign eSignature API base URL and skips the real OAuth token refresh (refresh-token is used verbatim as a static bearer token instead). Use with clm-base-url to point the whole connector at a local mock server (see cmd/test-server).",
-      "isOps": true,
-      "stringField": {}
-    },
-    {
       "name": "oauth2-token",
       "displayName": "OAuth Authentication",
       "description": "OAuth 2.0 Authentication for DocuSign",
@@ -167,8 +147,7 @@
       "fields": [
         "oauth2-token",
         "account-id",
-        "include-signing-groups",
-        "include-clm"
+        "include-signing-groups"
       ],
       "default": true
     },
@@ -181,8 +160,7 @@
         "docusign-client-secret",
         "oauth2-token",
         "account-id",
-        "include-signing-groups",
-        "include-clm"
+        "include-signing-groups"
       ]
     }
   ]

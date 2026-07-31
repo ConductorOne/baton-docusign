@@ -10,30 +10,11 @@ import (
 	rs "github.com/conductorone/baton-sdk/pkg/types/resource"
 )
 
-func TestClmPermissionSetBuilder_List_SkipsWithoutAnyClientCallWhenIncludeClmUnset(t *testing.T) {
-	// See clm_members_test.go's identical test for the full rationale. A nil client
-	// proves the guard fires before any client call — the 401-tolerance test below
-	// only proves tolerance of a specific error *after* the client is reached.
-	b := newClmPermissionSetBuilder(nil, false)
-	ctx := context.Background()
-
-	resources, res, err := b.List(ctx, nil, rs.SyncOpAttrs{PageToken: pagination.Token{Size: 10}})
-	if err != nil {
-		t.Fatalf("List: %v", err)
-	}
-	if len(resources) != 0 {
-		t.Errorf("expected zero resources when includeClm is unset, got %d", len(resources))
-	}
-	if res == nil || res.NextPageToken != "" {
-		t.Errorf("expected an empty (non-paginating) result, got %+v", res)
-	}
-}
-
 func TestClmPermissionSetBuilder_List_SkipsGracefullyWhenClmUnavailable(t *testing.T) {
 	// See clm_members_test.go's identical test for the full rationale.
 	s, _ := clmtest.NewServer(t)
 	badClient := s.NewClientWithToken("wrong-token")
-	b := newClmPermissionSetBuilder(badClient, true)
+	b := newClmPermissionSetBuilder(badClient)
 	ctx := context.Background()
 
 	resources, res, err := b.List(ctx, nil, rs.SyncOpAttrs{PageToken: pagination.Token{Size: 10}})
@@ -52,7 +33,7 @@ func TestClmPermissionSetBuilder_List_Pagination(t *testing.T) {
 	// Regression test: clmPermissionSetBuilder.List() previously didn't thread
 	// ListPermissionSets' pagination token and always returned only the first page.
 	_, c := clmtest.NewServer(t)
-	b := newClmPermissionSetBuilder(c, true)
+	b := newClmPermissionSetBuilder(c)
 	ctx := context.Background()
 
 	var all []*v2.Resource
@@ -76,7 +57,7 @@ func TestClmPermissionSetBuilder_List_Pagination(t *testing.T) {
 
 func TestClmPermissionSetBuilder_Entitlements(t *testing.T) {
 	_, c := clmtest.NewServer(t)
-	b := newClmPermissionSetBuilder(c, true)
+	b := newClmPermissionSetBuilder(c)
 	ctx := context.Background()
 
 	psResource, err := rs.NewRoleResource("Administrator", clmPermissionSetResourceType, "ps-admin", nil)
@@ -103,7 +84,7 @@ func TestClmPermissionSetBuilder_Grants_IsAlwaysEmpty(t *testing.T) {
 	// Confirmed unsupported by the API: no endpoint links a member/group to a
 	// permission set as an assignment, so Grants() must be a hard no-op, not an error.
 	_, c := clmtest.NewServer(t)
-	b := newClmPermissionSetBuilder(c, true)
+	b := newClmPermissionSetBuilder(c)
 	ctx := context.Background()
 
 	psResource, err := rs.NewRoleResource("Administrator", clmPermissionSetResourceType, "ps-admin", nil)
