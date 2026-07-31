@@ -17,9 +17,11 @@ func TestIsOptInFeatureUnavailableError(t *testing.T) {
 		{"nil error", nil, false},
 		{"permission denied", status.Error(codes.PermissionDenied, "no CLM subscription"), true},
 		{"unauthenticated", status.Error(codes.Unauthenticated, "insufficient scope"), true},
+		{"not found (e.g. account never provisioned in SpringCM)", status.Error(codes.NotFound, "no such account"), true},
+		{"failed precondition (e.g. discovery response missing a recognized base-URL field)", status.Error(codes.FailedPrecondition, "no recognized field"), true},
 		{"unavailable (rate limit/5xx)", status.Error(codes.Unavailable, "rate limited"), false},
-		{"not found", status.Error(codes.NotFound, "no such folder"), false},
 		{"internal", status.Error(codes.Internal, "boom"), false},
+		{"unknown (bare unwrapped error)", status.Error(codes.Unknown, "boom"), false},
 		{"plain non-gRPC error", errors.New("some transport error"), false},
 	}
 	for _, tt := range tests {

@@ -15,8 +15,8 @@ import (
 )
 
 type signingGroupBuilder struct {
-	resourceType         *v2.ResourceType
-	client               *client.Client
+	resourceType *v2.ResourceType
+	client       *client.Client
 }
 
 func (g *signingGroupBuilder) ResourceType(_ context.Context) *v2.ResourceType {
@@ -199,8 +199,8 @@ func buildSigningGroupRequest(userDetails *client.UserDetail) client.SigningGrou
 // newSigningGroupBuilder constructs a signingGroupBuilder with the provided API client.
 func newSigningGroupBuilder(client *client.Client) *signingGroupBuilder {
 	return &signingGroupBuilder{
-		resourceType:         signingGroupResourceType,
-		client:               client,
+		resourceType: signingGroupResourceType,
+		client:       client,
 	}
 }
 

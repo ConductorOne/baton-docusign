@@ -175,6 +175,37 @@ func TestClmFolderBuilder_Grants_MapsAndSkipsCorrectly(t *testing.T) {
 	}
 }
 
+// TestClmFolderBuilder_Grants_SkipsUnknownRoleName is a regression test: clm_role is a
+// fixed, hardcoded 5-role list (clmRoleBuilder.List, not fetched from the API), so a
+// Roles security entry referencing a role name outside that set has no synced
+// principal to grant against. The old clmPrincipalIDForItem validated role names
+// before emitting a grant; the rewritten Grants() must do the same rather than
+// blindly trusting entry.Item.
+func TestClmFolderBuilder_Grants_SkipsUnknownRoleName(t *testing.T) {
+	_, c := clmtest.NewServer(t)
+	ctx := context.Background()
+
+	if _, err := c.PatchFolderSecurity(ctx, "folder-templates", client.ClmFolderSecurityWrite{
+		Roles: []client.ClmRoleSecurityEntry{{AccessType: client.ClmAccessTypeView, Item: "NotARealRole"}},
+	}); err != nil {
+		t.Fatalf("PatchFolderSecurity (seed): %v", err)
+	}
+
+	b := newClmFolderBuilder(c)
+	folderResource, err := rs.NewResource("Templates", clmFolderResourceType, "folder-templates")
+	if err != nil {
+		t.Fatalf("NewResource: %v", err)
+	}
+
+	grants, _, err := b.Grants(ctx, folderResource, rs.SyncOpAttrs{})
+	if err != nil {
+		t.Fatalf("Grants: %v", err)
+	}
+	if len(grants) != 0 {
+		t.Errorf("expected the unknown role entry to be skipped, got %d grants: %+v", len(grants), grants)
+	}
+}
+
 func TestClmFolderBuilder_GrantAndRevoke_Idempotent(t *testing.T) {
 	srv, c := clmtest.NewServer(t)
 	b := newClmFolderBuilder(c)

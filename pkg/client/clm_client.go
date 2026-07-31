@@ -73,6 +73,8 @@ import (
 	"github.com/conductorone/baton-sdk/pkg/annotations"
 	"github.com/conductorone/baton-sdk/pkg/uhttp"
 	"github.com/grpc-ecosystem/go-grpc-middleware/logging/zap/ctxzap"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // clmAccountDiscoveryHostProd and clmAccountDiscoveryHostDemo are CLM's legacy
@@ -173,7 +175,13 @@ func (c *Client) ensureClmInitialized(ctx context.Context) error {
 		for k := range raw {
 			keys = append(keys, k)
 		}
-		return fmt.Errorf("baton-docusign: CLM account discovery response at %s did not contain a recognized "+
+		// codes.FailedPrecondition (not a bare error, which status.Code() would read as
+		// codes.Unknown): a non-CLM account's discovery response plausibly has a
+		// different shape entirely (e.g. a bare account object with none of the
+		// candidate fields), so isOptInFeatureUnavailableError needs a recognizable
+		// code to tolerate this specific failure the same way it tolerates 401/403 —
+		// see that function's doc in helper.go.
+		return status.Errorf(codes.FailedPrecondition, "baton-docusign: CLM account discovery response at %s did not contain a recognized "+
 			"base-URL field (checked %v); response contained these fields instead: %v", discoveryURL, clmBaseURLCandidateFields, keys)
 	}
 

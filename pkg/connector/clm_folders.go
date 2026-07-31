@@ -156,6 +156,12 @@ func (f *clmFolderBuilder) Grants(ctx context.Context, folderResource *v2.Resour
 		if !ok {
 			continue
 		}
+		if !clmIsKnownRole(entry.Item) {
+			// clm_role is a fixed, hardcoded 5-role list (clmRoleBuilder.List) — a role
+			// name outside that set has no synced principal to grant against. Skip
+			// rather than emit a grant to a dangling/unsynced resource.
+			continue
+		}
 		principalID := &v2.ResourceId{ResourceType: clmRoleResourceType.Id, Resource: entry.Item}
 		grants = append(grants, grant.NewGrant(folderResource, slug, principalID))
 	}
@@ -380,6 +386,20 @@ func clmSlugForAccessType(accessType string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// clmIsKnownRole reports whether name is one of the 5 fixed CLM account-level roles
+// (client.ClmRoles) — the same fixed set clmRoleBuilder.List syncs as clm_role
+// resources. Used to reject a folder-security Roles entry referencing a role outside
+// that set before emitting a grant to it, since such a grant would target a principal
+// this connector never syncs.
+func clmIsKnownRole(name string) bool {
+	for _, role := range client.ClmRoles {
+		if role.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 // clmMemberHrefFromResource reads back the Href stashed in a CLM member resource's
