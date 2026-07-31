@@ -100,3 +100,16 @@ func TestClmPermissionSetBuilder_Grants_IsAlwaysEmpty(t *testing.T) {
 		t.Errorf("expected Grants to return (nil, nil, nil), got (%v, %v, nil)", grants, res)
 	}
 }
+
+// TestClmPermissionSetAssignedTagSlugRegressionPin guards against an
+// accidental rename of the "assigned" entitlement slug: since
+// clm_permission_set is a new, unreleased resource type, add this before the
+// first release locks the slug in. Asserts against the literal string, not
+// clmPermissionSetAssignedTag itself, so renaming the constant's value
+// actually fails this test.
+func TestClmPermissionSetAssignedTagSlugRegressionPin(t *testing.T) {
+	const wantSlug = "assigned"
+	if clmPermissionSetAssignedTag != wantSlug {
+		t.Fatalf("clmPermissionSetAssignedTag slug changed: got %q, want %q", clmPermissionSetAssignedTag, wantSlug)
+	}
+}

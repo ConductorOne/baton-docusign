@@ -354,6 +354,15 @@ func (c *Client) getFolder(ctx context.Context, folderID string, noCache bool, e
 // undocumented, and sending the complete list is correct under either interpretation,
 // whereas sending only the one changed entry would wipe every other principal's access
 // to the folder if the real API replaces rather than merges.
+//
+// UNVERIFIED against a real CLM tenant, and higher-risk than the merge-semantics
+// question above: DocuSign's docs also reference a separate `ChangeSecurityTasks`
+// resource (POST /v2/{accountId}/changesecuritytasks), which may be the documented
+// way to mutate folder security asynchronously rather than a direct PATCH on the
+// folder itself. If that's the actual contract, this method - the entire mechanism
+// Grant/Revoke on clm_folder relies on - could silently no-op or 404 against a real
+// tenant. Verify which endpoint the real API expects before treating folder
+// provisioning here as more than best-effort.
 func (c *Client) PatchFolderSecurity(ctx context.Context, folderID string, entries []ClmSecurityEntry) (annotations.Annotations, error) {
 	if err := c.ensureClmReady(ctx); err != nil {
 		return nil, err

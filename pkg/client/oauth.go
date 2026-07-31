@@ -20,6 +20,14 @@ var (
 	// clmScopes are additional OAuth scopes required to call the DocuSign CLM API.
 	// Confirmed via the CLM Authentication Overview docs: CLM scopes combine with
 	// eSignature's "signature" scope on the same authorization request.
+	//
+	// UNVERIFIED against a real CLM tenant: DocuSign's own docs for the separate
+	// account-discovery endpoint (auth.springcm.com/api/v2/{accountId}/account,
+	// called from ensureClmInitialized) list the required scope as "springcm_read",
+	// not "spring_read" - possibly a docs typo, possibly a genuinely distinct scope
+	// given CLM/SpringCM's inconsistent legacy naming. If they're different, token
+	// discovery could 401/403 in production even though the rest of CLM works.
+	// Confirm against a real CLM sandbox/production token before relying on this.
 	clmScopes = []string{"spring_read", "spring_write"}
 )
 

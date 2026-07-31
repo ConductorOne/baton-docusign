@@ -175,3 +175,15 @@ func TestClmGroupBuilder_GrantAndRevoke_Idempotent(t *testing.T) {
 		t.Error("repeat Revoke should report GrantAlreadyRevoked")
 	}
 }
+
+// TestClmGroupMemberSlugRegressionPin guards against an accidental rename of
+// the "member" entitlement slug: since clm_group is a new, unreleased
+// resource type, add this before the first release locks the slug in.
+// Asserts against the literal string, not entitlementClmGroupMember itself,
+// so renaming the constant's value actually fails this test.
+func TestClmGroupMemberSlugRegressionPin(t *testing.T) {
+	const wantSlug = "member"
+	if entitlementClmGroupMember != wantSlug {
+		t.Fatalf("entitlementClmGroupMember slug changed: got %q, want %q", entitlementClmGroupMember, wantSlug)
+	}
+}
