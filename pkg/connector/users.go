@@ -245,8 +245,6 @@ func parseIntoUserResource(user *client.User) (*v2.Resource, error) {
 	}
 
 	userTraits := []rs.UserTraitOption{
-		rs.WithStatus(userStatus),
-		rs.WithUserProfile(profile),
 		rs.WithUserLogin(user.UserName),
 		rs.WithEmail(user.Email, true),
 	}
@@ -256,5 +254,7 @@ func parseIntoUserResource(user *client.User) (*v2.Resource, error) {
 		userResourceType,
 		user.UserId,
 		userTraits,
+		rs.WithResourceProfile(profile),
+		rs.WithResourceStatus(v2.Status_ResourceStatus(userStatus), ""),
 	)
 }
