@@ -153,18 +153,27 @@ func (s *Server) MemberGroups(memberID string) []string {
 	return out
 }
 
-// FolderSecurity returns the current (test-visible) Security entries for a folder, for
-// assertions after a Grant/Revoke round trip.
-func (s *Server) FolderSecurity(folderID string) []client.ClmSecurityEntry {
+// FolderSecurity returns a defensive copy of the current (test-visible) Security state
+// for a folder — three separate collections by principal type, see
+// client.ClmFolderSecurity's doc — for assertions after a Grant/Revoke round trip.
+func (s *Server) FolderSecurity(folderID string) client.ClmFolderSecurity {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	f, ok := s.folders[folderID]
 	if !ok {
-		return nil
+		return client.ClmFolderSecurity{}
 	}
-	out := make([]client.ClmSecurityEntry, len(f.Security))
-	copy(out, f.Security)
-	return out
+	groups := make([]client.ClmGroupSecurityEntry, len(f.Security.Groups.Items))
+	copy(groups, f.Security.Groups.Items)
+	roles := make([]client.ClmRoleSecurityEntry, len(f.Security.Roles.Items))
+	copy(roles, f.Security.Roles.Items)
+	users := make([]client.ClmUserSecurityEntry, len(f.Security.Users.Items))
+	copy(users, f.Security.Users.Items)
+	return client.ClmFolderSecurity{
+		Groups: client.ClmGroupSecurityPage{Items: groups},
+		Roles:  client.ClmRoleSecurityPage{Items: roles},
+		Users:  client.ClmUserSecurityPage{Items: users},
+	}
 }
 
 // newState allocates the maps/slices a fresh Server needs — shared by NewServer and

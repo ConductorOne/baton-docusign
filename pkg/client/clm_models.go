@@ -45,7 +45,7 @@ type ClmFolder struct {
 	PropagateAttributeGroupsToChildren bool          `json:"PropagateAttributeGroupsToChildren,omitempty"`
 	// Security is only populated when the request used ?expand=Security, and only
 	// reflects explicit assignments — not permissions inherited from a parent folder.
-	Security []ClmSecurityEntry `json:"Security,omitempty"`
+	Security ClmFolderSecurity `json:"Security,omitempty"`
 }
 
 // ClmFolderRef is a lightweight folder reference (e.g. ParentFolder).
@@ -60,37 +60,93 @@ type ClmFolderPage struct {
 	Items []ClmFolder `json:"Items"`
 }
 
-// ClmSecurityEntry represents one folder-security grant: an access level for a single
-// Role, Group, or User. AccessType is the named enum used for WRITES
-// (InheritFromParentFolder/NoAccess/View/ViewCreate/ViewEdit/ViewEditDelete/
-// ViewEditDeleteSetAccess/Custom) — reads via ?expand=Security instead return the
-// granular boolean flags below; both represent the same underlying permission via two
-// different shapes.
-type ClmSecurityEntry struct {
-	// omitempty: an entry that couldn't be normalized to an AccessType on write (see
-	// clmNormalizeSecurityEntryForWrite in pkg/connector/clm_folders.go — the "Custom"
-	// flags-only case) must not serialize an explicit empty-string AccessType, which is
-	// a payload shape no read would ever produce and was never confirmed safe to write.
-	AccessType string `json:"AccessType,omitempty"`
-	// Item identifies the grantee — a Role, Group, or User depending on security
-	// type. The reference format (Href vs raw ID) is handled defensively in
-	// clmPrincipalIDForItem/clmItemForPrincipal (see pkg/connector/clm_folders.go).
-	Item string `json:"Item"`
+// ClmFolderSecurity is a folder's explicit (non-inherited) security assignments,
+// confirmed via DocuSign's own Folders.Patch reference page (pasted live, since the
+// site is JS-rendered and unreachable by automated tools) to be three SEPARATE
+// collections by principal type — not a single flat list, and not the
+// AccessType-vs-boolean-flags dual representation an earlier version of this file
+// assumed. No boolean flags (Create/Move/Read/See/SetAccess/Write) appear anywhere in
+// the confirmed schema; every entry across all three collections carries AccessType
+// directly.
+type ClmFolderSecurity struct {
+	Groups ClmGroupSecurityPage `json:"Groups,omitempty"`
+	Roles  ClmRoleSecurityPage  `json:"Roles,omitempty"`
+	Users  ClmUserSecurityPage  `json:"Users,omitempty"`
+}
 
-	// The following flags are only present on reads (not sent on writes) and only
-	// when the read-side representation is used instead of AccessType.
-	Create    *bool `json:"Create,omitempty"`
-	Move      *bool `json:"Move,omitempty"`
-	Read      *bool `json:"Read,omitempty"`
-	See       *bool `json:"See,omitempty"`
-	SetAccess *bool `json:"SetAccess,omitempty"`
-	Write     *bool `json:"Write,omitempty"`
+// ClmGroupSecurityEntry is one folder-security grant to a CLM Group. Confirmed shape:
+// the full Group object's own fields (Href/Name/GroupType/Description/CreatedDate/
+// UpdatedDate) plus AccessType — not a lean {Item, AccessType} pair.
+type ClmGroupSecurityEntry struct {
+	AccessType  string `json:"AccessType,omitempty"`
+	Href        string `json:"Href"`
+	Name        string `json:"Name,omitempty"`
+	GroupType   string `json:"GroupType,omitempty"`
+	Description string `json:"Description,omitempty"`
+	CreatedDate string `json:"CreatedDate,omitempty"`
+	UpdatedDate string `json:"UpdatedDate,omitempty"`
+}
+
+// ClmGroupSecurityPage is the paginated collection of ClmGroupSecurityEntry returned
+// on a read (GetFolder?expand=Security). See ClmFolderSecurityWrite for the plain-list
+// shape used on writes.
+type ClmGroupSecurityPage struct {
+	ClmPage
+	Items []ClmGroupSecurityEntry `json:"Items"`
+}
+
+// ClmRoleSecurityEntry is one folder-security grant to a CLM Role. Confirmed shape:
+// flat {AccessType, Item} — unlike Groups/Users, a Role has no separate object to
+// expand, so Item is just the role name string.
+type ClmRoleSecurityEntry struct {
+	AccessType string `json:"AccessType,omitempty"`
+	Item       string `json:"Item"`
+}
+
+// ClmRoleSecurityPage is the paginated collection of ClmRoleSecurityEntry.
+type ClmRoleSecurityPage struct {
+	ClmPage
+	Items []ClmRoleSecurityEntry `json:"Items"`
+}
+
+// ClmUserSecurityEntry is one folder-security grant to a CLM Member (user). Confirmed
+// shape: the Member object's own identifying fields plus AccessType — mirrors
+// ClmGroupSecurityEntry's pattern. Deliberately doesn't repeat every field ClmMember
+// has (Address*, City, Company, etc.): Grant/Revoke only ever need Href to identify
+// the member, never reconstruct a full member profile from a security entry.
+type ClmUserSecurityEntry struct {
+	AccessType string `json:"AccessType,omitempty"`
+	Href       string `json:"Href"`
+	Email      string `json:"Email,omitempty"`
+	UserName   string `json:"UserName,omitempty"`
+	FirstName  string `json:"FirstName,omitempty"`
+	LastName   string `json:"LastName,omitempty"`
+	Role       string `json:"Role,omitempty"`
+}
+
+// ClmUserSecurityPage is the paginated collection of ClmUserSecurityEntry.
+type ClmUserSecurityPage struct {
+	ClmPage
+	Items []ClmUserSecurityEntry `json:"Items"`
 }
 
 // ClmFolderSecurityPatch is the request body for PATCH .../folders/{id} when updating
 // folder security.
 type ClmFolderSecurityPatch struct {
-	Security []ClmSecurityEntry `json:"Security"`
+	Security ClmFolderSecurityWrite `json:"Security"`
+}
+
+// ClmFolderSecurityWrite is the plain-list (non-paginated) shape of ClmFolderSecurity
+// used on writes — a write payload has no First/Href/Last/Limit/Next/Offset/Previous/
+// Total metadata to send, mirroring ClmGroupList's precedent for the same reason on
+// member-groups writes. Grant/Revoke always populate all three fields with the
+// folder's complete current security (see clm_folders.go's clmFolderSecurityToWrite),
+// not just the one changed entry: Folders.Patch's merge-vs-replace semantics for
+// Security are undocumented, and sending the complete state is correct either way.
+type ClmFolderSecurityWrite struct {
+	Groups []ClmGroupSecurityEntry `json:"Groups,omitempty"`
+	Roles  []ClmRoleSecurityEntry  `json:"Roles,omitempty"`
+	Users  []ClmUserSecurityEntry  `json:"Users,omitempty"`
 }
 
 // ClmAccessType enumerates the confirmed folder-security write values. Custom and

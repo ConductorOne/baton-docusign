@@ -31,7 +31,7 @@ func TestSearchFolders_Pagination(t *testing.T) {
 	}
 	// Search results are summaries — no Security field.
 	for _, f := range all {
-		if f.Security != nil {
+		if len(f.Security.Groups.Items) != 0 || len(f.Security.Roles.Items) != 0 || len(f.Security.Users.Items) != 0 {
 			t.Errorf("folder %s: expected Search to omit Security, got %+v", f.Name, f.Security)
 		}
 	}
@@ -46,18 +46,24 @@ func TestGetFolder_ExpandSecurity(t *testing.T) {
 		if err != nil {
 			t.Fatalf("GetFolder: %v", err)
 		}
-		if folder.Security != nil {
+		if len(folder.Security.Groups.Items) != 0 || len(folder.Security.Roles.Items) != 0 || len(folder.Security.Users.Items) != 0 {
 			t.Errorf("expected no Security without ?expand=Security, got %+v", folder.Security)
 		}
 	})
 
-	t.Run("with expand=Security, entries are populated", func(t *testing.T) {
+	t.Run("with expand=Security, entries are populated across all 3 principal types", func(t *testing.T) {
 		folder, _, err := c.GetFolder(ctx, "folder-contracts", "Security")
 		if err != nil {
 			t.Fatalf("GetFolder: %v", err)
 		}
-		if len(folder.Security) != 4 {
-			t.Fatalf("expected 4 seeded security entries, got %d: %+v", len(folder.Security), folder.Security)
+		if len(folder.Security.Groups.Items) != 2 {
+			t.Fatalf("expected 2 seeded group security entries, got %d: %+v", len(folder.Security.Groups.Items), folder.Security.Groups.Items)
+		}
+		if len(folder.Security.Roles.Items) != 1 {
+			t.Fatalf("expected 1 seeded role security entry, got %d: %+v", len(folder.Security.Roles.Items), folder.Security.Roles.Items)
+		}
+		if len(folder.Security.Users.Items) != 1 {
+			t.Fatalf("expected 1 seeded user security entry, got %d: %+v", len(folder.Security.Users.Items), folder.Security.Users.Items)
 		}
 	})
 
@@ -69,43 +75,41 @@ func TestGetFolder_ExpandSecurity(t *testing.T) {
 }
 
 // TestPatchFolderSecurity_SendsExactEntries confirms PatchFolderSecurity's basic
-// plumbing: the entries slice it's given is exactly what a subsequent read reflects.
+// plumbing: the write it's given is exactly what a subsequent read reflects.
 // Multi-principal preservation (the reason callers must pass the complete Security
-// list, not just the one changed entry) is covered by
+// state, not just the one changed entry) is covered by
 // clm_folders_test.go's TestClmFolderBuilder_GrantAndRevoke_PreservesOtherPrincipals.
 func TestPatchFolderSecurity_SendsExactEntries(t *testing.T) {
 	srv, c := clmtest.NewServer(t)
 	ctx := context.Background()
 
-	groupItem := srv.GroupHref("group-ops")
+	groupHref := srv.GroupHref("group-ops")
 
 	// folder-templates starts with no Security entries.
-	if _, err := c.PatchFolderSecurity(ctx, "folder-templates", []client.ClmSecurityEntry{{
-		AccessType: client.ClmAccessTypeView,
-		Item:       groupItem,
-	}}); err != nil {
+	if _, err := c.PatchFolderSecurity(ctx, "folder-templates", client.ClmFolderSecurityWrite{
+		Groups: []client.ClmGroupSecurityEntry{{AccessType: client.ClmAccessTypeView, Href: groupHref}},
+	}); err != nil {
 		t.Fatalf("PatchFolderSecurity (grant): %v", err)
 	}
 
-	entries := srv.FolderSecurity("folder-templates")
-	if len(entries) != 1 || entries[0].AccessType != client.ClmAccessTypeView || entries[0].Item != groupItem {
-		t.Fatalf("expected one View entry for %s, got %+v", groupItem, entries)
+	sec := srv.FolderSecurity("folder-templates")
+	if len(sec.Groups.Items) != 1 || sec.Groups.Items[0].AccessType != client.ClmAccessTypeView || sec.Groups.Items[0].Href != groupHref {
+		t.Fatalf("expected one View entry for %s, got %+v", groupHref, sec.Groups.Items)
 	}
 
-	// Sending a single-entry list for the same Item again replaces the prior entry.
-	if _, err := c.PatchFolderSecurity(ctx, "folder-templates", []client.ClmSecurityEntry{{
-		AccessType: client.ClmAccessTypeNoAccess,
-		Item:       groupItem,
-	}}); err != nil {
+	// Sending a single-entry Groups list for the same Href again replaces the prior entry.
+	if _, err := c.PatchFolderSecurity(ctx, "folder-templates", client.ClmFolderSecurityWrite{
+		Groups: []client.ClmGroupSecurityEntry{{AccessType: client.ClmAccessTypeNoAccess, Href: groupHref}},
+	}); err != nil {
 		t.Fatalf("PatchFolderSecurity (revoke): %v", err)
 	}
 
-	entries = srv.FolderSecurity("folder-templates")
-	if len(entries) != 1 {
-		t.Fatalf("expected the existing entry to be updated in place, not duplicated: %+v", entries)
+	sec = srv.FolderSecurity("folder-templates")
+	if len(sec.Groups.Items) != 1 {
+		t.Fatalf("expected the existing entry to be updated in place, not duplicated: %+v", sec.Groups.Items)
 	}
-	if entries[0].AccessType != client.ClmAccessTypeNoAccess {
-		t.Errorf("expected AccessType NoAccess after revoke, got %q", entries[0].AccessType)
+	if sec.Groups.Items[0].AccessType != client.ClmAccessTypeNoAccess {
+		t.Errorf("expected AccessType NoAccess after revoke, got %q", sec.Groups.Items[0].AccessType)
 	}
 }
 

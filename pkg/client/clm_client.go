@@ -11,9 +11,11 @@
 //
 // Folders:
 //   - POST /v2/{accountId}/folders/search - Discover folders (no flat list-all exists)
-//   - GET  /v2/{accountId}/folders/{id}?expand=Security - Get a folder with its explicit security entries
-//   - PATCH /v2/{accountId}/folders/{id} - Update folder security (grant: set an {AccessType,Item} entry;
-//     revoke: set that entry's AccessType to "NoAccess")
+//   - GET  /v2/{accountId}/folders/{id}?expand=Security - Get a folder with its explicit security entries.
+//     Security is three separate collections by principal type (Groups/Roles/Users), confirmed via
+//     DocuSign's own Folders.Patch reference page - see ClmFolderSecurity's doc in clm_models.go.
+//   - PATCH /v2/{accountId}/folders/{id} - Update folder security (grant: set an AccessType on the
+//     relevant Groups/Roles/Users entry; revoke: set that entry's AccessType to "NoAccess")
 //
 // Groups:
 //   - GET /v2/{accountId}/groups - List CLM groups (GetAllGroups)
@@ -347,13 +349,15 @@ func (c *Client) getFolder(ctx context.Context, folderID string, noCache bool, e
 	return &folder, anno, nil
 }
 
-// PatchFolderSecurity grants or revokes folder security. entries must be the folder's
-// complete Security list (see the connector-layer callers — clmFolderSecurityWithEntry
-// builds this from a fresh read plus one changed/added entry), not just the one entry
-// being changed: Folders.Patch's merge-vs-replace semantics for this field are
-// undocumented, and sending the complete list is correct under either interpretation,
-// whereas sending only the one changed entry would wipe every other principal's access
-// to the folder if the real API replaces rather than merges.
+// PatchFolderSecurity grants or revokes folder security. write must be the folder's
+// complete security state across all three principal-type collections (see the
+// connector-layer caller — clmFolderSecurityToWrite builds this from a fresh read,
+// with one entry changed/added in whichever of Groups/Roles/Users the grant/revoke
+// targets), not just the one entry being changed: Folders.Patch's merge-vs-replace
+// semantics for the Security field are undocumented, and sending the complete state
+// is correct under either interpretation, whereas sending only the one changed entry
+// would wipe every other principal's access to the folder if the real API replaces
+// rather than merges.
 //
 // UNVERIFIED against a real CLM tenant, and higher-risk than the merge-semantics
 // question above: DocuSign's docs also reference a separate `ChangeSecurityTasks`
@@ -363,7 +367,7 @@ func (c *Client) getFolder(ctx context.Context, folderID string, noCache bool, e
 // Grant/Revoke on clm_folder relies on - could silently no-op or 404 against a real
 // tenant. Verify which endpoint the real API expects before treating folder
 // provisioning here as more than best-effort.
-func (c *Client) PatchFolderSecurity(ctx context.Context, folderID string, entries []ClmSecurityEntry) (annotations.Annotations, error) {
+func (c *Client) PatchFolderSecurity(ctx context.Context, folderID string, write ClmFolderSecurityWrite) (annotations.Annotations, error) {
 	if err := c.ensureClmReady(ctx); err != nil {
 		return nil, err
 	}
@@ -373,7 +377,7 @@ func (c *Client) PatchFolderSecurity(ctx context.Context, folderID string, entri
 		return nil, err
 	}
 
-	body := ClmFolderSecurityPatch{Security: entries}
+	body := ClmFolderSecurityPatch{Security: write}
 	anno, err := c.doClmRequest(ctx, http.MethodPatch, folderURL, body, nil)
 	if err != nil {
 		return anno, fmt.Errorf("baton-docusign: failed to update CLM folder %s security: %w", folderID, err)

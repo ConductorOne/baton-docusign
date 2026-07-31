@@ -12,17 +12,14 @@ import (
 	rs "github.com/conductorone/baton-sdk/pkg/types/resource"
 )
 
-func boolPtr(b bool) *bool { return &b }
-
-// --- Pure-function tests: clmSlugForEntry / clmAccessTypeForSlug / clmPrincipalIDForItem ---
+// --- Pure-function tests: clmSlugForAccessType / clmAccessTypeForSlug ---
 //
-// These map the CLM API's two representations of folder access (a named AccessType
-// enum on writes, granular boolean flags on reads) onto the 5 static entitlement
-// slugs, and classify a Security entry's Item into a principal. Getting these wrong
-// silently mis-grants or drops access in a security review, so they're covered
-// directly rather than only through the higher-level Grants()/Grant() tests below.
+// These map the CLM API's AccessType enum onto the 5 static entitlement slugs.
+// Getting this wrong silently mis-grants or drops access in a security review, so
+// it's covered directly rather than only through the higher-level Grants()/Grant()
+// tests below.
 
-func TestClmSlugForEntry_AccessTypeBased(t *testing.T) {
+func TestClmSlugForAccessType(t *testing.T) {
 	tests := []struct {
 		accessType string
 		wantSlug   string
@@ -36,42 +33,13 @@ func TestClmSlugForEntry_AccessTypeBased(t *testing.T) {
 		{client.ClmAccessTypeNoAccess, "", false},
 		{client.ClmAccessTypeInherit, "", false},
 		{client.ClmAccessTypeCustom, "", false},
+		{"", "", false},
 	}
 	for _, tt := range tests {
-		slug, ok := clmSlugForEntry(client.ClmSecurityEntry{AccessType: tt.accessType})
+		slug, ok := clmSlugForAccessType(tt.accessType)
 		if ok != tt.wantOK || slug != tt.wantSlug {
-			t.Errorf("clmSlugForEntry(AccessType=%q) = (%q, %v), want (%q, %v)", tt.accessType, slug, ok, tt.wantSlug, tt.wantOK)
+			t.Errorf("clmSlugForAccessType(%q) = (%q, %v), want (%q, %v)", tt.accessType, slug, ok, tt.wantSlug, tt.wantOK)
 		}
-	}
-}
-
-func TestClmSlugForEntry_FlagsBased(t *testing.T) {
-	tests := []struct {
-		name                                      string
-		create, move, read, see, setAccess, write bool
-		wantSlug                                  string
-		wantOK                                    bool
-	}{
-		{"view: read+see only", false, false, true, true, false, false, "view", true},
-		{"view_create: +create", true, false, true, true, false, false, "view_create", true},
-		{"view_edit: +write", true, false, true, true, false, true, "view_edit", true},
-		{"view_edit_delete: +move", true, true, true, true, false, true, "view_edit_delete", true},
-		{"view_edit_delete_set_access: all flags", true, true, true, true, true, true, "view_edit_delete_set_access", true},
-		{"no read/see: not a tier", false, false, false, false, false, false, "", false},
-		{"read without see: not a tier", false, false, true, false, false, false, "", false},
-		{"create without read/see: the Custom case", true, false, false, false, false, false, "", false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			entry := client.ClmSecurityEntry{
-				Create: boolPtr(tt.create), Move: boolPtr(tt.move), Read: boolPtr(tt.read),
-				See: boolPtr(tt.see), SetAccess: boolPtr(tt.setAccess), Write: boolPtr(tt.write),
-			}
-			slug, ok := clmSlugForEntry(entry)
-			if ok != tt.wantOK || slug != tt.wantSlug {
-				t.Errorf("clmSlugForEntry(%+v) = (%q, %v), want (%q, %v)", tt, slug, ok, tt.wantSlug, tt.wantOK)
-			}
-		})
 	}
 }
 
@@ -85,66 +53,6 @@ func TestClmAccessTypeForSlug_RoundTrips(t *testing.T) {
 	if _, ok := clmAccessTypeForSlug("not_a_real_slug"); ok {
 		t.Error("expected clmAccessTypeForSlug to reject an unknown slug")
 	}
-}
-
-func TestClmNormalizeSecurityEntryForWrite(t *testing.T) {
-	t.Run("AccessType already set passes through unchanged", func(t *testing.T) {
-		entry := client.ClmSecurityEntry{AccessType: client.ClmAccessTypeViewEdit, Item: "group-legal"}
-		got := clmNormalizeSecurityEntryForWrite(entry)
-		if got != entry {
-			t.Errorf("expected an AccessType-based entry to pass through unchanged, got %+v", got)
-		}
-	})
-
-	t.Run("resolvable flags-only entry is normalized to AccessType", func(t *testing.T) {
-		entry := client.ClmSecurityEntry{Item: "member-bob", Read: boolPtr(true), See: boolPtr(true)}
-		got := clmNormalizeSecurityEntryForWrite(entry)
-		want := client.ClmSecurityEntry{AccessType: client.ClmAccessTypeView, Item: "member-bob"}
-		if got != want {
-			t.Errorf("clmNormalizeSecurityEntryForWrite(%+v) = %+v, want %+v", entry, got, want)
-		}
-	})
-
-	t.Run("unresolvable (Custom) flags-only entry passes through unchanged", func(t *testing.T) {
-		entry := client.ClmSecurityEntry{Item: "group-finance", Create: boolPtr(true)}
-		got := clmNormalizeSecurityEntryForWrite(entry)
-		if *got.Create != *entry.Create || got.Item != entry.Item || got.AccessType != "" {
-			t.Errorf("expected an unresolvable flags entry to pass through unchanged, got %+v", got)
-		}
-	})
-}
-
-func TestClmPrincipalIDForItem(t *testing.T) {
-	srv, _ := clmtest.NewServer(t)
-
-	t.Run("role name maps to clm_role", func(t *testing.T) {
-		id, ok := clmPrincipalIDForItem("FullSubscriber")
-		if !ok || id.ResourceType != clmRoleResourceType.Id || id.Resource != "FullSubscriber" {
-			t.Errorf("got (%+v, %v), want clm_role/FullSubscriber", id, ok)
-		}
-	})
-
-	t.Run("group href maps to clm_group", func(t *testing.T) {
-		href := srv.GroupHref("group-legal")
-		id, ok := clmPrincipalIDForItem(href)
-		if !ok || id.ResourceType != clmGroupResourceType.Id || id.Resource != "group-legal" {
-			t.Errorf("got (%+v, %v), want clm_group/group-legal", id, ok)
-		}
-	})
-
-	t.Run("member href maps to clm_member", func(t *testing.T) {
-		href := srv.MemberHref("member-bob")
-		id, ok := clmPrincipalIDForItem(href)
-		if !ok || id.ResourceType != clmMemberResourceType.Id || id.Resource != "member-bob" {
-			t.Errorf("got (%+v, %v), want clm_member/member-bob", id, ok)
-		}
-	})
-
-	t.Run("unrecognized item is rejected, not guessed", func(t *testing.T) {
-		if _, ok := clmPrincipalIDForItem("not-a-role-or-href"); ok {
-			t.Error("expected an unrecognized Item to be rejected")
-		}
-	})
 }
 
 // --- Integration tests against the clmtest mock server ---
@@ -237,11 +145,11 @@ func TestClmFolderBuilder_StaticEntitlements(t *testing.T) {
 }
 
 func TestClmFolderBuilder_Grants_MapsAndSkipsCorrectly(t *testing.T) {
-	// folder-contracts is seeded with 4 Security entries: an AccessType-based one
-	// (group), a flags-based one (member), a role-granted one, and one that matches no
-	// known tier ("Custom" — Create=true only). Grants() must emit exactly 3 grants,
-	// skipping the unmatched one rather than approximating it.
-	srv, c := clmtest.NewServer(t)
+	// folder-contracts is seeded with 4 Security entries across all 3 principal-type
+	// collections (see seed.go): a known-tier group, a "Custom" (unmapped) group, a
+	// known-tier role, and a known-tier member. Grants() must emit exactly 3 grants,
+	// skipping the Custom entry rather than approximating it.
+	_, c := clmtest.NewServer(t)
 	b := newClmFolderBuilder(c, true)
 	ctx := context.Background()
 
@@ -255,7 +163,7 @@ func TestClmFolderBuilder_Grants_MapsAndSkipsCorrectly(t *testing.T) {
 		t.Fatalf("Grants: %v", err)
 	}
 	if len(grants) != 3 {
-		t.Fatalf("expected 3 grants (the Custom entry should be skipped), got %d", len(grants))
+		t.Fatalf("expected 3 grants (the Custom group entry should be skipped), got %d", len(grants))
 	}
 
 	var sawGroup, sawMember, sawRole bool
@@ -284,7 +192,6 @@ func TestClmFolderBuilder_Grants_MapsAndSkipsCorrectly(t *testing.T) {
 	if !sawGroup || !sawMember || !sawRole {
 		t.Errorf("expected one grant each for group/member/role principals; got group=%v member=%v role=%v", sawGroup, sawMember, sawRole)
 	}
-	_ = srv
 }
 
 func TestClmFolderBuilder_GrantAndRevoke_Idempotent(t *testing.T) {
@@ -310,9 +217,9 @@ func TestClmFolderBuilder_GrantAndRevoke_Idempotent(t *testing.T) {
 	} else if hasAlreadyExists(annos) {
 		t.Error("first Grant should not report GrantAlreadyExists")
 	}
-	entries := srv.FolderSecurity("folder-templates")
-	if len(entries) != 1 || entries[0].AccessType != client.ClmAccessTypeViewEdit {
-		t.Fatalf("expected one ViewEdit entry after Grant, got %+v", entries)
+	groups := srv.FolderSecurity("folder-templates").Groups.Items
+	if len(groups) != 1 || groups[0].AccessType != client.ClmAccessTypeViewEdit {
+		t.Fatalf("expected one ViewEdit group entry after Grant, got %+v", groups)
 	}
 
 	// Grant again: idempotent, should report GrantAlreadyExists and not duplicate.
@@ -321,8 +228,8 @@ func TestClmFolderBuilder_GrantAndRevoke_Idempotent(t *testing.T) {
 	} else if !hasAlreadyExists(annos) {
 		t.Error("repeat Grant should report GrantAlreadyExists")
 	}
-	if entries := srv.FolderSecurity("folder-templates"); len(entries) != 1 {
-		t.Fatalf("expected still exactly one entry after a repeat Grant, got %d", len(entries))
+	if groups := srv.FolderSecurity("folder-templates").Groups.Items; len(groups) != 1 {
+		t.Fatalf("expected still exactly one entry after a repeat Grant, got %d", len(groups))
 	}
 
 	// Revoke: should set AccessType to NoAccess (not remove the entry).
@@ -332,9 +239,9 @@ func TestClmFolderBuilder_GrantAndRevoke_Idempotent(t *testing.T) {
 	} else if hasAlreadyRevoked(annos) {
 		t.Error("first Revoke should not report GrantAlreadyRevoked")
 	}
-	entries = srv.FolderSecurity("folder-templates")
-	if len(entries) != 1 || entries[0].AccessType != client.ClmAccessTypeNoAccess {
-		t.Fatalf("expected the entry's AccessType to become NoAccess after Revoke, got %+v", entries)
+	groups = srv.FolderSecurity("folder-templates").Groups.Items
+	if len(groups) != 1 || groups[0].AccessType != client.ClmAccessTypeNoAccess {
+		t.Fatalf("expected the entry's AccessType to become NoAccess after Revoke, got %+v", groups)
 	}
 
 	// Revoke again: idempotent.
@@ -348,20 +255,21 @@ func TestClmFolderBuilder_GrantAndRevoke_Idempotent(t *testing.T) {
 // TestClmFolderBuilder_GrantAndRevoke_PreservesOtherPrincipals is a regression test
 // for a folder-wide data-loss risk: Folders.Patch's merge-vs-replace semantics for the
 // Security field are undocumented, so Grant/Revoke always send the folder's complete
-// Security list back (via clmFolderSecurityWithEntry), not just the one changed entry.
+// security state back (via clmFolderSecurityToWrite), not just the one changed entry.
 // The clmtest mock models the pessimistic "replace" interpretation specifically to
 // catch a regression to sending just one entry — that would make this test fail with
-// the other 3 principals' entries disappearing. folder-contracts is seeded with 4
-// entries (see seed.go); this grants and revokes access for a 5th, previously-absent
-// principal ("group-ops") and confirms the original 4 are untouched throughout.
+// the other principals' entries disappearing. folder-contracts is seeded with 4
+// entries across all 3 collections (see seed.go); this grants and revokes access for a
+// 5th, previously-absent principal ("group-ops") and confirms the original 4 are
+// untouched throughout.
 func TestClmFolderBuilder_GrantAndRevoke_PreservesOtherPrincipals(t *testing.T) {
 	srv, c := clmtest.NewServer(t)
 	b := newClmFolderBuilder(c, true)
 	ctx := context.Background()
 
 	before := srv.FolderSecurity("folder-contracts")
-	if len(before) != 4 {
-		t.Fatalf("expected folder-contracts seeded with 4 entries, got %d: %+v", len(before), before)
+	if total := len(before.Groups.Items) + len(before.Roles.Items) + len(before.Users.Items); total != 4 {
+		t.Fatalf("expected folder-contracts seeded with 4 entries total, got %d: %+v", total, before)
 	}
 
 	folderResource, err := rs.NewResource("Contracts", clmFolderResourceType, "folder-contracts")
@@ -381,17 +289,12 @@ func TestClmFolderBuilder_GrantAndRevoke_PreservesOtherPrincipals(t *testing.T) 
 	}
 
 	afterGrant := srv.FolderSecurity("folder-contracts")
-	if len(afterGrant) != 5 {
-		t.Fatalf("expected 5 entries after granting a 5th principal, got %d: %+v", len(afterGrant), afterGrant)
+	if len(afterGrant.Groups.Items) != 3 { // group-legal, group-finance, + the new group-ops
+		t.Fatalf("expected 3 group entries after granting a new group principal, got %d: %+v", len(afterGrant.Groups.Items), afterGrant.Groups.Items)
 	}
-	for _, want := range before {
-		got, ok := findSecurityEntryByItem(afterGrant, want.Item)
-		if !ok {
-			t.Errorf("expected pre-existing entry for %s to survive Grant, but it's gone; got %+v", want.Item, afterGrant)
-			continue
-		}
-		assertSameEffectiveAccess(t, want, got, "Grant")
-	}
+	assertGroupsPreserved(t, before.Groups.Items, afterGrant.Groups.Items, "Grant")
+	assertRolesPreserved(t, before.Roles.Items, afterGrant.Roles.Items, "Grant")
+	assertUsersPreserved(t, before.Users.Items, afterGrant.Users.Items, "Grant")
 
 	grantObj := &v2.Grant{Principal: groupResource, Entitlement: ent}
 	if annos, err := b.Revoke(ctx, grantObj); err != nil {
@@ -401,67 +304,76 @@ func TestClmFolderBuilder_GrantAndRevoke_PreservesOtherPrincipals(t *testing.T) 
 	}
 
 	afterRevoke := srv.FolderSecurity("folder-contracts")
-	if len(afterRevoke) != 5 {
-		t.Fatalf("expected still 5 entries after Revoke (NoAccess, not removed), got %d: %+v", len(afterRevoke), afterRevoke)
+	if len(afterRevoke.Groups.Items) != 3 { // still 3 (NoAccess, not removed)
+		t.Fatalf("expected still 3 group entries after Revoke (NoAccess, not removed), got %d: %+v", len(afterRevoke.Groups.Items), afterRevoke.Groups.Items)
 	}
+	assertGroupsPreserved(t, before.Groups.Items, afterRevoke.Groups.Items, "Revoke")
+	assertRolesPreserved(t, before.Roles.Items, afterRevoke.Roles.Items, "Revoke")
+	assertUsersPreserved(t, before.Users.Items, afterRevoke.Users.Items, "Revoke")
+}
+
+func assertGroupsPreserved(t *testing.T, before, after []client.ClmGroupSecurityEntry, when string) {
+	t.Helper()
 	for _, want := range before {
-		got, ok := findSecurityEntryByItem(afterRevoke, want.Item)
-		if !ok {
-			t.Errorf("expected pre-existing entry for %s to survive Revoke, but it's gone; got %+v", want.Item, afterRevoke)
+		i := clmFindGroupSecurityIndex(after, want.Href)
+		if i < 0 {
+			t.Errorf("expected pre-existing group entry for %s to survive %s, but it's gone; got %+v", want.Href, when, after)
 			continue
 		}
-		assertSameEffectiveAccess(t, want, got, "Revoke")
-	}
-}
-
-// findSecurityEntryByItem finds the entry for the same principal as item, comparing
-// via clmIDFromHref like Grant/Revoke's own existence checks (a bare ID and a Href
-// ending in that ID must still match).
-func findSecurityEntryByItem(entries []client.ClmSecurityEntry, item string) (client.ClmSecurityEntry, bool) {
-	for _, e := range entries {
-		if clmIDFromHref(e.Item) == clmIDFromHref(item) {
-			return e, true
+		if after[i].AccessType != want.AccessType {
+			t.Errorf("after %s: group entry for %s changed AccessType — before: %q, after: %q", when, want.Href, want.AccessType, after[i].AccessType)
 		}
 	}
-	return client.ClmSecurityEntry{}, false
 }
 
-// assertSameEffectiveAccess confirms want and got resolve to the same effective tier
-// via clmSlugForEntry, rather than requiring exact struct equality: preserved entries
-// get normalized from their read-side shape (flags, no AccessType) to the write-side
-// shape (AccessType) by clmNormalizeSecurityEntryForWrite, so a flags-based entry and
-// its AccessType-based equivalent are expected to differ byte-for-byte while
-// representing the same access.
-func assertSameEffectiveAccess(t *testing.T, want, got client.ClmSecurityEntry, when string) {
+func assertRolesPreserved(t *testing.T, before, after []client.ClmRoleSecurityEntry, when string) {
 	t.Helper()
-	wantSlug, wantOK := clmSlugForEntry(want)
-	gotSlug, gotOK := clmSlugForEntry(got)
-	if wantOK != gotOK || wantSlug != gotSlug {
-		t.Errorf("after %s: entry for %s changed effective access — before: %+v (slug=%q resolvable=%v), after: %+v (slug=%q resolvable=%v)",
-			when, want.Item, want, wantSlug, wantOK, got, gotSlug, gotOK)
+	for _, want := range before {
+		i := clmFindRoleSecurityIndex(after, want.Item)
+		if i < 0 {
+			t.Errorf("expected pre-existing role entry for %s to survive %s, but it's gone; got %+v", want.Item, when, after)
+			continue
+		}
+		if after[i].AccessType != want.AccessType {
+			t.Errorf("after %s: role entry for %s changed AccessType — before: %q, after: %q", when, want.Item, want.AccessType, after[i].AccessType)
+		}
+	}
+}
+
+func assertUsersPreserved(t *testing.T, before, after []client.ClmUserSecurityEntry, when string) {
+	t.Helper()
+	for _, want := range before {
+		i := clmFindUserSecurityIndex(after, want.Href)
+		if i < 0 {
+			t.Errorf("expected pre-existing user entry for %s to survive %s, but it's gone; got %+v", want.Href, when, after)
+			continue
+		}
+		if after[i].AccessType != want.AccessType {
+			t.Errorf("after %s: user entry for %s changed AccessType — before: %q, after: %q", when, want.Href, want.AccessType, after[i].AccessType)
+		}
 	}
 }
 
 // TestClmFolderBuilder_GrantAndRevoke_ToleratesBareIDOnRead is a regression test: the
-// CLM API's read-side Item representation isn't confirmed to always match the exact
-// Href shape clmItemForPrincipal constructs on the write side (see clmPrincipalIDForItem,
-// which normalizes for the same reason). Grant/Revoke's existence checks used to compare
-// entry.Item to item with raw string equality — if the API ever returns Item as a bare
-// ID instead of a full Href, that comparison never matches, and Revoke in particular
-// would silently report GrantAlreadyRevoked without ever patching AccessType to
-// NoAccess, leaving the grant active. This seeds a folder-security entry with a bare-ID
-// Item directly (bypassing Grant) to simulate that read-side shape.
+// CLM API's read-side Href representation isn't confirmed to always match the exact
+// Href shape clmGroupHrefFromResource constructs on the write side. Grant/Revoke's
+// existence checks compare via clmIDFromHref (not raw equality) specifically so a bare
+// ID and a full Href ending in that ID are still treated as the same principal — if
+// the API ever returns Href as a bare ID, a raw-equality comparison would never match,
+// and Revoke in particular would silently report GrantAlreadyRevoked without ever
+// patching AccessType to NoAccess, leaving the grant active. This seeds a
+// folder-security entry with a bare-ID Href directly (bypassing Grant) to simulate
+// that read-side shape.
 func TestClmFolderBuilder_GrantAndRevoke_ToleratesBareIDOnRead(t *testing.T) {
 	srv, c := clmtest.NewServer(t)
 	b := newClmFolderBuilder(c, true)
 	ctx := context.Background()
 
-	// Seed folder-templates' Security entry with a bare group ID, not the full Href
-	// clmItemForPrincipal would construct.
-	if _, err := c.PatchFolderSecurity(ctx, "folder-templates", []client.ClmSecurityEntry{{
-		AccessType: client.ClmAccessTypeViewEdit,
-		Item:       "group-ops",
-	}}); err != nil {
+	// Seed folder-templates' group Security entry with a bare group ID, not the full
+	// Href clmGroupHrefFromResource would construct.
+	if _, err := c.PatchFolderSecurity(ctx, "folder-templates", client.ClmFolderSecurityWrite{
+		Groups: []client.ClmGroupSecurityEntry{{AccessType: client.ClmAccessTypeViewEdit, Href: "group-ops"}},
+	}); err != nil {
 		t.Fatalf("PatchFolderSecurity (seed): %v", err)
 	}
 
@@ -479,10 +391,10 @@ func TestClmFolderBuilder_GrantAndRevoke_ToleratesBareIDOnRead(t *testing.T) {
 	if _, annos, err := b.Grant(ctx, groupResource, ent); err != nil {
 		t.Fatalf("Grant: %v", err)
 	} else if !hasAlreadyExists(annos) {
-		t.Error("Grant should recognize a bare-ID entry.Item as already granted, not duplicate it")
+		t.Error("Grant should recognize a bare-ID entry.Href as already granted, not duplicate it")
 	}
-	if entries := srv.FolderSecurity("folder-templates"); len(entries) != 1 {
-		t.Fatalf("expected still exactly one entry, got %d: %+v", len(entries), entries)
+	if groups := srv.FolderSecurity("folder-templates").Groups.Items; len(groups) != 1 {
+		t.Fatalf("expected still exactly one entry, got %d: %+v", len(groups), groups)
 	}
 
 	// Revoke must actually patch AccessType to NoAccess, not silently no-op.
@@ -490,11 +402,11 @@ func TestClmFolderBuilder_GrantAndRevoke_ToleratesBareIDOnRead(t *testing.T) {
 	if annos, err := b.Revoke(ctx, grantObj); err != nil {
 		t.Fatalf("Revoke: %v", err)
 	} else if hasAlreadyRevoked(annos) {
-		t.Fatal("Revoke incorrectly reported GrantAlreadyRevoked for a bare-ID entry.Item — access was left in place instead of being revoked")
+		t.Fatal("Revoke incorrectly reported GrantAlreadyRevoked for a bare-ID entry.Href — access was left in place instead of being revoked")
 	}
-	entries := srv.FolderSecurity("folder-templates")
-	if len(entries) != 1 || entries[0].AccessType != client.ClmAccessTypeNoAccess {
-		t.Fatalf("expected the entry's AccessType to become NoAccess after Revoke, got %+v", entries)
+	groups := srv.FolderSecurity("folder-templates").Groups.Items
+	if len(groups) != 1 || groups[0].AccessType != client.ClmAccessTypeNoAccess {
+		t.Fatalf("expected the entry's AccessType to become NoAccess after Revoke, got %+v", groups)
 	}
 }
 

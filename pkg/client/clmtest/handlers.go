@@ -29,7 +29,7 @@ func (s *Server) handleSearchFolders(w http.ResponseWriter, r *http.Request) {
 	items := make([]client.ClmFolder, 0, len(page))
 	for _, id := range page {
 		f := *s.folders[id]
-		f.Security = nil // Search results are summaries; Security only comes via ?expand on Get
+		f.Security = client.ClmFolderSecurity{} // Search results are summaries; Security only comes via ?expand on Get
 		items = append(items, f)
 	}
 	writeJSON(w, client.ClmFolderPage{ClmPage: meta, Items: items})
@@ -49,7 +49,7 @@ func (s *Server) handleGetFolder(w http.ResponseWriter, r *http.Request) {
 
 	out := *f
 	if r.URL.Query().Get("expand") != "Security" {
-		out.Security = nil
+		out.Security = client.ClmFolderSecurity{}
 	}
 	writeJSON(w, out)
 }
@@ -83,19 +83,26 @@ func (s *Server) handlePatchFolder(w http.ResponseWriter, r *http.Request) {
 
 	// Reject an explicit empty-string AccessType before the normal decode: Go's
 	// encoding/json can't otherwise distinguish "AccessType key present but empty"
-	// from "key absent," and ClmSecurityEntry.AccessType's omitempty tag means a real
-	// client should never produce the former — decoding into a raw representation
-	// here is the only way this mock can actually catch a regression to sending it.
+	// from "key absent," and every *SecurityEntry's AccessType omitempty tag means a
+	// real client should never produce the former — decoding into a raw
+	// representation here is the only way this mock can actually catch a regression
+	// to sending it, across all three of Groups/Roles/Users.
 	var rawBody struct {
-		Security []map[string]any `json:"Security"`
+		Security struct {
+			Groups []map[string]any `json:"Groups"`
+			Roles  []map[string]any `json:"Roles"`
+			Users  []map[string]any `json:"Users"`
+		} `json:"Security"`
 	}
 	if json.Unmarshal(bodyBytes, &rawBody) == nil {
-		for _, entry := range rawBody.Security {
-			if v, present := entry["AccessType"]; present {
-				if str, ok := v.(string); ok && str == "" {
-					w.WriteHeader(http.StatusBadRequest)
-					_ = json.NewEncoder(w).Encode(client.ClmErrorResponse{})
-					return
+		for _, entries := range [][]map[string]any{rawBody.Security.Groups, rawBody.Security.Roles, rawBody.Security.Users} {
+			for _, entry := range entries {
+				if v, present := entry["AccessType"]; present {
+					if str, ok := v.(string); ok && str == "" {
+						w.WriteHeader(http.StatusBadRequest)
+						_ = json.NewEncoder(w).Encode(client.ClmErrorResponse{})
+						return
+					}
 				}
 			}
 		}
@@ -107,7 +114,11 @@ func (s *Server) handlePatchFolder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	f.Security = body.Security
+	f.Security = client.ClmFolderSecurity{
+		Groups: client.ClmGroupSecurityPage{Items: body.Security.Groups},
+		Roles:  client.ClmRoleSecurityPage{Items: body.Security.Roles},
+		Users:  client.ClmUserSecurityPage{Items: body.Security.Users},
+	}
 
 	writeJSON(w, *f)
 }

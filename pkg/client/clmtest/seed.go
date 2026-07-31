@@ -6,8 +6,6 @@ import (
 	"github.com/conductorone/baton-docusign/pkg/client"
 )
 
-func boolPtr(b bool) *bool { return &b }
-
 const (
 	groupTypeSecurity      = "security"
 	groupLegalID           = "group-legal"
@@ -123,19 +121,24 @@ func seed(s *Server) {
 	contractsFolder := &client.ClmFolder{
 		Name: "Contracts",
 		Path: "/Contracts",
-		Security: []client.ClmSecurityEntry{
-			// AccessType-based entry granted to a group — tests slug-from-AccessType
-			// and group-Href routing (and should carry GrantExpandable at the
-			// connector layer).
-			{AccessType: client.ClmAccessTypeViewEdit, Item: s.GroupHref(groupLegalID)},
-			// Flags-only entry (no AccessType) granted to a member — tests the
-			// boolean-flag fallback path in clmSlugForEntry ("view" tier: Read+See).
-			{Item: s.MemberHref(memberBobID), Read: boolPtr(true), See: boolPtr(true)},
-			// Role-granted entry — tests clm_role routing.
-			{AccessType: client.ClmAccessTypeView, Item: roleFullSubscriberName},
-			// Flags that don't match any of the 5 known tiers (Create=true but
-			// Read/See=false) — tests that Grants() skips rather than guesses.
-			{Item: s.GroupHref("group-finance"), Create: boolPtr(true)},
+		Security: client.ClmFolderSecurity{
+			Groups: client.ClmGroupSecurityPage{Items: []client.ClmGroupSecurityEntry{
+				// Known tier granted to a group — tests slug-from-AccessType and
+				// group-Href routing (should carry GrantExpandable at the connector
+				// layer).
+				{AccessType: client.ClmAccessTypeViewEdit, Href: s.GroupHref(groupLegalID)},
+				// "Custom" — not one of the 5 grantable tiers — tests that Grants()
+				// skips rather than guesses.
+				{AccessType: client.ClmAccessTypeCustom, Href: s.GroupHref("group-finance")},
+			}},
+			Roles: client.ClmRoleSecurityPage{Items: []client.ClmRoleSecurityEntry{
+				// Role-granted entry — tests clm_role routing.
+				{AccessType: client.ClmAccessTypeView, Item: roleFullSubscriberName},
+			}},
+			Users: client.ClmUserSecurityPage{Items: []client.ClmUserSecurityEntry{
+				// Known tier granted to a member — tests clm_member routing.
+				{AccessType: client.ClmAccessTypeView, Href: s.MemberHref(memberBobID)},
+			}},
 		},
 	}
 	contractsFolder.Href = s.FolderHref("folder-contracts")
