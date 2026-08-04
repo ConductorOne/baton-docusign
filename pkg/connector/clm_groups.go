@@ -235,7 +235,8 @@ func parseIntoClmGroupResource(group *client.ClmGroup) (*v2.Resource, error) {
 		group.Name,
 		clmGroupResourceType,
 		clmIDFromHref(group.Href),
-		[]rs.GroupTraitOption{rs.WithGroupProfile(profile)},
+		nil,
+		rs.WithResourceProfile(profile),
 	)
 }
 
@@ -243,12 +244,8 @@ func parseIntoClmGroupResource(group *client.ClmGroup) (*v2.Resource, error) {
 // profile (see parseIntoClmGroupResource) — needed to reference the group in a
 // Members.Patch grant body.
 func clmGroupHrefFromResource(groupResource *v2.Resource) (string, error) {
-	trait, err := rs.GetGroupTrait(groupResource)
-	if err != nil {
-		return "", fmt.Errorf("baton-docusign: failed to read CLM group trait: %w", err)
-	}
-	href := trait.GetProfile().GetFields()["href"].GetStringValue()
-	if href == "" {
+	href, ok := rs.GetProfileStringValue(rs.GetProfile(groupResource), "href")
+	if !ok || href == "" {
 		return "", fmt.Errorf("baton-docusign: CLM group resource %s is missing its href profile field", groupResource.Id.Resource)
 	}
 	return href, nil

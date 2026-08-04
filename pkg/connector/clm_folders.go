@@ -406,12 +406,8 @@ func clmIsKnownRole(name string) bool {
 // profile (see parseIntoClmMemberResource) — needed to reference the member in a
 // folder-security grant body.
 func clmMemberHrefFromResource(principal *v2.Resource) (string, error) {
-	trait, err := rs.GetUserTrait(principal)
-	if err != nil {
-		return "", fmt.Errorf("baton-docusign: failed to read CLM member trait: %w", err)
-	}
-	href := trait.GetProfile().GetFields()["href"].GetStringValue()
-	if href == "" {
+	href, ok := rs.GetProfileStringValue(rs.GetProfile(principal), "href")
+	if !ok || href == "" {
 		return "", fmt.Errorf("baton-docusign: CLM member resource %s is missing its href profile field", principal.Id.Resource)
 	}
 	return href, nil

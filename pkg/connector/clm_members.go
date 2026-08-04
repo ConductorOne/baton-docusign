@@ -100,7 +100,6 @@ func parseIntoClmMemberResource(member *client.ClmMember) (*v2.Resource, error) 
 	}
 
 	userTraits := []rs.UserTraitOption{
-		rs.WithUserProfile(profile),
 		rs.WithEmail(member.Email, true),
 	}
 
@@ -109,5 +108,6 @@ func parseIntoClmMemberResource(member *client.ClmMember) (*v2.Resource, error) 
 		clmMemberResourceType,
 		clmIDFromHref(member.Href),
 		userTraits,
+		rs.WithResourceProfile(profile),
 	)
 }
