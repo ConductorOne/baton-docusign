@@ -102,7 +102,7 @@ func newClmPermissionSetBuilder(c *client.Client) *clmPermissionSetBuilder {
 }
 
 func parseIntoClmPermissionSetResource(ps *client.ClmPermissionSet) (*v2.Resource, error) {
-	// structpb.NewStruct (used by WithRoleProfile) only accepts []interface{} for list
+	// structpb.NewStruct (used by WithResourceProfile) only accepts []interface{} for list
 	// values, not []string, so ps.Permissions needs converting before it goes in the
 	// profile map.
 	permissions := make([]any, len(ps.Permissions))
@@ -118,6 +118,7 @@ func parseIntoClmPermissionSetResource(ps *client.ClmPermissionSet) (*v2.Resourc
 		ps.Name,
 		clmPermissionSetResourceType,
 		clmIDFromHref(ps.Href),
-		[]rs.RoleTraitOption{rs.WithRoleProfile(profile)},
+		nil,
+		rs.WithResourceProfile(profile),
 	)
 }
