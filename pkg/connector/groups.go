@@ -109,8 +109,8 @@ func (g *groupBuilder) Grants(ctx context.Context, groupResource *v2.Resource, a
 			entitlementGroupMember,
 			userResource.Id,
 			grant.WithGrantMetadata(map[string]any{
-				"group_name": groupResource.DisplayName,
-				"username":   user.UserName,
+				profileFieldGroupName: groupResource.DisplayName,
+				profileFieldUsername:  user.UserName,
 			}),
 		))
 	}
@@ -178,9 +178,9 @@ func newGroupBuilder(client *client.Client) *groupBuilder {
 // parseIntoGroupResource maps a client.Group to a Baton v2.Resource.
 func parseIntoGroupResource(group *client.Group) (*v2.Resource, error) {
 	profile := map[string]any{
-		"group_name":  group.GroupName,
-		"group_type":  group.GroupType,
-		"users_count": group.UsersCount,
+		profileFieldGroupName: group.GroupName,
+		"group_type":          group.GroupType,
+		"users_count":         group.UsersCount,
 	}
 
 	return rs.NewGroupResource(

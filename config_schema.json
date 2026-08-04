@@ -124,7 +124,7 @@
     {
       "name": "include-signing-groups",
       "displayName": "Include Signing Groups",
-      "description": "Set to true to include syncing signing groups (for customers with signing groups feature enabled)",
+      "description": "Set to true to sync signing groups (for customers with the signing groups feature enabled on their account).",
       "boolField": {}
     },
     {

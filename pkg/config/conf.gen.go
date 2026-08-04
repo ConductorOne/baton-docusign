@@ -12,6 +12,8 @@ type Docusign struct {
 	Configure            bool   `mapstructure:"configure"`
 	AccountId            string `mapstructure:"account-id"`
 	IncludeSigningGroups bool   `mapstructure:"include-signing-groups"`
+	ClmBaseUrl           string `mapstructure:"clm-base-url"`
+	BaseUrl              string `mapstructure:"base-url"`
 	Oauth2Token          string `mapstructure:"oauth2-token"`
 }
 

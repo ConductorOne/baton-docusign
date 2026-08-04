@@ -131,12 +131,12 @@ func (b *userBuilder) CreateAccount(
 	pMap := accountInfo.Profile.AsMap()
 	annos := annotations.Annotations{}
 
-	email, ok := pMap["email"].(string)
+	email, ok := pMap[profileFieldEmail].(string)
 	if !ok || email == "" {
 		return nil, nil, nil, fmt.Errorf("email is required")
 	}
 
-	username, ok := pMap["username"].(string)
+	username, ok := pMap[profileFieldUsername].(string)
 	if !ok || username == "" {
 		return nil, nil, nil, fmt.Errorf("username is required")
 	}
@@ -237,11 +237,11 @@ func parseIntoUserResource(user *client.User) (*v2.Resource, error) {
 	}
 
 	profile := map[string]any{
-		"userName":   user.UserName,
-		"email":      user.Email,
-		"isAdmin":    user.IsAdmin,
-		"permission": user.Permission,
-		"status":     user.UserStatus,
+		"userName":        user.UserName,
+		profileFieldEmail: user.Email,
+		"isAdmin":         user.IsAdmin,
+		"permission":      user.Permission,
+		"status":          user.UserStatus,
 	}
 
 	userTraits := []rs.UserTraitOption{

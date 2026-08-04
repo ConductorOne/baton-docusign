@@ -103,20 +103,49 @@ type Client struct {
 	accountId       string
 	userInfo        *UserInfoResponse
 	userInfoExpiry  time.Time
-	mutex           sync.RWMutex // protects baseURI, accountId, userInfo, and userInfoExpiry
+	// clmBaseURI is the DocuSign CLM Object API base URL (a different host than
+	// eSignature's baseURI, e.g. https://api.{site}.{region}.clm.docusign.net),
+	// resolved separately from eSignature's base URI/account info.
+	clmBaseURI      string
+	clmBaseURIReady bool
+	// clmBaseURLOverride is testing-only (see config.ClmBaseURLField): when set,
+	// ensureClmInitialized uses it directly instead of resolving the CLM base URL from
+	// the OAuth token, so CLM calls can be pointed at a local mock server even though
+	// eSignature keeps talking to the real, already-authenticated account.
+	clmBaseURLOverride string
+	// baseURLOverride is testing-only (see config.BaseURLField): when set,
+	// ensureInitialized uses it directly instead of calling the real /oauth/userinfo
+	// endpoint, so the whole connector (not just CLM) can run against a local mock.
+	baseURLOverride string
+	mutex           sync.RWMutex // protects baseURI, accountId, userInfo, userInfoExpiry, clmBaseURI, and clmBaseURIReady
 }
 
 // New constructs a Client with OAuth2 flow, now using dynamic base URI resolution.
 // If configAccountId is non-empty, the client will select that specific account instead of the default.
-func New(ctx context.Context, isDemo bool, clientID, clientSecret, redirectURI, refreshToken, configAccountId string) (*Client, error) {
-	tokenSource := getTokenSource(ctx, isDemo, clientID, clientSecret, redirectURI, refreshToken)
+// includeClm requests the additional OAuth scopes required for the DocuSign CLM API.
+// clmBaseURLOverride and baseURLOverride are testing-only; see their Client field docs.
+// When baseURLOverride is set, the real OAuth refresh flow is skipped entirely and
+// refreshToken is used verbatim as a static bearer token — there's no real account to
+// refresh a token against once eSignature calls are redirected to a local mock.
+func New(
+	ctx context.Context, isDemo bool, clientID, clientSecret, redirectURI, refreshToken, configAccountId string,
+	includeClm bool, clmBaseURLOverride, baseURLOverride string,
+) (*Client, error) {
+	var tokenSource oauth2.TokenSource
+	if baseURLOverride != "" {
+		tokenSource = oauth2.StaticTokenSource(&oauth2.Token{AccessToken: refreshToken})
+	} else {
+		tokenSource = getTokenSource(ctx, isDemo, clientID, clientSecret, redirectURI, refreshToken, includeClm)
+	}
 	baseClient := oauth2.NewClient(ctx, tokenSource)
 
 	return &Client{
-		isDemo:          isDemo,
-		configAccountId: configAccountId,
-		tokenSource:     tokenSource,
-		wrapper:         uhttp.NewBaseHttpClient(baseClient),
+		isDemo:             isDemo,
+		configAccountId:    configAccountId,
+		tokenSource:        tokenSource,
+		baseURLOverride:    baseURLOverride,
+		wrapper:            uhttp.NewBaseHttpClient(baseClient),
+		clmBaseURLOverride: clmBaseURLOverride,
 	}, nil
 }
 
@@ -177,8 +206,11 @@ func (c *Client) RequestRefreshToken(ctx context.Context, clientID, clientSecret
 }
 
 // NewClient initializes a Client with a fixed token and optional HTTP wrapper.
-// If configAccountId is non-empty, the client will select that specific account instead of the default.
-func NewClient(ctx context.Context, isDemo bool, tokenSource oauth2.TokenSource, configAccountId string, httpClient ...*uhttp.BaseHttpClient) *Client {
+// If configAccountId is non-empty, the client will select that specific account instead
+// of the default. clmBaseURLOverride is testing-only; see the Client.clmBaseURLOverride
+// field doc — used by the service-mode path (NewWithTokenSource), where DocuSign auth is
+// handled by ConductorOne's managed OAuth app rather than a local refresh token.
+func NewClient(ctx context.Context, isDemo bool, tokenSource oauth2.TokenSource, configAccountId, clmBaseURLOverride string, httpClient ...*uhttp.BaseHttpClient) *Client {
 	var wrapper *uhttp.BaseHttpClient
 	if len(httpClient) > 0 {
 		wrapper = httpClient[0]
@@ -188,10 +220,11 @@ func NewClient(ctx context.Context, isDemo bool, tokenSource oauth2.TokenSource,
 	}
 
 	return &Client{
-		isDemo:          isDemo,
-		configAccountId: configAccountId,
-		tokenSource:     tokenSource,
-		wrapper:         wrapper,
+		isDemo:             isDemo,
+		clmBaseURLOverride: clmBaseURLOverride,
+		configAccountId:    configAccountId,
+		tokenSource:        tokenSource,
+		wrapper:            wrapper,
 	}
 }
 
@@ -247,6 +280,12 @@ func selectAccount(accounts []AccountInfo, configAccountId string) (*AccountInfo
 func (c *Client) ensureInitialized(ctx context.Context) error {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
+
+	if c.baseURLOverride != "" {
+		c.baseURI = c.baseURLOverride
+		c.accountId = c.configAccountId
+		return nil
+	}
 
 	// Check if we have valid cached user info
 	if c.userInfo != nil && time.Now().Before(c.userInfoExpiry) {
@@ -773,5 +812,5 @@ func (c *Client) doRequest(
 		return nil, nil, err
 	}
 
-	return doRequestCommon(c.wrapper, request, response)
+	return doRequestCommon(c.wrapper, request, response, &ErrorResponse{})
 }

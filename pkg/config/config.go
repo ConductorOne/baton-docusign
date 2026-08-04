@@ -60,11 +60,45 @@ var (
 			"If you want to synchronize different accounts, create different connectors."),
 	)
 
+	// IncludeSigningGroupsField gates whether signingGroupBuilder.List() does any
+	// work (see connector.go's ResourceSyncers) — the resource type itself is always
+	// registered, so this is a runtime gate, not a registration gate.
 	IncludeSigningGroupsField = field.BoolField(
 		"include-signing-groups",
 		field.WithDisplayName("Include Signing Groups"),
-		field.WithDescription("Set to true to include syncing signing groups (for customers with signing groups feature enabled)"),
+		field.WithDescription("Set to true to sync signing groups (for customers with the signing groups feature enabled on their account)."),
 		field.WithDefaultValue(false),
+	)
+
+	// ClmBaseURLField is ops-only and for testing: it lets ConductorOne's own
+	// deployment/support tooling point the connector at a local CLM mock (see
+	// cmd/test-server) when the authenticated account has no CLM subscription of its
+	// own, without changing how eSignature calls are resolved. Hidden from GUI config
+	// and CLI --help — a real tenant admin has no legitimate reason to set this.
+	ClmBaseURLField = field.StringField(
+		"clm-base-url",
+		field.WithDisplayName("CLM Base URL Override"),
+		field.WithDescription("Testing only: overrides the DocuSign CLM API base URL instead of resolving it from the OAuth token's api_base_url. "+
+			"Use to point CLM API calls at a local mock server (see cmd/test-server) when the connected account has no CLM subscription."),
+		field.WithExportTarget(field.ExportTargetCLIOnly),
+		field.WithHidden(true),
+	)
+
+	// BaseURLField is ops-only and for testing: it lets ConductorOne's own
+	// deployment/support tooling run the connector entirely against a local mock (see
+	// cmd/test-server), with no contact with real DocuSign at all. Setting this also
+	// skips the real OAuth token refresh — refresh-token is used verbatim as a static
+	// bearer token, since there's no real account to refresh against once eSignature
+	// calls are redirected to a mock. Combine with clm-base-url (and
+	// --sync-resource-types to skip resource types the mock doesn't serve) to fully
+	// isolate a test run from DocuSign. Hidden from GUI config and CLI --help.
+	BaseURLField = field.StringField(
+		"base-url",
+		field.WithDisplayName("Base URL Override"),
+		field.WithDescription("Testing only: overrides the DocuSign eSignature API base URL and skips the real OAuth token refresh "+
+			"(refresh-token is used verbatim as a static bearer token instead). Use with clm-base-url to point the whole connector at a local mock server (see cmd/test-server)."),
+		field.WithExportTarget(field.ExportTargetCLIOnly),
+		field.WithHidden(true),
 	)
 
 	Oauth2TokenField = field.Oauth2Field(
@@ -85,6 +119,8 @@ var (
 		ConfigureField,
 		AccountIdField,
 		IncludeSigningGroupsField,
+		ClmBaseURLField,
+		BaseURLField,
 		Oauth2TokenField,
 	}
 
