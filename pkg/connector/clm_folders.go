@@ -403,12 +403,14 @@ func clmIsKnownRole(name string) bool {
 }
 
 // clmMemberHrefFromResource reads back the Href stashed in a CLM member resource's
-// profile (see parseIntoClmMemberResource) — needed to reference the member in a
-// folder-security grant body.
+// ExternalId (see parseIntoClmMemberResource) — needed to reference the member in a
+// folder-security grant body. Reads ExternalId, not the profile: the SDK's local
+// provisioner rebuilds the principal passed to Grant/Revoke without the top-level
+// profile, but preserves ExternalId (see parseIntoClmMemberResource's comment).
 func clmMemberHrefFromResource(principal *v2.Resource) (string, error) {
-	href, ok := rs.GetProfileStringValue(rs.GetProfile(principal), "href")
-	if !ok || href == "" {
-		return "", fmt.Errorf("baton-docusign: CLM member resource %s is missing its href profile field", principal.Id.Resource)
+	href := principal.GetExternalId().GetId()
+	if href == "" {
+		return "", fmt.Errorf("baton-docusign: CLM member resource %s is missing its href external ID", principal.Id.Resource)
 	}
 	return href, nil
 }

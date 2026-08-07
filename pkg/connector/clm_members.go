@@ -83,7 +83,12 @@ func newClmMemberBuilder(c *client.Client) *clmMemberBuilder {
 	}
 }
 
-// parseIntoClmMemberResource maps a client.ClmMember to a Baton v2.Resource.
+// parseIntoClmMemberResource maps a client.ClmMember to a Baton v2.Resource. The Href
+// is also stashed via WithExternalID, not just the profile — the SDK's local
+// provisioner (pkg/provisioner/provisioner.go) rebuilds the principal it hands to
+// Grant/Revoke from only Id/DisplayName/Annotations/Description/ExternalId/
+// ParentResourceId, dropping the top-level profile. ExternalId is the field that
+// actually survives to clmMemberHrefFromResource.
 func parseIntoClmMemberResource(member *client.ClmMember) (*v2.Resource, error) {
 	profile := map[string]any{
 		profileFieldEmail:    member.Email,
@@ -109,5 +114,6 @@ func parseIntoClmMemberResource(member *client.ClmMember) (*v2.Resource, error) 
 		clmIDFromHref(member.Href),
 		userTraits,
 		rs.WithResourceProfile(profile),
+		rs.WithExternalID(&v2.ExternalId{Id: member.Href}),
 	)
 }

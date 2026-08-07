@@ -221,9 +221,11 @@ func newClmGroupBuilder(c *client.Client) *clmGroupBuilder {
 }
 
 // parseIntoClmGroupResource maps a client.ClmGroup to a Baton v2.Resource. The Href is
-// carried in the profile (not just used to derive the ResourceId) so Grant() can
-// reconstruct a reference to this group without needing to guess a URL — see
-// clmGroupHrefFromResource.
+// carried both in the profile (for display) and via WithExternalID — ExternalId is
+// what clmGroupHrefFromResource actually reads, because the SDK's local provisioner
+// (pkg/provisioner/provisioner.go) rebuilds the principal it hands to Grant/Revoke from
+// only Id/DisplayName/Annotations/Description/ExternalId/ParentResourceId, dropping the
+// top-level profile.
 func parseIntoClmGroupResource(group *client.ClmGroup) (*v2.Resource, error) {
 	profile := map[string]any{
 		"name":      group.Name,
@@ -237,16 +239,17 @@ func parseIntoClmGroupResource(group *client.ClmGroup) (*v2.Resource, error) {
 		clmIDFromHref(group.Href),
 		nil,
 		rs.WithResourceProfile(profile),
+		rs.WithExternalID(&v2.ExternalId{Id: group.Href}),
 	)
 }
 
 // clmGroupHrefFromResource reads back the Href stashed in a CLM group resource's
-// profile (see parseIntoClmGroupResource) — needed to reference the group in a
+// ExternalId (see parseIntoClmGroupResource) — needed to reference the group in a
 // Members.Patch grant body.
 func clmGroupHrefFromResource(groupResource *v2.Resource) (string, error) {
-	href, ok := rs.GetProfileStringValue(rs.GetProfile(groupResource), "href")
-	if !ok || href == "" {
-		return "", fmt.Errorf("baton-docusign: CLM group resource %s is missing its href profile field", groupResource.Id.Resource)
+	href := groupResource.GetExternalId().GetId()
+	if href == "" {
+		return "", fmt.Errorf("baton-docusign: CLM group resource %s is missing its href external ID", groupResource.Id.Resource)
 	}
 	return href, nil
 }
