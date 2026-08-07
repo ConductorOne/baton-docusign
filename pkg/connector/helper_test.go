@@ -3,10 +3,13 @@ package connector
 import (
 	"context"
 	"errors"
+	"reflect"
 	"testing"
 
+	"github.com/conductorone/baton-docusign/pkg/client/clmtest"
 	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
 	rs "github.com/conductorone/baton-sdk/pkg/types/resource"
+	"github.com/grpc-ecosystem/go-grpc-middleware/logging/zap/ctxzap"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -85,6 +88,40 @@ func TestClmHrefWithID(t *testing.T) {
 	}
 	if want := "https://clm.example.com/v2/acct-1/groups/group-new"; got != want {
 		t.Errorf("clmHrefWithID = %q, want %q", got, want)
+	}
+}
+
+// TestClmSkipLogLevel confirms clmSkipLogLevel's only real decision: log louder (Warn,
+// not Info) when the tolerated error didn't actually come from CLM account discovery.
+// It does NOT gate whether the sync skips gracefully — both a discovery error and a
+// plain one are equally tolerated by isOptInFeatureUnavailableError, unchanged. See
+// clmSkipLogLevel's doc for why gating on the source, not just the log level, was tried
+// and reverted.
+func TestClmSkipLogLevel(t *testing.T) {
+	ctx := context.Background()
+
+	s, _ := clmtest.NewServer(t)
+	discoveryErr := s.NewClientWithToken("wrong-token").EnsureClmReady(ctx)
+	if discoveryErr == nil {
+		t.Fatal("test setup: expected EnsureClmReady to fail for a bad token")
+	}
+	// Stands in for a real per-resource CLM data call (SearchFolders, ListGroups, ...)
+	// failing for an unrelated reason (an expired token mid-sync, a narrower scope
+	// problem) after discovery already succeeded — isOptInFeatureUnavailableError
+	// tolerates this identically to a discovery error, but it doesn't have the same
+	// one-directional "this means no CLM subscription" guarantee.
+	plainErr := status.Error(codes.Unauthenticated, "token expired mid-sync")
+
+	discoveryLevel := reflect.ValueOf(clmSkipLogLevel(ctx, discoveryErr)).Pointer()
+	plainLevel := reflect.ValueOf(clmSkipLogLevel(ctx, plainErr)).Pointer()
+	infoLevel := reflect.ValueOf(ctxzap.Extract(ctx).Info).Pointer()
+	warnLevel := reflect.ValueOf(ctxzap.Extract(ctx).Warn).Pointer()
+
+	if discoveryLevel != infoLevel {
+		t.Error("expected a discovery-sourced error to log at Info")
+	}
+	if plainLevel != warnLevel {
+		t.Error("expected a non-discovery error to log at Warn")
 	}
 }
 

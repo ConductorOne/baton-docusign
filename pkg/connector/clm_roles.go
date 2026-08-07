@@ -6,7 +6,6 @@ import (
 	"github.com/conductorone/baton-docusign/pkg/client"
 	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
 	rs "github.com/conductorone/baton-sdk/pkg/types/resource"
-	"github.com/grpc-ecosystem/go-grpc-middleware/logging/zap/ctxzap"
 	"go.uber.org/zap"
 )
 
@@ -31,8 +30,8 @@ func (b *clmRoleBuilder) ResourceType(_ context.Context) *v2.ResourceType {
 // apply, unlike the paginated CLM builders).
 func (b *clmRoleBuilder) List(ctx context.Context, _ *v2.ResourceId, _ rs.SyncOpAttrs) ([]*v2.Resource, *rs.SyncOpResults, error) {
 	if err := b.client.EnsureClmReady(ctx); err != nil {
-		if isClmUnavailableError(err) {
-			ctxzap.Extract(ctx).Info("baton-docusign: CLM is not available for this account or token, skipping clm_role sync", zap.Error(err))
+		if isOptInFeatureUnavailableError(err) {
+			clmSkipLogLevel(ctx, err)("baton-docusign: CLM is not available for this account or token, skipping clm_role sync", zap.Error(err))
 			return nil, &rs.SyncOpResults{}, nil
 		}
 		return nil, nil, err

@@ -84,15 +84,28 @@ func isOptInFeatureUnavailableError(err error) bool {
 	}
 }
 
-// isClmUnavailableError is isOptInFeatureUnavailableError's CLM-specific counterpart,
-// used by all 5 CLM builders' List() methods (not signing_group, which has no separate
-// discovery step to distinguish from its one real call). isOptInFeatureUnavailableError
-// alone isn't precise enough here: its codes can also come from a real per-resource CLM
-// data call (SearchFolders, ListGroups, ...) failing for an unrelated reason once
-// discovery has already succeeded — see client.IsClmDiscoveryError's doc. Requiring
-// both narrows the tolerance to what the account-discovery call itself can produce.
-func isClmUnavailableError(err error) bool {
-	return client.IsClmDiscoveryError(err) && isOptInFeatureUnavailableError(err)
+// clmSkipLogLevel picks Info or Warn for the "CLM is not available, skipping sync" log
+// line every CLM builder's List() emits when isOptInFeatureUnavailableError tolerates
+// an error. Deliberately does NOT gate whether the sync skips gracefully — only two
+// tries at that were made and both were wrong: the original behavior tolerates any of
+// isOptInFeatureUnavailableError's codes regardless of source, and an earlier version
+// of this function required client.IsClmDiscoveryError (i.e. only a failure from
+// ensureClmInitialized's account-discovery call, never a later per-resource CLM data
+// call) — but a genuine "no CLM subscription" signal can legitimately come from either
+// place depending on where DocuSign enforces the check for a given account, and this
+// project has no live CLM tenant to confirm which. Narrowing the gate risked turning a
+// previously-graceful skip into a hard sync failure for a real account shape, which is
+// a worse regression than the observability gap it would have fixed. So: same
+// tolerance as before, but logged louder when the source isn't discovery, since that
+// case doesn't have the same one-directional guarantee a discovery failure does (it
+// could also be a narrower problem — a token that expired mid-sync, a scope issue on
+// just this endpoint — being silently treated as "nothing to sync" rather than a real
+// failure) and is worth a human noticing.
+func clmSkipLogLevel(ctx context.Context, err error) func(string, ...zap.Field) {
+	if client.IsClmDiscoveryError(err) {
+		return ctxzap.Extract(ctx).Info
+	}
+	return ctxzap.Extract(ctx).Warn
 }
 
 // clmIDFromHref extracts the trailing path segment from a CLM object's Href — see
