@@ -422,6 +422,89 @@ func TestClmFolderBuilder_GrantAndRevoke_ToleratesBareIDOnRead(t *testing.T) {
 	}
 }
 
+// clmSimulateProvisionerPrincipal rebuilds r the way the SDK's local file-mode
+// provisioner does before handing a principal to Grant/Revoke (see
+// vendor/github.com/conductorone/baton-sdk/pkg/provisioner/provisioner.go's grant/revoke
+// functions): only Id, DisplayName, Annotations, Description, and ParentResourceId
+// survive — notably NOT the top-level Profile, which is where this connector used to
+// stash the CLM href before the fix TestClmFolderBuilder_GrantAndRevoke_
+// SurvivesProvisionerPrincipalReconstruction regression-guards. Deliberately excludes
+// ExternalId even though the real provisioner does still copy it: the SDK marks that
+// field `[deprecated = true]` and this connector no longer relies on it (see
+// parseIntoClmMemberResource/parseIntoClmGroupResource).
+func clmSimulateProvisionerPrincipal(r *v2.Resource) *v2.Resource {
+	return &v2.Resource{
+		Id:               r.Id,
+		DisplayName:      r.DisplayName,
+		Annotations:      r.Annotations,
+		Description:      r.Description,
+		ParentResourceId: r.ParentResourceId,
+	}
+}
+
+// TestClmFolderBuilder_GrantAndRevoke_SurvivesProvisionerPrincipalReconstruction is a
+// regression test for the bug fixed by carrying the CLM href as a v2.ExternalId
+// annotation instead of only the top-level profile. Every other Grant/Revoke test in
+// this file passes the fully-populated resource parseIntoClm*Resource returns, which
+// still has both profile and the annotation — so it would pass whether or not the fix
+// actually works. This test instead passes a principal reconstructed the way the real
+// offline/local provisioning path (baton-sdk's Provisioner) actually delivers it — see
+// clmSimulateProvisionerPrincipal — to confirm the Href is still recoverable.
+func TestClmFolderBuilder_GrantAndRevoke_SurvivesProvisionerPrincipalReconstruction(t *testing.T) {
+	srv, c := clmtest.NewServer(t)
+	b := newClmFolderBuilder(c)
+	ctx := context.Background()
+
+	folderResource, err := rs.NewResource("Templates", clmFolderResourceType, "folder-templates")
+	if err != nil {
+		t.Fatalf("NewResource: %v", err)
+	}
+
+	t.Run("clm_group principal", func(t *testing.T) {
+		full, err := parseIntoClmGroupResource(&client.ClmGroup{Name: "Operations", Href: srv.GroupHref("group-ops")})
+		if err != nil {
+			t.Fatalf("parseIntoClmGroupResource: %v", err)
+		}
+		principal := clmSimulateProvisionerPrincipal(full)
+		ent := &v2.Entitlement{Slug: "view", Resource: folderResource}
+
+		if _, _, err := b.Grant(ctx, principal, ent); err != nil {
+			t.Fatalf("Grant with a provisioner-reconstructed principal: %v", err)
+		}
+		groups := srv.FolderSecurity("folder-templates").Groups.Items
+		if len(groups) != 1 || groups[0].AccessType != client.ClmAccessTypeView {
+			t.Fatalf("expected one View group entry after Grant, got %+v", groups)
+		}
+
+		grantObj := &v2.Grant{Principal: principal, Entitlement: ent}
+		if _, err := b.Revoke(ctx, grantObj); err != nil {
+			t.Fatalf("Revoke with a provisioner-reconstructed principal: %v", err)
+		}
+	})
+
+	t.Run("clm_member principal", func(t *testing.T) {
+		full, err := parseIntoClmMemberResource(&client.ClmMember{Email: "dave@example.com", UserName: "dave", Href: srv.MemberHref("member-dave")})
+		if err != nil {
+			t.Fatalf("parseIntoClmMemberResource: %v", err)
+		}
+		principal := clmSimulateProvisionerPrincipal(full)
+		ent := &v2.Entitlement{Slug: "view", Resource: folderResource}
+
+		if _, _, err := b.Grant(ctx, principal, ent); err != nil {
+			t.Fatalf("Grant with a provisioner-reconstructed principal: %v", err)
+		}
+		users := srv.FolderSecurity("folder-templates").Users.Items
+		if len(users) != 1 || users[0].AccessType != client.ClmAccessTypeView {
+			t.Fatalf("expected one View user entry after Grant, got %+v", users)
+		}
+
+		grantObj := &v2.Grant{Principal: principal, Entitlement: ent}
+		if _, err := b.Revoke(ctx, grantObj); err != nil {
+			t.Fatalf("Revoke with a provisioner-reconstructed principal: %v", err)
+		}
+	})
+}
+
 func hasAlreadyExists(annos annotations.Annotations) bool {
 	return annos.Contains(&v2.GrantAlreadyExists{})
 }

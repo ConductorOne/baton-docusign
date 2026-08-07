@@ -84,11 +84,15 @@ func newClmMemberBuilder(c *client.Client) *clmMemberBuilder {
 }
 
 // parseIntoClmMemberResource maps a client.ClmMember to a Baton v2.Resource. The Href
-// is also stashed via WithExternalID, not just the profile — the SDK's local
-// provisioner (pkg/provisioner/provisioner.go) rebuilds the principal it hands to
-// Grant/Revoke from only Id/DisplayName/Annotations/Description/ExternalId/
-// ParentResourceId, dropping the top-level profile. ExternalId is the field that
-// actually survives to clmMemberHrefFromResource.
+// is also stashed as a raw v2.ExternalId annotation, not just the profile — the SDK's
+// local provisioner (pkg/provisioner/provisioner.go) rebuilds the principal it hands to
+// Grant/Revoke from only Id/DisplayName/Annotations/Description/(deprecated)ExternalId/
+// ParentResourceId, dropping the top-level profile. Annotations is what survives to
+// clmMemberHrefFromResource — deliberately not Resource.ExternalId itself, which is
+// `[deprecated = true]` in the proto (SA1019) and no longer read by anything. Reusing
+// the ExternalId message shape as a plain annotation (rs.WithAnnotation, not
+// rs.WithExternalID) sidesteps that deprecated field entirely while still surviving the
+// same reconstruction, since Annotations there is copied verbatim.
 func parseIntoClmMemberResource(member *client.ClmMember) (*v2.Resource, error) {
 	profile := map[string]any{
 		profileFieldEmail:    member.Email,
@@ -114,6 +118,6 @@ func parseIntoClmMemberResource(member *client.ClmMember) (*v2.Resource, error) 
 		clmIDFromHref(member.Href),
 		userTraits,
 		rs.WithResourceProfile(profile),
-		rs.WithExternalID(&v2.ExternalId{Id: member.Href}),
+		rs.WithAnnotation(&v2.ExternalId{Id: member.Href}),
 	)
 }
