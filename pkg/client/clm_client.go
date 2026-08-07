@@ -106,6 +106,7 @@ const (
 	clmSearchFolders    = "/v2/%s/folders/search"
 	clmGetFolder        = "/v2/%s/folders/%s"
 	clmPatchFolder      = "/v2/%s/folders/%s"
+	clmGetGroup         = "/v2/%s/groups/%s"
 	clmGetGroups        = "/v2/%s/groups"
 	clmGetGroupMembers  = "/v2/%s/groups/%s/groupmembers"
 	clmGetMembers       = "/v2/%s/members"
@@ -418,6 +419,39 @@ func (c *Client) ListGroups(ctx context.Context, options PageOptions) ([]ClmGrou
 		return nil, "", anno, err
 	}
 	return page.Items, nextToken, anno, nil
+}
+
+// GroupHref builds a CLM group's Href from its native ID and the already-resolved CLM
+// base URL — for callers that only have a group's ResourceId, not a fully-hydrated
+// Resource to read a stashed Href from. Needed because a Resource carrying only
+// identity (no profile, no annotations) is not an edge case here: the pebble storage
+// engine's V3EntitlementToV2 (vendor/.../dotc1z/engine/pebble/translate_v2.go)
+// deliberately hydrates an Entitlement's Resource as an identity-only stub, by design,
+// on every read — so an entitlement-side lookup can never rely on anything beyond the
+// ID surviving. Matches the same "/v2/{account}/groups/{id}" shape every other CLM
+// group request already uses (clmGetGroup) and clmtest's own Server.GroupHref.
+func (c *Client) GroupHref(ctx context.Context, groupID string) (string, error) {
+	if err := c.ensureClmReady(ctx); err != nil {
+		return "", err
+	}
+	groupURL, err := c.buildClmClientURL(clmGetGroup, groupID)
+	if err != nil {
+		return "", err
+	}
+	return groupURL.String(), nil
+}
+
+// MemberHref is GroupHref's counterpart for CLM members — see its doc for why this
+// derives the Href from the ID rather than reading it off a Resource.
+func (c *Client) MemberHref(ctx context.Context, memberID string) (string, error) {
+	if err := c.ensureClmReady(ctx); err != nil {
+		return "", err
+	}
+	memberURL, err := c.buildClmClientURL(clmPatchPutMember, memberID)
+	if err != nil {
+		return "", err
+	}
+	return memberURL.String(), nil
 }
 
 // GetGroupMembers lists the members of a CLM group.

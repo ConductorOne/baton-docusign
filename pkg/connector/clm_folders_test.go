@@ -422,35 +422,31 @@ func TestClmFolderBuilder_GrantAndRevoke_ToleratesBareIDOnRead(t *testing.T) {
 	}
 }
 
-// clmSimulateProvisionerPrincipal rebuilds r the way the SDK's local file-mode
-// provisioner does before handing a principal to Grant/Revoke (see
-// vendor/github.com/conductorone/baton-sdk/pkg/provisioner/provisioner.go's grant/revoke
-// functions): only Id, DisplayName, Annotations, Description, and ParentResourceId
-// survive — notably NOT the top-level Profile, which is where this connector used to
-// stash the CLM href before the fix TestClmFolderBuilder_GrantAndRevoke_
-// SurvivesProvisionerPrincipalReconstruction regression-guards. Deliberately excludes
-// ExternalId even though the real provisioner does still copy it: the SDK marks that
-// field `[deprecated = true]` and this connector no longer relies on it (see
-// parseIntoClmMemberResource/parseIntoClmGroupResource).
-func clmSimulateProvisionerPrincipal(r *v2.Resource) *v2.Resource {
+// clmIdentityOnlyResource builds a Resource carrying nothing but its Id — the worst
+// case any code path in this connector can hand Grant/Revoke a principal in: it's what
+// the SDK's local file-mode provisioner effectively reduces a principal to once you
+// strip the fields no longer relied on (see the previous commit), and it's exactly what
+// the pebble storage engine's V3EntitlementToV2 (vendor/.../dotc1z/engine/pebble/
+// translate_v2.go) hydrates an Entitlement's own Resource as on every read, by design,
+// regardless of provisioning path. clmMemberHrefFromResource/clmGroupHrefFromResource
+// no longer exist — Grant/Revoke derive the Href straight from resourceID via
+// client.GroupHref/client.MemberHref, so nothing beyond Id is ever needed.
+func clmIdentityOnlyResource(resourceType *v2.ResourceType, resourceID string) *v2.Resource {
 	return &v2.Resource{
-		Id:               r.Id,
-		DisplayName:      r.DisplayName,
-		Annotations:      r.Annotations,
-		Description:      r.Description,
-		ParentResourceId: r.ParentResourceId,
+		Id: &v2.ResourceId{ResourceType: resourceType.Id, Resource: resourceID},
 	}
 }
 
-// TestClmFolderBuilder_GrantAndRevoke_SurvivesProvisionerPrincipalReconstruction is a
-// regression test for the bug fixed by carrying the CLM href as a v2.ExternalId
-// annotation instead of only the top-level profile. Every other Grant/Revoke test in
-// this file passes the fully-populated resource parseIntoClm*Resource returns, which
-// still has both profile and the annotation — so it would pass whether or not the fix
-// actually works. This test instead passes a principal reconstructed the way the real
-// offline/local provisioning path (baton-sdk's Provisioner) actually delivers it — see
-// clmSimulateProvisionerPrincipal — to confirm the Href is still recoverable.
-func TestClmFolderBuilder_GrantAndRevoke_SurvivesProvisionerPrincipalReconstruction(t *testing.T) {
+// TestClmFolderBuilder_GrantAndRevoke_SurvivesIdentityOnlyPrincipal is a regression test
+// for the bug originally fixed by carrying the CLM href on the resource (first via
+// ExternalId, then an annotation) and, after the pebble-engine gap the annotation
+// approach missed, fixed properly by deriving the Href from the ID instead. Every other
+// Grant/Revoke test in this file passes the fully-populated resource
+// parseIntoClm*Resource returns — so it would pass whether or not either fix actually
+// worked. This test instead passes an identity-only principal — see
+// clmIdentityOnlyResource — to confirm the Href is still derivable with nothing else on
+// the resource to fall back to.
+func TestClmFolderBuilder_GrantAndRevoke_SurvivesIdentityOnlyPrincipal(t *testing.T) {
 	srv, c := clmtest.NewServer(t)
 	b := newClmFolderBuilder(c)
 	ctx := context.Background()
@@ -461,15 +457,11 @@ func TestClmFolderBuilder_GrantAndRevoke_SurvivesProvisionerPrincipalReconstruct
 	}
 
 	t.Run("clm_group principal", func(t *testing.T) {
-		full, err := parseIntoClmGroupResource(&client.ClmGroup{Name: "Operations", Href: srv.GroupHref("group-ops")})
-		if err != nil {
-			t.Fatalf("parseIntoClmGroupResource: %v", err)
-		}
-		principal := clmSimulateProvisionerPrincipal(full)
+		principal := clmIdentityOnlyResource(clmGroupResourceType, "group-ops")
 		ent := &v2.Entitlement{Slug: "view", Resource: folderResource}
 
 		if _, _, err := b.Grant(ctx, principal, ent); err != nil {
-			t.Fatalf("Grant with a provisioner-reconstructed principal: %v", err)
+			t.Fatalf("Grant with an identity-only principal: %v", err)
 		}
 		groups := srv.FolderSecurity("folder-templates").Groups.Items
 		if len(groups) != 1 || groups[0].AccessType != client.ClmAccessTypeView {
@@ -478,20 +470,16 @@ func TestClmFolderBuilder_GrantAndRevoke_SurvivesProvisionerPrincipalReconstruct
 
 		grantObj := &v2.Grant{Principal: principal, Entitlement: ent}
 		if _, err := b.Revoke(ctx, grantObj); err != nil {
-			t.Fatalf("Revoke with a provisioner-reconstructed principal: %v", err)
+			t.Fatalf("Revoke with an identity-only principal: %v", err)
 		}
 	})
 
 	t.Run("clm_member principal", func(t *testing.T) {
-		full, err := parseIntoClmMemberResource(&client.ClmMember{Email: "dave@example.com", UserName: "dave", Href: srv.MemberHref("member-dave")})
-		if err != nil {
-			t.Fatalf("parseIntoClmMemberResource: %v", err)
-		}
-		principal := clmSimulateProvisionerPrincipal(full)
+		principal := clmIdentityOnlyResource(clmMemberResourceType, "member-dave")
 		ent := &v2.Entitlement{Slug: "view", Resource: folderResource}
 
 		if _, _, err := b.Grant(ctx, principal, ent); err != nil {
-			t.Fatalf("Grant with a provisioner-reconstructed principal: %v", err)
+			t.Fatalf("Grant with an identity-only principal: %v", err)
 		}
 		users := srv.FolderSecurity("folder-templates").Users.Items
 		if len(users) != 1 || users[0].AccessType != client.ClmAccessTypeView {

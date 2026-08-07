@@ -176,6 +176,48 @@ func TestClmGroupBuilder_GrantAndRevoke_Idempotent(t *testing.T) {
 	}
 }
 
+// TestClmGroupBuilder_Grant_SurvivesIdentityOnlyEntitlementResource is a regression
+// test for a gap the annotation-based fix in the previous commit missed: the pebble
+// storage engine's V3EntitlementToV2 (vendor/.../dotc1z/engine/pebble/translate_v2.go)
+// deliberately hydrates an Entitlement's Resource as an identity-only stub on every
+// read — no profile, no annotations, nothing but Id. clmGroupBuilder.Grant previously
+// read the group's Href off ent.Resource; on pebble that would always fail, in every
+// version of this connector including the one before this test existed. It now derives
+// the Href straight from ent.Resource.Id.Resource via client.GroupHref instead, which
+// needs nothing else to survive.
+func TestClmGroupBuilder_Grant_SurvivesIdentityOnlyEntitlementResource(t *testing.T) {
+	srv, c := clmtest.NewServer(t)
+	b := newClmGroupBuilder(c)
+	ctx := context.Background()
+
+	memberResource, err := rs.NewResource("Carol", clmMemberResourceType, "member-carol")
+	if err != nil {
+		t.Fatalf("NewResource: %v", err)
+	}
+	// An identity-only Resource — exactly what V3EntitlementToV2 hands back on pebble,
+	// carrying nothing but the group's ID.
+	identityOnlyGroupResource := &v2.Resource{
+		Id: &v2.ResourceId{ResourceType: clmGroupResourceType.Id, Resource: "group-legal"},
+	}
+	ent := &v2.Entitlement{Slug: entitlementClmGroupMember, Resource: identityOnlyGroupResource}
+
+	if _, annos, err := b.Grant(ctx, memberResource, ent); err != nil {
+		t.Fatalf("Grant with an identity-only ent.Resource: %v", err)
+	} else if hasAlreadyExists(annos) {
+		t.Error("first Grant should not report GrantAlreadyExists")
+	}
+	groups := srv.MemberGroups("member-carol")
+	found := false
+	for _, g := range groups {
+		if g == "group-legal" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected carol to be granted group-legal, got %v", groups)
+	}
+}
+
 // TestClmGroupMemberSlugRegressionPin guards against an accidental rename of
 // the "member" entitlement slug: since clm_group is a new, unreleased
 // resource type, add this before the first release locks the slug in.

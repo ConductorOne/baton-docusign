@@ -200,7 +200,7 @@ func (f *clmFolderBuilder) Grant(ctx context.Context, principal *v2.Resource, en
 
 	switch principal.Id.ResourceType {
 	case clmGroupResourceType.Id:
-		groupHref, err := clmGroupHrefFromResource(principal)
+		groupHref, err := f.client.GroupHref(ctx, principal.Id.Resource)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -223,7 +223,7 @@ func (f *clmFolderBuilder) Grant(ctx context.Context, principal *v2.Resource, en
 			write.Roles = append(write.Roles, client.ClmRoleSecurityEntry{AccessType: accessType, Item: roleName})
 		}
 	case clmMemberResourceType.Id:
-		memberHref, err := clmMemberHrefFromResource(principal)
+		memberHref, err := f.client.MemberHref(ctx, principal.Id.Resource)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -263,7 +263,7 @@ func clmFolderSecurityToWrite(sec client.ClmFolderSecurity) client.ClmFolderSecu
 
 // clmFindGroupSecurityIndex returns the index of entries whose Href identifies
 // groupHref (compared via clmIDFromHref, since the read-side Href shape isn't
-// guaranteed to match exactly — see clmGroupHrefFromResource), or -1 if not found.
+// guaranteed to match exactly — see client.GroupHref), or -1 if not found.
 func clmFindGroupSecurityIndex(entries []client.ClmGroupSecurityEntry, groupHref string) int {
 	for i, e := range entries {
 		if clmIDFromHref(e.Href) == clmIDFromHref(groupHref) {
@@ -311,7 +311,7 @@ func (f *clmFolderBuilder) Revoke(ctx context.Context, grantObj *v2.Grant) (anno
 
 	switch principal.Id.ResourceType {
 	case clmGroupResourceType.Id:
-		groupHref, err := clmGroupHrefFromResource(principal)
+		groupHref, err := f.client.GroupHref(ctx, principal.Id.Resource)
 		if err != nil {
 			return nil, err
 		}
@@ -328,7 +328,7 @@ func (f *clmFolderBuilder) Revoke(ctx context.Context, grantObj *v2.Grant) (anno
 		}
 		write.Roles[i].AccessType = client.ClmAccessTypeNoAccess
 	case clmMemberResourceType.Id:
-		memberHref, err := clmMemberHrefFromResource(principal)
+		memberHref, err := f.client.MemberHref(ctx, principal.Id.Resource)
 		if err != nil {
 			return nil, err
 		}
@@ -402,13 +402,3 @@ func clmIsKnownRole(name string) bool {
 	return false
 }
 
-// clmMemberHrefFromResource reads back the Href stashed in a CLM member resource (see
-// parseIntoClmMemberResource and clmHrefFromResource) — needed to reference the member
-// in a folder-security grant body.
-func clmMemberHrefFromResource(principal *v2.Resource) (string, error) {
-	href, ok := clmHrefFromResource(principal)
-	if !ok || href == "" {
-		return "", fmt.Errorf("baton-docusign: CLM member resource %s is missing its href", principal.Id.Resource)
-	}
-	return href, nil
-}

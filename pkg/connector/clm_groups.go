@@ -150,7 +150,10 @@ func (g *clmGroupBuilder) Grant(ctx context.Context, principal *v2.Resource, ent
 
 	memberID := principal.Id.Resource
 	groupID := ent.Resource.Id.Resource
-	groupHref, err := clmGroupHrefFromResource(ent.Resource)
+	// Derive the group's Href from its ID rather than reading it off ent.Resource: the
+	// pebble storage engine hydrates an entitlement's Resource as an identity-only stub
+	// (no profile, no annotations) — see client.GroupHref's doc.
+	groupHref, err := g.client.GroupHref(ctx, groupID)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -221,16 +224,10 @@ func newClmGroupBuilder(c *client.Client) *clmGroupBuilder {
 }
 
 // parseIntoClmGroupResource maps a client.ClmGroup to a Baton v2.Resource. The Href is
-// carried both in the profile (for display, and as a fallback — see
-// clmHrefFromResource) and as a raw v2.ExternalId annotation, which is what
-// clmGroupHrefFromResource actually prefers: the SDK's local provisioner
-// (pkg/provisioner/provisioner.go) rebuilds the principal it hands to Grant/Revoke from
-// only Id/DisplayName/Annotations/Description/(deprecated)ExternalId/ParentResourceId,
-// dropping the top-level profile — Annotations is what survives. Deliberately
-// rs.WithAnnotation, not rs.WithExternalID: Resource.ExternalId itself is
-// `[deprecated = true]` in the proto (SA1019) and no longer read by anything: reusing
-// the ExternalId message shape as a plain annotation sidesteps that deprecated field
-// while still surviving the same reconstruction.
+// kept in the profile for display only — Grant/Revoke derive it directly from the
+// group's ID via client.GroupHref instead of reading it off the resource, since neither
+// a top-level profile nor an annotation is guaranteed to survive to where it's needed
+// (see client.GroupHref's doc for why).
 func parseIntoClmGroupResource(group *client.ClmGroup) (*v2.Resource, error) {
 	profile := map[string]any{
 		"name":      group.Name,
@@ -244,17 +241,5 @@ func parseIntoClmGroupResource(group *client.ClmGroup) (*v2.Resource, error) {
 		clmIDFromHref(group.Href),
 		nil,
 		rs.WithResourceProfile(profile),
-		rs.WithAnnotation(&v2.ExternalId{Id: group.Href}),
 	)
-}
-
-// clmGroupHrefFromResource reads back the Href stashed in a CLM group resource (see
-// parseIntoClmGroupResource and clmHrefFromResource) — needed to reference the group in
-// a Members.Patch grant body.
-func clmGroupHrefFromResource(groupResource *v2.Resource) (string, error) {
-	href, ok := clmHrefFromResource(groupResource)
-	if !ok || href == "" {
-		return "", fmt.Errorf("baton-docusign: CLM group resource %s is missing its href", groupResource.Id.Resource)
-	}
-	return href, nil
 }

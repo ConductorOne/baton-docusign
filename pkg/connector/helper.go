@@ -4,9 +4,7 @@ import (
 	"strings"
 
 	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
-	"github.com/conductorone/baton-sdk/pkg/annotations"
 	"github.com/conductorone/baton-sdk/pkg/pagination"
-	rs "github.com/conductorone/baton-sdk/pkg/types/resource"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -75,22 +73,6 @@ func isOptInFeatureUnavailableError(err error) bool {
 	default:
 		return false
 	}
-}
-
-// clmHrefFromResource reads back a CLM object's Href, preferring the raw v2.ExternalId
-// annotation set at sync time (see parseIntoClmMemberResource/parseIntoClmGroupResource)
-// — the one thing that survives the SDK's local provisioner rebuilding a principal for
-// Grant/Revoke, since Annotations is copied verbatim there while the top-level profile
-// is dropped — and falling back to the profile's "href" field for a resource the
-// provisioner never rebuilds in the first place (an entitlement's own Resource, read
-// directly from the store) or one synced before this annotation existed.
-func clmHrefFromResource(r *v2.Resource) (string, bool) {
-	var ext v2.ExternalId
-	annos := annotations.Annotations(r.GetAnnotations())
-	if ok, err := annos.Pick(&ext); err == nil && ok && ext.GetId() != "" {
-		return ext.GetId(), true
-	}
-	return rs.GetProfileStringValue(rs.GetProfile(r), "href")
 }
 
 // clmIDFromHref extracts the trailing path segment from a CLM object's Href — CLM's
