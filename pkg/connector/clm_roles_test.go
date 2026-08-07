@@ -5,13 +5,16 @@ import (
 	"testing"
 
 	"github.com/conductorone/baton-docusign/pkg/client"
+	"github.com/conductorone/baton-docusign/pkg/client/clmtest"
 	rs "github.com/conductorone/baton-sdk/pkg/types/resource"
 )
 
 func TestClmRoleBuilder_List(t *testing.T) {
-	// Not backed by an API call — the mock server isn't even needed here, unlike every
-	// other CLM builder's List test.
-	b := newClmRoleBuilder(nil)
+	// The role set itself isn't backed by an API call, but List() now checks CLM
+	// availability via EnsureClmReady first (see clm_roles.go), so it needs a working
+	// mock client to reach the "CLM is available" branch.
+	_, c := clmtest.NewServer(t)
+	b := newClmRoleBuilder(c)
 	ctx := context.Background()
 
 	resources, res, err := b.List(ctx, nil, rs.SyncOpAttrs{})
@@ -28,6 +31,27 @@ func TestClmRoleBuilder_List(t *testing.T) {
 		if r.Id.Resource != client.ClmRoles[i].Name {
 			t.Errorf("resource %d: expected ID %q, got %q", i, client.ClmRoles[i].Name, r.Id.Resource)
 		}
+	}
+}
+
+func TestClmRoleBuilder_List_SkipsGracefullyWhenClmUnavailable(t *testing.T) {
+	// See clm_members_test.go's identical test for the full rationale. Before the 2a
+	// fix, clm_roles.go's List() made no API call at all, so this case couldn't happen
+	// — the 5 fixed roles synced unconditionally even without CLM access.
+	s, _ := clmtest.NewServer(t)
+	badClient := s.NewClientWithToken("wrong-token")
+	b := newClmRoleBuilder(badClient)
+	ctx := context.Background()
+
+	resources, res, err := b.List(ctx, nil, rs.SyncOpAttrs{})
+	if err != nil {
+		t.Fatalf("expected List to tolerate an unavailable CLM account and skip gracefully, got error: %v", err)
+	}
+	if len(resources) != 0 {
+		t.Errorf("expected zero resources when CLM is unavailable, got %d", len(resources))
+	}
+	if res == nil {
+		t.Errorf("expected a non-nil SyncOpResults, got %+v", res)
 	}
 }
 

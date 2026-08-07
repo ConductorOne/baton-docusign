@@ -6,10 +6,16 @@ import (
 	"github.com/conductorone/baton-docusign/pkg/client"
 	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
 	rs "github.com/conductorone/baton-sdk/pkg/types/resource"
+	"github.com/grpc-ecosystem/go-grpc-middleware/logging/zap/ctxzap"
+	"go.uber.org/zap"
 )
 
-// clmRoleBuilder syncs the 5 fixed CLM account-level roles (client.ClmRoles). Not
-// backed by an API call — see resource_types.go for why this resource type exists.
+// clmRoleBuilder syncs the 5 fixed CLM account-level roles (client.ClmRoles). The role
+// set itself isn't backed by an API call — see resource_types.go for why this resource
+// type exists — but List() still checks CLM availability via EnsureClmReady before
+// emitting it, the same discovery check every other CLM builder's real API call runs
+// internally; otherwise these 5 roles would sync unconditionally even on an account
+// with no CLM subscription, unlike every other CLM resource type.
 type clmRoleBuilder struct {
 	resourceType *v2.ResourceType
 	client       *client.Client
@@ -19,9 +25,19 @@ func (b *clmRoleBuilder) ResourceType(_ context.Context) *v2.ResourceType {
 	return clmRoleResourceType
 }
 
-// List returns the fixed set of CLM roles. No pagination needed — the set is small
-// and hardcoded, not fetched from the API.
-func (b *clmRoleBuilder) List(_ context.Context, _ *v2.ResourceId, _ rs.SyncOpAttrs) ([]*v2.Resource, *rs.SyncOpResults, error) {
+// List returns the fixed set of CLM roles, gated on CLM being available for this
+// account. No pagination needed — the set is small and hardcoded, not fetched from the
+// API — so the availability check always runs (there's no first-page-only gate to
+// apply, unlike the paginated CLM builders).
+func (b *clmRoleBuilder) List(ctx context.Context, _ *v2.ResourceId, _ rs.SyncOpAttrs) ([]*v2.Resource, *rs.SyncOpResults, error) {
+	if err := b.client.EnsureClmReady(ctx); err != nil {
+		if isClmUnavailableError(err) {
+			ctxzap.Extract(ctx).Info("baton-docusign: CLM is not available for this account or token, skipping clm_role sync", zap.Error(err))
+			return nil, &rs.SyncOpResults{}, nil
+		}
+		return nil, nil, err
+	}
+
 	var resources []*v2.Resource
 	for _, role := range client.ClmRoles {
 		roleResource, err := rs.NewRoleResource(

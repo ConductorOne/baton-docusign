@@ -74,7 +74,7 @@ func (f *clmFolderBuilder) List(ctx context.Context, _ *v2.ResourceId, attr rs.S
 		PageToken: pageToken,
 	})
 	if err != nil {
-		if attr.PageToken.Token == "" && isOptInFeatureUnavailableError(err) {
+		if attr.PageToken.Token == "" && isClmUnavailableError(err) {
 			ctxzap.Extract(ctx).Info("baton-docusign: CLM is not available for this account or token, skipping clm_folder sync", zap.Error(err))
 			return nil, &rs.SyncOpResults{}, nil
 		}
@@ -141,6 +141,8 @@ func (f *clmFolderBuilder) Grants(ctx context.Context, folderResource *v2.Resour
 	for _, entry := range folder.Security.Groups {
 		slug, ok := clmSlugForAccessType(entry.AccessType)
 		if !ok {
+			ctxzap.Extract(ctx).Debug("baton-docusign: skipping CLM folder group-security entry with an unmapped AccessType",
+				zap.String("folder_id", folderResource.Id.Resource), zap.String("group_href", entry.Href), zap.String("access_type", entry.AccessType))
 			continue
 		}
 		principalID := &v2.ResourceId{ResourceType: clmGroupResourceType.Id, Resource: clmIDFromHref(entry.Href)}
@@ -156,12 +158,16 @@ func (f *clmFolderBuilder) Grants(ctx context.Context, folderResource *v2.Resour
 	for _, entry := range folder.Security.Roles {
 		slug, ok := clmSlugForAccessType(entry.AccessType)
 		if !ok {
+			ctxzap.Extract(ctx).Debug("baton-docusign: skipping CLM folder role-security entry with an unmapped AccessType",
+				zap.String("folder_id", folderResource.Id.Resource), zap.String("role", entry.Item), zap.String("access_type", entry.AccessType))
 			continue
 		}
 		if !clmIsKnownRole(entry.Item) {
 			// clm_role is a fixed, hardcoded 5-role list (clmRoleBuilder.List) — a role
 			// name outside that set has no synced principal to grant against. Skip
 			// rather than emit a grant to a dangling/unsynced resource.
+			ctxzap.Extract(ctx).Debug("baton-docusign: skipping CLM folder role-security entry for an unrecognized role",
+				zap.String("folder_id", folderResource.Id.Resource), zap.String("role", entry.Item))
 			continue
 		}
 		principalID := &v2.ResourceId{ResourceType: clmRoleResourceType.Id, Resource: entry.Item}
@@ -171,6 +177,8 @@ func (f *clmFolderBuilder) Grants(ctx context.Context, folderResource *v2.Resour
 	for _, entry := range folder.Security.Users {
 		slug, ok := clmSlugForAccessType(entry.AccessType)
 		if !ok {
+			ctxzap.Extract(ctx).Debug("baton-docusign: skipping CLM folder user-security entry with an unmapped AccessType",
+				zap.String("folder_id", folderResource.Id.Resource), zap.String("member_href", entry.Href), zap.String("access_type", entry.AccessType))
 			continue
 		}
 		principalID := &v2.ResourceId{ResourceType: clmMemberResourceType.Id, Resource: clmIDFromHref(entry.Href)}

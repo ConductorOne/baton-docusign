@@ -84,6 +84,17 @@ func isOptInFeatureUnavailableError(err error) bool {
 	}
 }
 
+// isClmUnavailableError is isOptInFeatureUnavailableError's CLM-specific counterpart,
+// used by all 5 CLM builders' List() methods (not signing_group, which has no separate
+// discovery step to distinguish from its one real call). isOptInFeatureUnavailableError
+// alone isn't precise enough here: its codes can also come from a real per-resource CLM
+// data call (SearchFolders, ListGroups, ...) failing for an unrelated reason once
+// discovery has already succeeded — see client.IsClmDiscoveryError's doc. Requiring
+// both narrows the tolerance to what the account-discovery call itself can produce.
+func isClmUnavailableError(err error) bool {
+	return client.IsClmDiscoveryError(err) && isOptInFeatureUnavailableError(err)
+}
+
 // clmIDFromHref extracts the trailing path segment from a CLM object's Href — see
 // client.IDFromHref's doc. pkg/client/clmtest can't import pkg/connector, so the single
 // definition lives in pkg/client and both packages delegate to it instead of

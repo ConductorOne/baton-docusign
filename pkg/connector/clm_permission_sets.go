@@ -42,7 +42,7 @@ func (b *clmPermissionSetBuilder) List(ctx context.Context, _ *v2.ResourceId, at
 		PageToken: pageToken,
 	})
 	if err != nil {
-		if attr.PageToken.Token == "" && isOptInFeatureUnavailableError(err) {
+		if attr.PageToken.Token == "" && isClmUnavailableError(err) {
 			ctxzap.Extract(ctx).Info("baton-docusign: CLM is not available for this account or token, skipping clm_permission_set sync", zap.Error(err))
 			return nil, &rs.SyncOpResults{}, nil
 		}

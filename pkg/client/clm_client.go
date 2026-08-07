@@ -81,6 +81,7 @@ package client
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -199,7 +200,7 @@ func (c *Client) ensureClmInitialized(ctx context.Context) error {
 
 	var raw map[string]json.RawMessage
 	if _, _, err := doRequestCommon(c.wrapper, request, &raw, &ClmErrorResponse{}); err != nil {
-		return fmt.Errorf("baton-docusign: failed to discover the CLM API base URL: %w", err)
+		return &clmDiscoveryError{err: fmt.Errorf("baton-docusign: failed to discover the CLM API base URL: %w", err)}
 	}
 
 	baseURL, ok := clmExtractBaseURLField(raw)
@@ -214,13 +215,44 @@ func (c *Client) ensureClmInitialized(ctx context.Context) error {
 		// candidate fields), so isOptInFeatureUnavailableError needs a recognizable
 		// code to tolerate this specific failure the same way it tolerates 401/403 —
 		// see that function's doc in helper.go.
-		return status.Errorf(codes.FailedPrecondition, "baton-docusign: CLM account discovery response at %s did not contain a recognized "+
-			"base-URL field (checked %v); response contained these fields instead: %v", discoveryURL, clmBaseURLCandidateFields, keys)
+		return &clmDiscoveryError{err: status.Errorf(codes.FailedPrecondition, "baton-docusign: CLM account discovery response at %s did not contain a recognized "+
+			"base-URL field (checked %v); response contained these fields instead: %v", discoveryURL, clmBaseURLCandidateFields, keys)}
 	}
 
 	c.clmBaseURI = baseURL
 	c.clmBaseURIReady = true
 	return nil
+}
+
+// clmDiscoveryError marks an error as originating specifically from CLM account
+// discovery (ensureClmInitialized above), not from a later per-resource CLM data call
+// (SearchFolders, ListGroups, ...). isOptInFeatureUnavailableError's tolerated codes
+// (401/403/404/412-equivalent) aren't unique to "no CLM subscription" — a real
+// per-resource call can fail with the same code once discovery has already succeeded
+// and been cached, for an unrelated reason (a token that expired mid-sync, a narrower
+// scope problem on just that endpoint). Without this marker, that later failure would
+// be silently treated as "no CLM" too. See IsClmDiscoveryError.
+type clmDiscoveryError struct {
+	err error
+}
+
+func (e *clmDiscoveryError) Error() string { return e.err.Error() }
+func (e *clmDiscoveryError) Unwrap() error { return e.err }
+
+// IsClmDiscoveryError reports whether err (or a wrapped error within it) originated
+// from ensureClmInitialized's CLM account discovery call — see clmDiscoveryError.
+func IsClmDiscoveryError(err error) bool {
+	var discoveryErr *clmDiscoveryError
+	return errors.As(err, &discoveryErr)
+}
+
+// EnsureClmReady exposes the CLM-readiness check every other CLM client method runs
+// internally before its real request, for callers with no CLM endpoint of their own
+// (clm_role — see pkg/connector/clm_roles.go) that still need to detect CLM
+// availability. Memoized after the first successful call, same as every other CLM
+// method — see ensureClmInitialized.
+func (c *Client) EnsureClmReady(ctx context.Context) error {
+	return c.ensureClmReady(ctx)
 }
 
 // clmExtractBaseURLField scans a CLM account discovery response for the first
