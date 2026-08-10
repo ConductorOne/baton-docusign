@@ -77,6 +77,30 @@ func TestClmRoleBuilder_List_FailsLoudlyOnTransientDiscoveryFailure(t *testing.T
 	}
 }
 
+// TestClmRoleBuilder_List_FailsLoudlyOnNonDiscoveryTolerableError is a regression test
+// for the OTHER half of List()'s "requires both conditions" gate: a tolerated code
+// (Unauthenticated here) that comes from eSignature's own ensureInitialized, not CLM
+// account discovery, must still fail loud. Without the client.IsClmDiscoveryError(err)
+// conjunct, this would be silently mistaken for "no CLM subscription" — the case
+// clm_roles.go's own doc comment names first. Deleting that conjunct alone would leave
+// TestClmRoleBuilder_List_SkipsGracefullyWhenClmUnavailable and
+// TestClmRoleBuilder_List_FailsLoudlyOnTransientDiscoveryFailure both green, since
+// neither exercises a tolerated code from this specific source.
+func TestClmRoleBuilder_List_FailsLoudlyOnNonDiscoveryTolerableError(t *testing.T) {
+	s, c := clmtest.NewServer(t)
+	s.ForceUserInfoStatus(401)
+	b := newClmRoleBuilder(c)
+	ctx := context.Background()
+
+	resources, _, err := b.List(ctx, nil, rs.SyncOpAttrs{})
+	if err == nil {
+		t.Fatal("expected a tolerated code from a non-discovery source to fail loudly, got nil error")
+	}
+	if len(resources) != 0 {
+		t.Errorf("expected zero resources on a hard failure, got %d", len(resources))
+	}
+}
+
 func TestClmRoleBuilder_EntitlementsAndGrants_AreNoop(t *testing.T) {
 	b := newClmRoleBuilder(nil)
 	ctx := context.Background()

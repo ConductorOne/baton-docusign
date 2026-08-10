@@ -443,6 +443,15 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 }
 
 func (s *Server) handleUserInfo(w http.ResponseWriter, _ *http.Request) {
+	s.mu.Lock()
+	forcedStatus := s.forcedUserInfoStatus
+	s.mu.Unlock()
+	if forcedStatus != 0 {
+		w.WriteHeader(forcedStatus)
+		_ = json.NewEncoder(w).Encode(client.ErrorResponse{})
+		return
+	}
+
 	resp := client.UserInfoResponse{
 		Sub:   "clm-test-user",
 		Name:  "CLM Test Account",
