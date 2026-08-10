@@ -207,6 +207,25 @@ func TestClmFolderBuilder_Grants_SkipsUnknownRoleName(t *testing.T) {
 	}
 }
 
+func TestClmIsBenignUnmappedAccessType(t *testing.T) {
+	tests := []struct {
+		accessType string
+		want       bool
+	}{
+		{client.ClmAccessTypeNoAccess, true},
+		{client.ClmAccessTypeCustom, true},
+		{client.ClmAccessTypeInherit, true},
+		{client.ClmAccessTypeView, false},
+		{"SomethingUnrecognized", false},
+		{"", false},
+	}
+	for _, tt := range tests {
+		if got := clmIsBenignUnmappedAccessType(tt.accessType); got != tt.want {
+			t.Errorf("clmIsBenignUnmappedAccessType(%q) = %v, want %v", tt.accessType, got, tt.want)
+		}
+	}
+}
+
 func TestClmFolderBuilder_GrantAndRevoke_Idempotent(t *testing.T) {
 	srv, c := clmtest.NewServer(t)
 	b := newClmFolderBuilder(c)
