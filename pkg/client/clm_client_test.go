@@ -310,3 +310,27 @@ func TestGetMemberWorkflowQueues(t *testing.T) {
 		}
 	})
 }
+
+func TestGetMemberWorkflowQueues_PaginatesAcrossPages(t *testing.T) {
+	// Regression test mirroring TestGetMemberGroups_PaginatesAcrossPages: confirms
+	// GetMemberWorkflowQueues' shared clmPageToCompletion loop actually issues multiple
+	// requests for a member with more queues than fit on one page, rather than silently
+	// returning a truncated first page. member-mallory is added via
+	// AddBulkWorkflowQueueMember (not the default seed) specifically so its 105 queues
+	// don't perturb the default seed's "2 distinct queues" / "6 members" assertions used
+	// elsewhere.
+	srv, c := clmtest.NewServer(t)
+	ctx := context.Background()
+	srv.AddBulkWorkflowQueueMember("member-mallory", 105)
+
+	queues, _, err := c.GetMemberWorkflowQueues(ctx, "member-mallory")
+	if err != nil {
+		t.Fatalf("GetMemberWorkflowQueues: %v", err)
+	}
+	if len(queues) != 105 {
+		t.Fatalf("expected all 105 of member-mallory's workflow queues (paginated internally), got %d", len(queues))
+	}
+	if got := srv.MemberWorkflowQueuesRequestCount(); got < 2 {
+		t.Fatalf("expected GetMemberWorkflowQueues to issue at least 2 HTTP requests to page through 105 queues, but the mock server only saw %d — pagination is not actually happening", got)
+	}
+}

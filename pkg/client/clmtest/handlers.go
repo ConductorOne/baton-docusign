@@ -196,6 +196,7 @@ func (s *Server) handleMemberGroups(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleMemberWorkflowQueues(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.memberWorkflowQueuesRequests++
 
 	id := r.PathValue("id")
 	if _, ok := s.members[id]; !ok {

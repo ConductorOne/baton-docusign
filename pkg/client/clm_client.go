@@ -24,6 +24,7 @@
 // Members (CLM's principal object):
 //   - GET   /v2/{accountId}/members - List members (GetMembers)
 //   - GET   /v2/{accountId}/members/{id}/groups - Groups a member belongs to
+//   - GET   /v2/{accountId}/members/{id}/workflowqueues - Workflow queues a member belongs to
 //   - PATCH /v2/{accountId}/members/{id} - Add member to new groups (additive/merge)
 //   - PUT   /v2/{accountId}/members/{id} - Replace member's groups (adds new, removes unspecified)
 //
@@ -475,13 +476,6 @@ func (c *Client) ListMembers(ctx context.Context, options PageOptions) ([]ClmMem
 	return page.Items, nextToken, anno, nil
 }
 
-// GetMemberGroups gets the FULL current list of groups a member belongs to — required
-// before Grant/Revoke, since both are read-modify-write against this list (Patch is
-// additive/merge, Put is full-replace). This method pages to completion internally:
-// callers need the complete list, not one page of it — Revoke in
-// particular does a full-replace Put using this result, so a truncated list here would
-// silently drop the member's memberships in every group beyond the first page.
-//
 // clmMaxMemberSubResourcePages bounds every "fetch a member's complete X" loop below
 // (GetMemberGroups, GetMemberWorkflowQueues) in case the CLM API ever echoes a
 // non-advancing Offset/Limit, which would make getClmNextToken compute the same "next"
@@ -521,6 +515,13 @@ func clmPageToCompletion[T any](fetchPage func(pageToken string) ([]T, string, a
 	return nil, anno, fmt.Errorf("baton-docusign: exceeded %d pages while listing %s", maxPages, label)
 }
 
+// GetMemberGroups gets the FULL current list of groups a member belongs to — required
+// before Grant/Revoke, since both are read-modify-write against this list (Patch is
+// additive/merge, Put is full-replace). This method pages to completion internally:
+// callers need the complete list, not one page of it — Revoke in particular does a
+// full-replace Put using this result, so a truncated list here would silently drop the
+// member's memberships in every group beyond the first page.
+//
 // Intentional carve-out from the usual client-layer rule against looping through pages
 // internally (that's normally the connector layer's job, driving one page per call):
 // this isn't a sync List — it's a read-before-write for provisioning, where the caller

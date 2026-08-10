@@ -14,6 +14,7 @@ import (
 	rs "github.com/conductorone/baton-sdk/pkg/types/resource"
 	"github.com/grpc-ecosystem/go-grpc-middleware/logging/zap/ctxzap"
 	"go.uber.org/zap"
+	"google.golang.org/protobuf/types/known/anypb"
 )
 
 // errClmWorkflowQueuesUnavailable is a sentinel discoverClmWorkflowQueueMembership wraps
@@ -97,7 +98,17 @@ func (b *clmWorkflowQueueBuilder) List(ctx context.Context, _ *v2.ResourceId, at
 	resources := make([]*v2.Resource, 0, len(membership))
 	for queueID, entry := range membership {
 		if err := session.SetJSON(ctx, attr.Session, clmSessionKeyQueueMembers(queueID), entry.members); err != nil {
-			return nil, nil, fmt.Errorf("baton-docusign: failed to cache CLM workflow queue %s membership: %w", queueID, err)
+			// The session store is opt-in end-to-end: WithSessionStoreEnabled (main.go)
+			// only tells the SDK to accept a store connection — whether one actually
+			// exists still depends on the parent process wiring a listen port, and it
+			// falls back to NoOpSessionStore (every Set call fails) whenever it doesn't.
+			// This resource type's Grants() cannot function without it, but that's not
+			// true of the rest of the sync — a hard error here would fail every other
+			// resource type too. Skip gracefully instead, same as an unavailable CLM
+			// subscription.
+			ctxzap.Extract(ctx).Warn("baton-docusign: failed to cache CLM workflow queue membership, skipping clm_workflow_queue sync",
+				zap.String("queue_id", queueID), zap.Error(err))
+			return nil, &rs.SyncOpResults{}, nil
 		}
 
 		queueResource, err := parseIntoClmWorkflowQueueResource(&entry.queue)
@@ -107,7 +118,28 @@ func (b *clmWorkflowQueueBuilder) List(ctx context.Context, _ *v2.ResourceId, at
 		resources = append(resources, queueResource)
 	}
 
-	return resources, &rs.SyncOpResults{Annotations: allAnnos}, nil
+	return resources, &rs.SyncOpResults{Annotations: dedupeRateLimitAnnotations(allAnnos)}, nil
+}
+
+// dedupeRateLimitAnnotations keeps every non-rate-limit annotation as-is but collapses
+// all RateLimitDescription entries down to the last one — discoverClmWorkflowQueueMembership
+// appends one member-page annotation set plus one per-member queue-fetch annotation set
+// per iteration, so a large account accumulates thousands of near-identical rate-limit
+// snapshots in a single List() response; only the most recent one is meaningful.
+func dedupeRateLimitAnnotations(annos annotations.Annotations) annotations.Annotations {
+	var out annotations.Annotations
+	var lastRateLimit *anypb.Any
+	for _, a := range annos {
+		if a.MessageIs(&v2.RateLimitDescription{}) {
+			lastRateLimit = a
+			continue
+		}
+		out = append(out, a)
+	}
+	if lastRateLimit != nil {
+		out = append(out, lastRateLimit)
+	}
+	return out
 }
 
 // clmWorkflowQueueMembershipEntry pairs a discovered queue with the member IDs found
@@ -150,12 +182,27 @@ func (b *clmWorkflowQueueBuilder) discoverClmWorkflowQueueMembership(ctx context
 			memberID := clmIDFromHref(member.Href)
 			queues, queueAnnos, err := b.client.GetMemberWorkflowQueues(ctx, memberID)
 			if err != nil {
+				// Tolerate the same errors ListMembers' first page does: a member deleted
+				// between that call and this one 404s, and an account/token that can list
+				// members but lacks the scope or subscription for this endpoint would
+				// otherwise 403/404 on the very first member and fail this whole resource
+				// type. One bad member shouldn't do that — skip it and keep scanning.
+				if isOptInFeatureUnavailableError(err) {
+					ctxzap.Extract(ctx).Warn("baton-docusign: failed to get CLM workflow queues for member, skipping",
+						zap.String("member_id", memberID), zap.Error(err))
+					continue
+				}
 				return nil, nil, fmt.Errorf("baton-docusign: getting workflow queues for CLM member %s: %w", memberID, err)
 			}
 			allAnnos = append(allAnnos, queueAnnos...)
 
 			for _, q := range queues {
 				queueID := clmIDFromHref(q.Href)
+				if queueID == "" {
+					ctxzap.Extract(ctx).Warn("baton-docusign: CLM workflow queue has an empty Href, skipping",
+						zap.String("member_id", memberID), zap.String("queue_name", q.Name))
+					continue
+				}
 				entry, ok := membership[queueID]
 				if !ok {
 					entry = &clmWorkflowQueueMembershipEntry{queue: q}
@@ -199,13 +246,14 @@ func (b *clmWorkflowQueueBuilder) Grants(ctx context.Context, queueResource *v2.
 		return nil, nil, fmt.Errorf("baton-docusign: failed to read cached CLM workflow queue %s membership: %w", queueResource.Id.Resource, err)
 	}
 	if !found {
-		// Expected only if List() didn't actually run first in this sync (shouldn't
-		// happen — see this builder's doc) or the session store is disabled. Log loudly
-		// and emit zero grants rather than falling back to a per-queue member re-scan,
-		// which would be the O(queues * members) cost this design exists to avoid.
-		ctxzap.Extract(ctx).Warn("baton-docusign: no cached membership found for CLM workflow queue; emitting zero grants",
-			zap.String("queue_id", queueResource.Id.Resource))
-		return nil, nil, nil
+		// Shouldn't happen — see this builder's doc (List() always runs before Grants()
+		// for every resource of a type, and now skips this whole resource type gracefully
+		// rather than returning partial results whenever it can't populate the cache).
+		// Fail loudly instead of falling back to a per-queue member re-scan (the
+		// O(queues * members) cost this design exists to avoid) or silently emitting zero
+		// grants, which C1 can't distinguish from this queue's membership having been
+		// genuinely emptied out.
+		return nil, nil, fmt.Errorf("baton-docusign: no cached membership found for CLM workflow queue %s", queueResource.Id.Resource)
 	}
 
 	grants := make([]*v2.Grant, 0, len(memberIDs))

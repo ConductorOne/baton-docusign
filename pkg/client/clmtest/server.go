@@ -116,7 +116,8 @@ type Server struct {
 	workflowQueues       map[string]*client.ClmWorkflowQueue
 	memberWorkflowQueues map[string][]string // memberID -> workflow queue IDs, seed-only (no write endpoint)
 
-	memberGroupsRequests int // count of GET .../members/{id}/groups calls, for pagination assertions
+	memberGroupsRequests         int // count of GET .../members/{id}/groups calls, for pagination assertions
+	memberWorkflowQueuesRequests int // count of GET .../members/{id}/workflowqueues calls, for pagination assertions
 }
 
 // MemberGroupsRequestCount returns how many times GET .../members/{id}/groups has been
@@ -127,6 +128,40 @@ func (s *Server) MemberGroupsRequestCount() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.memberGroupsRequests
+}
+
+// MemberWorkflowQueuesRequestCount is MemberGroupsRequestCount's equivalent for GET
+// .../members/{id}/workflowqueues.
+func (s *Server) MemberWorkflowQueuesRequestCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.memberWorkflowQueuesRequests
+}
+
+// AddBulkWorkflowQueueMember adds a new member (not part of the default seed) who
+// belongs to queueCount newly created, distinct workflow queues — for pagination tests
+// that need a member with more workflow-queue memberships than fit on one page, without
+// perturbing the default seed's member count or distinct-queue count that other tests
+// (both here and in pkg/connector) assert on. Call after NewServer returns.
+func (s *Server) AddBulkWorkflowQueueMember(memberID string, queueCount int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	member := &client.ClmMember{Email: memberID + "@example.com", UserName: memberID}
+	member.Href = s.MemberHref(memberID)
+	s.members[memberID] = member
+	s.memberOrder = append(s.memberOrder, memberID)
+
+	queueIDs := make([]string, 0, queueCount)
+	for i := 1; i <= queueCount; i++ {
+		qid := fmt.Sprintf("queue-bulk-%03d", i)
+		s.workflowQueues[qid] = &client.ClmWorkflowQueue{
+			Name: fmt.Sprintf("Bulk Queue %03d", i),
+			Href: s.WorkflowQueueHref(qid),
+		}
+		queueIDs = append(queueIDs, qid)
+	}
+	s.memberWorkflowQueues[memberID] = queueIDs
 }
 
 // URL returns the mock server's base URL — also what handleClmAccountDiscovery

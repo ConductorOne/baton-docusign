@@ -2,6 +2,7 @@ package connector
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 
@@ -86,6 +87,47 @@ func (f *fakeSessionStore) GetAll(_ context.Context, _ string, _ ...sessions.Ses
 		out[k] = v
 	}
 	return out, "", nil
+}
+
+// failingSessionStore wraps fakeSessionStore but every Set/SetMany call fails — stands
+// in for the SDK's real NoOpSessionStore (returned whenever the parent process hasn't
+// wired a session-store listen port; see session.NoOpSessionStore), which every write
+// to it fails the exact same way.
+type failingSessionStore struct {
+	*fakeSessionStore
+}
+
+func (f *failingSessionStore) Set(_ context.Context, _ string, _ []byte, _ ...sessions.SessionStoreOption) error {
+	return errClmSessionStoreDisabledForTest
+}
+
+func (f *failingSessionStore) SetMany(_ context.Context, _ map[string][]byte, _ ...sessions.SessionStoreOption) error {
+	return errClmSessionStoreDisabledForTest
+}
+
+var errClmSessionStoreDisabledForTest = errors.New("session store disabled (test double)")
+
+// TestClmWorkflowQueueBuilder_List_SkipsGracefullyOnSessionStoreWriteFailure confirms
+// List() degrades to a graceful skip (not a hard error) when it can't write to the
+// session cache — e.g. because the parent process didn't wire a session-store listen
+// port and the SDK fell back to NoOpSessionStore. A hard error here would fail the
+// entire sync, not just this resource type, since every other CLM builder's List() also
+// runs unconditionally in the same sync.
+func TestClmWorkflowQueueBuilder_List_SkipsGracefullyOnSessionStoreWriteFailure(t *testing.T) {
+	_, c := clmtest.NewServer(t)
+	b := newClmWorkflowQueueBuilder(c)
+	ctx := context.Background()
+
+	resources, res, err := b.List(ctx, nil, rs.SyncOpAttrs{Session: &failingSessionStore{fakeSessionStore: newFakeSessionStore()}})
+	if err != nil {
+		t.Fatalf("expected a session-store write failure to be tolerated, not an error: %v", err)
+	}
+	if len(resources) != 0 {
+		t.Errorf("expected zero resources when the session store can't be written to, got %d", len(resources))
+	}
+	if res == nil {
+		t.Errorf("expected a non-nil SyncOpResults, got %+v", res)
+	}
 }
 
 func TestClmWorkflowQueueBuilder_List_SkipsGracefullyWhenClmUnavailable(t *testing.T) {
@@ -189,9 +231,11 @@ func TestClmWorkflowQueueBuilder_Grants_ReadsFromCache(t *testing.T) {
 	}
 }
 
-// TestClmWorkflowQueueBuilder_Grants_CacheMiss confirms Grants() degrades to zero
-// grants (not an error, and not a fallback member re-scan) when the cache has nothing
-// for a queue — e.g. if it's ever called without List() having populated it first.
+// TestClmWorkflowQueueBuilder_Grants_CacheMiss confirms Grants() fails loudly (not a
+// silent zero-grants degrade, and not a fallback member re-scan) when the cache has
+// nothing for a queue — e.g. if it's ever called without List() having populated it
+// first. Zero grants would be indistinguishable from this queue's membership having
+// been genuinely emptied out, which is worse than failing the sync.
 func TestClmWorkflowQueueBuilder_Grants_CacheMiss(t *testing.T) {
 	_, c := clmtest.NewServer(t)
 	b := newClmWorkflowQueueBuilder(c)
@@ -199,8 +243,8 @@ func TestClmWorkflowQueueBuilder_Grants_CacheMiss(t *testing.T) {
 
 	queueResource := &v2.Resource{Id: &v2.ResourceId{ResourceType: clmWorkflowQueueResourceType.Id, Resource: "queue-onboarding"}}
 	grants, _, err := b.Grants(ctx, queueResource, rs.SyncOpAttrs{Session: newFakeSessionStore()})
-	if err != nil {
-		t.Fatalf("expected a cache miss to be tolerated, not an error: %v", err)
+	if err == nil {
+		t.Fatal("expected a cache miss to fail loudly, got nil error")
 	}
 	if len(grants) != 0 {
 		t.Errorf("expected zero grants on a cache miss, got %d: %+v", len(grants), grants)
