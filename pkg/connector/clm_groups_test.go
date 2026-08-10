@@ -177,23 +177,17 @@ func TestClmGroupBuilder_GrantAndRevoke_Idempotent(t *testing.T) {
 }
 
 // TestClmGroupBuilder_Grant_SurvivesIdentityOnlyEntitlementResource is a regression
-// test for a gap the annotation-based fix in the previous commit missed: the pebble
+// test for a gap the annotation-based fix in an earlier commit missed: the pebble
 // storage engine's V3EntitlementToV2 (vendor/.../dotc1z/engine/pebble/translate_v2.go)
 // deliberately hydrates an Entitlement's Resource as an identity-only stub on every
 // read — no profile, no annotations, nothing but Id. clmGroupBuilder.Grant previously
 // read the group's Href off ent.Resource; on pebble that would always fail, in every
-// version of this connector including the one before this test existed. It now derives
-// the Href straight from ent.Resource.Id.Resource via client.GroupHref instead, which
-// needs nothing else to survive.
+// version of this connector including the one before this test existed. It now
+// resolves the groupHref to write via clmPreferredHref — nothing on ent.Resource itself
+// is ever needed, whether that resolves from a real sample Href already on hand (the
+// member's other current groups) or, absent one, client.GroupHref's ID-only fallback.
+// The two subtests below exercise both of clmPreferredHref's branches.
 func TestClmGroupBuilder_Grant_SurvivesIdentityOnlyEntitlementResource(t *testing.T) {
-	srv, c := clmtest.NewServer(t)
-	b := newClmGroupBuilder(c)
-	ctx := context.Background()
-
-	memberResource, err := rs.NewResource("Carol", clmMemberResourceType, "member-carol")
-	if err != nil {
-		t.Fatalf("NewResource: %v", err)
-	}
 	// An identity-only Resource — exactly what V3EntitlementToV2 hands back on pebble,
 	// carrying nothing but the group's ID.
 	identityOnlyGroupResource := &v2.Resource{
@@ -201,21 +195,64 @@ func TestClmGroupBuilder_Grant_SurvivesIdentityOnlyEntitlementResource(t *testin
 	}
 	ent := &v2.Entitlement{Slug: entitlementClmGroupMember, Resource: identityOnlyGroupResource}
 
-	if _, annos, err := b.Grant(ctx, memberResource, ent); err != nil {
-		t.Fatalf("Grant with an identity-only ent.Resource: %v", err)
-	} else if hasAlreadyExists(annos) {
-		t.Error("first Grant should not report GrantAlreadyExists")
-	}
-	groups := srv.MemberGroups("member-carol")
-	found := false
-	for _, g := range groups {
-		if g == "group-legal" {
-			found = true
+	t.Run("fallback branch: member has no other groups, derives via client.GroupHref", func(t *testing.T) {
+		srv, c := clmtest.NewServer(t)
+		b := newClmGroupBuilder(c)
+		ctx := context.Background()
+
+		// member-dave is seeded with zero groups (clmtest/seed.go), so currentGroups is
+		// empty and clmPreferredHref has no sample to derive from.
+		memberResource, err := rs.NewResource("Dave", clmMemberResourceType, "member-dave")
+		if err != nil {
+			t.Fatalf("NewResource: %v", err)
 		}
-	}
-	if !found {
-		t.Fatalf("expected carol to be granted group-legal, got %v", groups)
-	}
+
+		if _, annos, err := b.Grant(ctx, memberResource, ent); err != nil {
+			t.Fatalf("Grant with an identity-only ent.Resource: %v", err)
+		} else if hasAlreadyExists(annos) {
+			t.Error("first Grant should not report GrantAlreadyExists")
+		}
+		groups := srv.MemberGroups("member-dave")
+		found := false
+		for _, g := range groups {
+			if g == "group-legal" {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("expected dave to be granted group-legal, got %v", groups)
+		}
+	})
+
+	t.Run("sample branch: member already has another group, derives via clmPreferredHref's sample", func(t *testing.T) {
+		srv, c := clmtest.NewServer(t)
+		b := newClmGroupBuilder(c)
+		ctx := context.Background()
+
+		// member-carol is seeded into group-finance (clmtest/seed.go), giving
+		// clmPreferredHref a real sample Href to derive group-legal's Href from instead
+		// of falling back to client.GroupHref.
+		memberResource, err := rs.NewResource("Carol", clmMemberResourceType, "member-carol")
+		if err != nil {
+			t.Fatalf("NewResource: %v", err)
+		}
+
+		if _, annos, err := b.Grant(ctx, memberResource, ent); err != nil {
+			t.Fatalf("Grant with an identity-only ent.Resource: %v", err)
+		} else if hasAlreadyExists(annos) {
+			t.Error("first Grant should not report GrantAlreadyExists")
+		}
+		groups := srv.MemberGroups("member-carol")
+		found := false
+		for _, g := range groups {
+			if g == "group-legal" {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("expected carol to be granted group-legal, got %v", groups)
+		}
+	})
 }
 
 // TestClmGroupMemberSlugRegressionPin guards against an accidental rename of

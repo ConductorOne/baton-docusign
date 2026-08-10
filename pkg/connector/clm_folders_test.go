@@ -428,9 +428,11 @@ func TestClmFolderBuilder_GrantAndRevoke_ToleratesBareIDOnRead(t *testing.T) {
 // strip the fields no longer relied on (see the previous commit), and it's exactly what
 // the pebble storage engine's V3EntitlementToV2 (vendor/.../dotc1z/engine/pebble/
 // translate_v2.go) hydrates an Entitlement's own Resource as on every read, by design,
-// regardless of provisioning path. clmMemberHrefFromResource/clmGroupHrefFromResource
-// no longer exist — Grant/Revoke derive the Href straight from resourceID via
-// client.GroupHref/client.MemberHref, so nothing beyond Id is ever needed.
+// regardless of provisioning path. clmMemberHrefFromResource/clmGroupHrefFromResource no
+// longer exist — Grant prefers a real, server-issued sample Href already on hand via
+// clmPreferredHref, falling back to client.GroupHref/client.MemberHref only when none is
+// available; Revoke needs nothing beyond Id, since clmFindGroupSecurityIndex/
+// clmFindUserSecurityIndex compare by clmIDFromHref.
 func clmIdentityOnlyResource(resourceType *v2.ResourceType, resourceID string) *v2.Resource {
 	return &v2.Resource{
 		Id: &v2.ResourceId{ResourceType: resourceType.Id, Resource: resourceID},
@@ -467,6 +469,11 @@ func TestClmFolderBuilder_GrantAndRevoke_SurvivesIdentityOnlyPrincipal(t *testin
 		if len(groups) != 1 || groups[0].AccessType != client.ClmAccessTypeView {
 			t.Fatalf("expected one View group entry after Grant, got %+v", groups)
 		}
+		// folder-templates starts with no group entries (clmPreferredHref's fallback
+		// branch), so this is the specific Href client.GroupHref must have derived.
+		if want := srv.GroupHref("group-ops"); groups[0].Href != want {
+			t.Errorf("expected Grant to write Href %q, got %q", want, groups[0].Href)
+		}
 
 		grantObj := &v2.Grant{Principal: principal, Entitlement: ent}
 		if _, err := b.Revoke(ctx, grantObj); err != nil {
@@ -484,6 +491,11 @@ func TestClmFolderBuilder_GrantAndRevoke_SurvivesIdentityOnlyPrincipal(t *testin
 		users := srv.FolderSecurity("folder-templates").Users.Items
 		if len(users) != 1 || users[0].AccessType != client.ClmAccessTypeView {
 			t.Fatalf("expected one View user entry after Grant, got %+v", users)
+		}
+		// folder-templates starts with no user entries (clmPreferredHref's fallback
+		// branch), so this is the specific Href client.MemberHref must have derived.
+		if want := srv.MemberHref("member-dave"); users[0].Href != want {
+			t.Errorf("expected Grant to write Href %q, got %q", want, users[0].Href)
 		}
 
 		grantObj := &v2.Grant{Principal: principal, Entitlement: ent}

@@ -327,11 +327,10 @@ func (f *clmFolderBuilder) Revoke(ctx context.Context, grantObj *v2.Grant) (anno
 
 	switch principal.Id.ResourceType {
 	case clmGroupResourceType.Id:
-		groupHref, err := f.client.GroupHref(ctx, principal.Id.Resource)
-		if err != nil {
-			return nil, err
-		}
-		i := clmFindGroupSecurityIndex(write.Groups, groupHref)
+		// No need to build a real Href via client.GroupHref here: clmFindGroupSecurityIndex
+		// only ever compares by clmIDFromHref, so principal.Id.Resource (already a bare ID)
+		// works directly and this skips a needless ensureClmReady round trip.
+		i := clmFindGroupSecurityIndex(write.Groups, principal.Id.Resource)
 		if i < 0 || write.Groups[i].AccessType == client.ClmAccessTypeNoAccess {
 			return annotations.New(&v2.GrantAlreadyRevoked{}), nil
 		}
@@ -344,11 +343,9 @@ func (f *clmFolderBuilder) Revoke(ctx context.Context, grantObj *v2.Grant) (anno
 		}
 		write.Roles[i].AccessType = client.ClmAccessTypeNoAccess
 	case clmMemberResourceType.Id:
-		memberHref, err := f.client.MemberHref(ctx, principal.Id.Resource)
-		if err != nil {
-			return nil, err
-		}
-		i := clmFindUserSecurityIndex(write.Users, memberHref)
+		// Same reasoning as the group case above: clmFindUserSecurityIndex only compares
+		// by clmIDFromHref, so no need to build a real Href via client.MemberHref.
+		i := clmFindUserSecurityIndex(write.Users, principal.Id.Resource)
 		if i < 0 || write.Users[i].AccessType == client.ClmAccessTypeNoAccess {
 			return annotations.New(&v2.GrantAlreadyRevoked{}), nil
 		}
