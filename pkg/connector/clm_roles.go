@@ -30,7 +30,25 @@ func (b *clmRoleBuilder) ResourceType(_ context.Context) *v2.ResourceType {
 // apply, unlike the paginated CLM builders).
 func (b *clmRoleBuilder) List(ctx context.Context, _ *v2.ResourceId, _ rs.SyncOpAttrs) ([]*v2.Resource, *rs.SyncOpResults, error) {
 	if err := b.client.EnsureClmReady(ctx); err != nil {
-		if isOptInFeatureUnavailableError(err) {
+		// Narrower than every other CLM builder's tolerance (isOptInFeatureUnavailableError):
+		// EnsureClmReady is the ONLY CLM call clm_role's List() ever makes, so an error here
+		// that ISN'T from CLM account discovery itself can only be eSignature's own
+		// ensureInitialized failing (a broken/expired token) — a problem that already breaks
+		// every other resource type too, CLM or not, and should fail this sync loudly rather
+		// than be silently mistaken for a plain non-CLM account.
+		//
+		// Residual, accepted risk: the SDK's sync engine runs different resource types'
+		// List() concurrently (see vendor's pkg/sync/parallel_syncer.go), so two CLM
+		// builders' near-simultaneous discovery calls could in principle still disagree if
+		// CLM discovery itself answers inconsistently within one sync — e.g. clm_role sees a
+		// discovery failure and skips while clm_folder's later call succeeds and emits
+		// grants to clm_role/<name> principals this sync never produced. Not solved with a
+		// connector-side retry here: ductone/c1's own connector-error classification
+		// (isNonRetryableCode) already treats these exact codes as stable/permanent for a
+		// sync's lifetime, specifically because the token doesn't change mid-sync — so
+		// retrying would fight that platform convention, and there's no live CLM tenant to
+		// validate a bespoke cross-builder consistency mechanism against instead.
+		if client.IsClmDiscoveryError(err) {
 			clmSkipLogLevel(ctx, err)("baton-docusign: CLM is not available for this account or token, skipping clm_role sync", zap.Error(err))
 			return nil, &rs.SyncOpResults{}, nil
 		}
