@@ -14,7 +14,8 @@ import (
 	rs "github.com/conductorone/baton-sdk/pkg/types/resource"
 	"github.com/grpc-ecosystem/go-grpc-middleware/logging/zap/ctxzap"
 	"go.uber.org/zap"
-	"google.golang.org/protobuf/types/known/anypb"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // errClmWorkflowQueuesUnavailable is a sentinel discoverClmWorkflowQueueMembership wraps
@@ -90,7 +91,7 @@ func (b *clmWorkflowQueueBuilder) List(ctx context.Context, _ *v2.ResourceId, at
 	if err != nil {
 		if errors.Is(err, errClmWorkflowQueuesUnavailable) {
 			ctxzap.Extract(ctx).Info("baton-docusign: CLM is not available for this account or token, skipping clm_workflow_queue sync", zap.Error(err))
-			return nil, &rs.SyncOpResults{}, nil
+			return nil, &rs.SyncOpResults{Annotations: dedupeRateLimitAnnotations(allAnnos)}, nil
 		}
 		return nil, nil, err
 	}
@@ -108,7 +109,7 @@ func (b *clmWorkflowQueueBuilder) List(ctx context.Context, _ *v2.ResourceId, at
 			// subscription.
 			ctxzap.Extract(ctx).Warn("baton-docusign: failed to cache CLM workflow queue membership, skipping clm_workflow_queue sync",
 				zap.String("queue_id", queueID), zap.Error(err))
-			return nil, &rs.SyncOpResults{}, nil
+			return nil, &rs.SyncOpResults{Annotations: dedupeRateLimitAnnotations(allAnnos)}, nil
 		}
 
 		queueResource, err := parseIntoClmWorkflowQueueResource(&entry.queue)
@@ -128,16 +129,16 @@ func (b *clmWorkflowQueueBuilder) List(ctx context.Context, _ *v2.ResourceId, at
 // snapshots in a single List() response; only the most recent one is meaningful.
 func dedupeRateLimitAnnotations(annos annotations.Annotations) annotations.Annotations {
 	var out annotations.Annotations
-	var lastRateLimit *anypb.Any
-	for _, a := range annos {
+	lastRateLimitIdx := -1
+	for i, a := range annos {
 		if a.MessageIs(&v2.RateLimitDescription{}) {
-			lastRateLimit = a
+			lastRateLimitIdx = i
 			continue
 		}
 		out = append(out, a)
 	}
-	if lastRateLimit != nil {
-		out = append(out, lastRateLimit)
+	if lastRateLimitIdx >= 0 {
+		out = append(out, annos[lastRateLimitIdx])
 	}
 	return out
 }
@@ -166,15 +167,16 @@ type clmWorkflowQueueMembershipEntry struct {
 func (b *clmWorkflowQueueBuilder) discoverClmWorkflowQueueMembership(ctx context.Context) (map[string]*clmWorkflowQueueMembershipEntry, annotations.Annotations, error) {
 	membership := make(map[string]*clmWorkflowQueueMembershipEntry)
 	var allAnnos annotations.Annotations
+	var skippedMembers, skippedQueues int
 
 	memberPageToken := ""
 	for {
 		members, nextMemberPageToken, memberAnnos, err := b.client.ListMembers(ctx, client.PageOptions{PageToken: memberPageToken})
 		if err != nil {
 			if memberPageToken == "" && isOptInFeatureUnavailableError(err) {
-				return nil, nil, fmt.Errorf("%w: %w", errClmWorkflowQueuesUnavailable, err)
+				return nil, allAnnos, fmt.Errorf("%w: %w", errClmWorkflowQueuesUnavailable, err)
 			}
-			return nil, nil, err
+			return nil, allAnnos, err
 		}
 		allAnnos = append(allAnnos, memberAnnos...)
 
@@ -182,25 +184,37 @@ func (b *clmWorkflowQueueBuilder) discoverClmWorkflowQueueMembership(ctx context
 			memberID := clmIDFromHref(member.Href)
 			queues, queueAnnos, err := b.client.GetMemberWorkflowQueues(ctx, memberID)
 			if err != nil {
-				// Tolerate the same errors ListMembers' first page does: a member deleted
-				// between that call and this one 404s, and an account/token that can list
-				// members but lacks the scope or subscription for this endpoint would
-				// otherwise 403/404 on the very first member and fail this whole resource
-				// type. One bad member shouldn't do that — skip it and keep scanning.
-				if isOptInFeatureUnavailableError(err) {
-					ctxzap.Extract(ctx).Warn("baton-docusign: failed to get CLM workflow queues for member, skipping",
-						zap.String("member_id", memberID), zap.Error(err))
+				// Only a bare NotFound is tolerated per-member — the isolated "member
+				// deleted between ListMembers and this call" case. Unauthenticated/
+				// PermissionDenied/FailedPrecondition (the other codes
+				// isOptInFeatureUnavailableError covers) signal an account/token-wide
+				// problem, same as ListMembers' own first-page check above — tolerating
+				// those per-member would silently accept a partial membership set
+				// (missing queues, missing members) instead of skipping the whole
+				// resource type the way a systemic failure should.
+				if status.Code(err) == codes.NotFound {
+					skippedMembers++
+					if n := skippedMembers; n == 1 || n == 10 || n == 100 || n%1000 == 0 {
+						ctxzap.Extract(ctx).Warn("baton-docusign: CLM member not found while scanning workflow queues, skipping",
+							zap.String("member_id", memberID), zap.Int("total_occurrences", n), zap.Error(err))
+					}
 					continue
 				}
-				return nil, nil, fmt.Errorf("baton-docusign: getting workflow queues for CLM member %s: %w", memberID, err)
+				if isOptInFeatureUnavailableError(err) {
+					return nil, allAnnos, fmt.Errorf("%w: %w", errClmWorkflowQueuesUnavailable, err)
+				}
+				return nil, allAnnos, fmt.Errorf("baton-docusign: getting workflow queues for CLM member %s: %w", memberID, err)
 			}
 			allAnnos = append(allAnnos, queueAnnos...)
 
 			for _, q := range queues {
 				queueID := clmIDFromHref(q.Href)
 				if queueID == "" {
-					ctxzap.Extract(ctx).Warn("baton-docusign: CLM workflow queue has an empty Href, skipping",
-						zap.String("member_id", memberID), zap.String("queue_name", q.Name))
+					skippedQueues++
+					if n := skippedQueues; n == 1 || n == 10 || n == 100 || n%1000 == 0 {
+						ctxzap.Extract(ctx).Warn("baton-docusign: CLM workflow queue has an empty Href, skipping",
+							zap.String("member_id", memberID), zap.String("queue_name", q.Name), zap.Int("total_occurrences", n))
+					}
 					continue
 				}
 				entry, ok := membership[queueID]
