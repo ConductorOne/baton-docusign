@@ -2,6 +2,7 @@ package connector
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/conductorone/baton-docusign/pkg/client"
@@ -14,6 +15,13 @@ import (
 	"github.com/grpc-ecosystem/go-grpc-middleware/logging/zap/ctxzap"
 	"go.uber.org/zap"
 )
+
+// errClmWorkflowQueuesUnavailable is a sentinel discoverClmWorkflowQueueMembership wraps
+// its return error with when the very first ListMembers call in the scan fails with
+// isOptInFeatureUnavailableError — lets List() distinguish "skip this resource type
+// gracefully" from a real failure via errors.Is, without losing the underlying error for
+// logging (see List()'s use of it).
+var errClmWorkflowQueuesUnavailable = errors.New("baton-docusign: CLM is not available for this account or token")
 
 var _ connectorbuilder.StaticEntitlementSyncerV2 = (*clmWorkflowQueueBuilder)(nil)
 
@@ -77,8 +85,54 @@ func (b *clmWorkflowQueueBuilder) ResourceType(_ context.Context) *v2.ResourceTy
 }
 
 func (b *clmWorkflowQueueBuilder) List(ctx context.Context, _ *v2.ResourceId, attr rs.SyncOpAttrs) ([]*v2.Resource, *rs.SyncOpResults, error) {
-	queuesByID := make(map[string]client.ClmWorkflowQueue)
-	membersByQueueID := make(map[string][]string)
+	membership, allAnnos, err := b.discoverClmWorkflowQueueMembership(ctx)
+	if err != nil {
+		if errors.Is(err, errClmWorkflowQueuesUnavailable) {
+			ctxzap.Extract(ctx).Info("baton-docusign: CLM is not available for this account or token, skipping clm_workflow_queue sync", zap.Error(err))
+			return nil, &rs.SyncOpResults{}, nil
+		}
+		return nil, nil, err
+	}
+
+	resources := make([]*v2.Resource, 0, len(membership))
+	for queueID, entry := range membership {
+		if err := session.SetJSON(ctx, attr.Session, clmSessionKeyQueueMembers(queueID), entry.members); err != nil {
+			return nil, nil, fmt.Errorf("baton-docusign: failed to cache CLM workflow queue %s membership: %w", queueID, err)
+		}
+
+		queueResource, err := parseIntoClmWorkflowQueueResource(&entry.queue)
+		if err != nil {
+			return nil, nil, err
+		}
+		resources = append(resources, queueResource)
+	}
+
+	return resources, &rs.SyncOpResults{Annotations: allAnnos}, nil
+}
+
+// clmWorkflowQueueMembershipEntry pairs a discovered queue with the member IDs found
+// to belong to it — the two pieces of data discoverClmWorkflowQueueMembership's member
+// scan produces for every queue, kept together under one key instead of two parallel
+// maps that would otherwise always share the same key set.
+type clmWorkflowQueueMembershipEntry struct {
+	queue   client.ClmWorkflowQueue
+	members []string
+}
+
+// discoverClmWorkflowQueueMembership is the member-scan discovery algorithm this
+// builder's whole design is built around (see the type doc above): the CLM API has no
+// list-all endpoint for workflow queues and no reverse lookup from a queue to its
+// members, so this pages through every clm_member and, for each, calls
+// client.GetMemberWorkflowQueues to learn which queues they're in. Pure API-domain
+// discovery — no v2.Resource, no session cache — kept separate from List() so this
+// algorithm is testable and readable on its own, and List() stays a plain "discover,
+// then build resources" shape like every sibling CLM builder's List().
+//
+// Returns a nil map and an error wrapping errClmWorkflowQueuesUnavailable if the very
+// first ListMembers call fails with isOptInFeatureUnavailableError — List() checks for
+// that sentinel via errors.Is to decide whether to skip this resource type gracefully.
+func (b *clmWorkflowQueueBuilder) discoverClmWorkflowQueueMembership(ctx context.Context) (map[string]*clmWorkflowQueueMembershipEntry, annotations.Annotations, error) {
+	membership := make(map[string]*clmWorkflowQueueMembershipEntry)
 	var allAnnos annotations.Annotations
 
 	memberPageToken := ""
@@ -86,8 +140,7 @@ func (b *clmWorkflowQueueBuilder) List(ctx context.Context, _ *v2.ResourceId, at
 		members, nextMemberPageToken, memberAnnos, err := b.client.ListMembers(ctx, client.PageOptions{PageToken: memberPageToken})
 		if err != nil {
 			if memberPageToken == "" && isOptInFeatureUnavailableError(err) {
-				ctxzap.Extract(ctx).Info("baton-docusign: CLM is not available for this account or token, skipping clm_workflow_queue sync", zap.Error(err))
-				return nil, &rs.SyncOpResults{}, nil
+				return nil, nil, fmt.Errorf("%w: %w", errClmWorkflowQueuesUnavailable, err)
 			}
 			return nil, nil, err
 		}
@@ -97,39 +150,26 @@ func (b *clmWorkflowQueueBuilder) List(ctx context.Context, _ *v2.ResourceId, at
 			memberID := clmIDFromHref(member.Href)
 			queues, queueAnnos, err := b.client.GetMemberWorkflowQueues(ctx, memberID)
 			if err != nil {
-				return nil, nil, fmt.Errorf("getting workflow queues for CLM member %s: %w", memberID, err)
+				return nil, nil, fmt.Errorf("baton-docusign: getting workflow queues for CLM member %s: %w", memberID, err)
 			}
 			allAnnos = append(allAnnos, queueAnnos...)
 
 			for _, q := range queues {
 				queueID := clmIDFromHref(q.Href)
-				queuesByID[queueID] = q
-				membersByQueueID[queueID] = append(membersByQueueID[queueID], memberID)
+				entry, ok := membership[queueID]
+				if !ok {
+					entry = &clmWorkflowQueueMembershipEntry{queue: q}
+					membership[queueID] = entry
+				}
+				entry.members = append(entry.members, memberID)
 			}
 		}
 
 		if nextMemberPageToken == "" {
-			break
+			return membership, allAnnos, nil
 		}
 		memberPageToken = nextMemberPageToken
 	}
-
-	for queueID, memberIDs := range membersByQueueID {
-		if err := session.SetJSON(ctx, attr.Session, clmSessionKeyQueueMembers(queueID), memberIDs); err != nil {
-			return nil, nil, fmt.Errorf("baton-docusign: failed to cache CLM workflow queue %s membership: %w", queueID, err)
-		}
-	}
-
-	var resources []*v2.Resource
-	for _, q := range queuesByID {
-		queueResource, err := parseIntoClmWorkflowQueueResource(&q)
-		if err != nil {
-			return nil, nil, err
-		}
-		resources = append(resources, queueResource)
-	}
-
-	return resources, &rs.SyncOpResults{Annotations: allAnnos}, nil
 }
 
 // Entitlements returns nil — the SDK does not call this when StaticEntitlementSyncerV2

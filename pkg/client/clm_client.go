@@ -482,25 +482,27 @@ func (c *Client) ListMembers(ctx context.Context, options PageOptions) ([]ClmMem
 // particular does a full-replace Put using this result, so a truncated list here would
 // silently drop the member's memberships in every group beyond the first page.
 //
-// Intentional carve-out from the usual client-layer rule against looping through pages
-// internally (that's normally the connector layer's job, driving one page per call):
-// this isn't a sync List — it's a read-before-write for provisioning, where the caller
-// fundamentally needs the complete set to safely do a full-replace Put, not a page at a
-// time. The loop is bounded (maxMemberGroupPages) and guards against a non-advancing
-// token, so it can't hang even if the underlying assumption about the API is wrong.
-func (c *Client) GetMemberGroups(ctx context.Context, memberID string) ([]ClmGroup, annotations.Annotations, error) {
-	// maxMemberGroupPages bounds this loop in case the CLM API ever echoes a
-	// non-advancing Offset/Limit, which would make getClmNextToken compute the same
-	// "next" token forever. A member with more pages of groups than this is
-	// implausible; if it ever happens, fail loudly instead of hanging.
-	const maxMemberGroupPages = 1000
+// clmMaxMemberSubResourcePages bounds every "fetch a member's complete X" loop below
+// (GetMemberGroups, GetMemberWorkflowQueues) in case the CLM API ever echoes a
+// non-advancing Offset/Limit, which would make getClmNextToken compute the same "next"
+// token forever. A member with more pages of groups/queues than this is implausible; if
+// it ever happens, fail loudly instead of hanging.
+const clmMaxMemberSubResourcePages = 1000
 
-	var all []ClmGroup
+// clmPageToCompletion pages through fetchPage until it returns an empty nextPageToken,
+// accumulating every item — the shared shape behind every "get a member's complete X"
+// client method (GetMemberGroups, GetMemberWorkflowQueues), which each need the whole
+// set at once rather than one page per caller-visible call. See GetMemberGroups' doc for
+// why looping internally is an intentional carve-out from the usual client-layer rule.
+// Bounded by maxPages and guards against a non-advancing token, so it can't hang even if
+// the underlying assumption about the API is wrong.
+func clmPageToCompletion[T any](fetchPage func(pageToken string) ([]T, string, annotations.Annotations, error), maxPages int, label string) ([]T, annotations.Annotations, error) {
+	var all []T
 	var anno annotations.Annotations
 	pageToken := ""
 
-	for i := 0; i < maxMemberGroupPages; i++ {
-		page, nextPageToken, pageAnno, err := c.getMemberGroupsPage(ctx, memberID, PageOptions{PageToken: pageToken})
+	for i := 0; i < maxPages; i++ {
+		page, nextPageToken, pageAnno, err := fetchPage(pageToken)
 		if err != nil {
 			return nil, anno, err
 		}
@@ -511,12 +513,23 @@ func (c *Client) GetMemberGroups(ctx context.Context, memberID string) ([]ClmGro
 			return all, anno, nil
 		}
 		if nextPageToken == pageToken {
-			return nil, anno, fmt.Errorf("baton-docusign: CLM API returned a non-advancing pagination token while listing groups for member %s", memberID)
+			return nil, anno, fmt.Errorf("baton-docusign: CLM API returned a non-advancing pagination token while listing %s", label)
 		}
 		pageToken = nextPageToken
 	}
 
-	return nil, anno, fmt.Errorf("baton-docusign: exceeded %d pages while listing groups for member %s", maxMemberGroupPages, memberID)
+	return nil, anno, fmt.Errorf("baton-docusign: exceeded %d pages while listing %s", maxPages, label)
+}
+
+// Intentional carve-out from the usual client-layer rule against looping through pages
+// internally (that's normally the connector layer's job, driving one page per call):
+// this isn't a sync List — it's a read-before-write for provisioning, where the caller
+// fundamentally needs the complete set to safely do a full-replace Put, not a page at a
+// time. See clmPageToCompletion for the shared bounded/non-advancing-token-guarded loop.
+func (c *Client) GetMemberGroups(ctx context.Context, memberID string) ([]ClmGroup, annotations.Annotations, error) {
+	return clmPageToCompletion(func(pageToken string) ([]ClmGroup, string, annotations.Annotations, error) {
+		return c.getMemberGroupsPage(ctx, memberID, PageOptions{PageToken: pageToken})
+	}, clmMaxMemberSubResourcePages, fmt.Sprintf("groups for member %s", memberID))
 }
 
 // getMemberGroupsPage fetches a single page of a member's group memberships. Both of
@@ -632,32 +645,9 @@ func (c *Client) ListPermissionSets(ctx context.Context, options PageOptions) ([
 // lookup (queue to members) and no membership grant/revoke endpoint, only work-item
 // assign/unassign — which this connector doesn't sync (see clm_workflow_queues.go).
 func (c *Client) GetMemberWorkflowQueues(ctx context.Context, memberID string) ([]ClmWorkflowQueue, annotations.Annotations, error) {
-	// maxMemberQueuePages mirrors GetMemberGroups' identical safety bound — see its
-	// comment for the rationale.
-	const maxMemberQueuePages = 1000
-
-	var all []ClmWorkflowQueue
-	var anno annotations.Annotations
-	pageToken := ""
-
-	for i := 0; i < maxMemberQueuePages; i++ {
-		page, nextPageToken, pageAnno, err := c.getMemberWorkflowQueuesPage(ctx, memberID, PageOptions{PageToken: pageToken})
-		if err != nil {
-			return nil, anno, err
-		}
-		anno = append(anno, pageAnno...)
-		all = append(all, page...)
-
-		if nextPageToken == "" {
-			return all, anno, nil
-		}
-		if nextPageToken == pageToken {
-			return nil, anno, fmt.Errorf("baton-docusign: CLM API returned a non-advancing pagination token while listing workflow queues for member %s", memberID)
-		}
-		pageToken = nextPageToken
-	}
-
-	return nil, anno, fmt.Errorf("baton-docusign: exceeded %d pages while listing workflow queues for member %s", maxMemberQueuePages, memberID)
+	return clmPageToCompletion(func(pageToken string) ([]ClmWorkflowQueue, string, annotations.Annotations, error) {
+		return c.getMemberWorkflowQueuesPage(ctx, memberID, PageOptions{PageToken: pageToken})
+	}, clmMaxMemberSubResourcePages, fmt.Sprintf("workflow queues for member %s", memberID))
 }
 
 func (c *Client) getMemberWorkflowQueuesPage(ctx context.Context, memberID string, options PageOptions) ([]ClmWorkflowQueue, string, annotations.Annotations, error) {
