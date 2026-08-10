@@ -35,9 +35,9 @@ func TestClmRoleBuilder_List(t *testing.T) {
 }
 
 func TestClmRoleBuilder_List_SkipsGracefullyWhenClmUnavailable(t *testing.T) {
-	// See clm_members_test.go's identical test for the full rationale. Before the 2a
-	// fix, clm_roles.go's List() made no API call at all, so this case couldn't happen
-	// — the 5 fixed roles synced unconditionally even without CLM access.
+	// See clm_members_test.go's identical test for the full rationale. Before List()
+	// gated on EnsureClmReady, clm_roles.go made no API call at all, so this case
+	// couldn't happen — the 5 fixed roles synced unconditionally even without CLM access.
 	s, _ := clmtest.NewServer(t)
 	badClient := s.NewClientWithToken("wrong-token")
 	b := newClmRoleBuilder(badClient)
@@ -52,6 +52,28 @@ func TestClmRoleBuilder_List_SkipsGracefullyWhenClmUnavailable(t *testing.T) {
 	}
 	if res == nil {
 		t.Errorf("expected a non-nil SyncOpResults, got %+v", res)
+	}
+}
+
+// TestClmRoleBuilder_List_FailsLoudlyOnTransientDiscoveryFailure is a regression test:
+// ensureClmInitialized wraps EVERY discovery-call failure as a clmDiscoveryError,
+// including transient infrastructure failures (5xx, rate limits), not just the 4 codes
+// isOptInFeatureUnavailableError tolerates. Gating solely on
+// client.IsClmDiscoveryError(err) — without also requiring
+// isOptInFeatureUnavailableError(err) — would make clm_role silently skip on a 503 that
+// every other CLM builder correctly treats as a loud failure.
+func TestClmRoleBuilder_List_FailsLoudlyOnTransientDiscoveryFailure(t *testing.T) {
+	s, c := clmtest.NewServer(t)
+	s.ForceClmDiscoveryStatus(503)
+	b := newClmRoleBuilder(c)
+	ctx := context.Background()
+
+	resources, _, err := b.List(ctx, nil, rs.SyncOpAttrs{})
+	if err == nil {
+		t.Fatal("expected a transient discovery failure (503) to fail loudly, got nil error")
+	}
+	if len(resources) != 0 {
+		t.Errorf("expected zero resources on a hard failure, got %d", len(resources))
 	}
 }
 
