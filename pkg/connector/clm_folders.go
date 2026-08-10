@@ -447,15 +447,15 @@ func clmSlugForAccessType(accessType string) (string, bool) {
 	return "", false
 }
 
-// clmIsBenignUnmappedAccessType reports whether accessType is one of the two documented
-// non-grantable values every folder-security entry can legitimately carry — NoAccess
-// (this connector's own Revoke leaves entries in place at this value, so it appears on
-// every subsequent sync of a revoked entry) and Custom/InheritFromParentFolder (an
-// arbitrary flag combination or an absence-of-override marker, neither round-trippable
-// to a single tier — see clmFolderEntitlement's doc). Grants() skips all three the same
-// way, but only logs the ones NOT in this set, so an entry with a genuinely unrecognized
-// AccessType (a real anomaly) doesn't get lost in three expected values large accounts
-// can produce on every single sync.
+// clmIsBenignUnmappedAccessType reports whether accessType is one of the three
+// documented non-grantable values every folder-security entry can legitimately carry —
+// NoAccess (this connector's own Revoke leaves entries in place at this value, so it
+// appears on every subsequent sync of a revoked entry), Custom, and
+// InheritFromParentFolder (an arbitrary flag combination or an absence-of-override
+// marker, neither round-trippable to a single tier — see clmFolderEntitlement's doc).
+// Grants() skips all three the same way, but only logs the ones NOT in this set, so a
+// genuinely unrecognized AccessType doesn't get lost in three expected values large
+// accounts can produce on every single sync.
 func clmIsBenignUnmappedAccessType(accessType string) bool {
 	switch accessType {
 	case client.ClmAccessTypeNoAccess, client.ClmAccessTypeCustom, client.ClmAccessTypeInherit:

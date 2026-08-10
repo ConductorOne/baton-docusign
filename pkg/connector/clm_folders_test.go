@@ -11,6 +11,10 @@ import (
 	"github.com/conductorone/baton-sdk/pkg/annotations"
 	"github.com/conductorone/baton-sdk/pkg/pagination"
 	rs "github.com/conductorone/baton-sdk/pkg/types/resource"
+	"github.com/grpc-ecosystem/go-grpc-middleware/logging/zap/ctxzap"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+	"go.uber.org/zap/zaptest/observer"
 )
 
 // --- Pure-function tests: clmSlugForAccessType / clmAccessTypeForSlug ---
@@ -223,6 +227,49 @@ func TestClmIsBenignUnmappedAccessType(t *testing.T) {
 		if got := clmIsBenignUnmappedAccessType(tt.accessType); got != tt.want {
 			t.Errorf("clmIsBenignUnmappedAccessType(%q) = %v, want %v", tt.accessType, got, tt.want)
 		}
+	}
+}
+
+// TestClmFolderBuilder_Grants_LogsOnlyForGenuinelyUnrecognizedAccessType tests the
+// observable behavior Grants() ships, not just the clmIsBenignUnmappedAccessType
+// predicate in isolation: a genuinely unrecognized AccessType must still log (at
+// Debug), while a benign one (NoAccess here) must stay silent even at Debug.
+func TestClmFolderBuilder_Grants_LogsOnlyForGenuinelyUnrecognizedAccessType(t *testing.T) {
+	_, c := clmtest.NewServer(t)
+	ctx := context.Background()
+
+	if _, err := c.PatchFolderSecurity(ctx, "folder-templates", client.ClmFolderSecurityWrite{
+		Groups: []client.ClmGroupSecurityEntry{
+			{AccessType: "SomethingUnrecognized", Href: "https://example.com/groups/group-x"},
+			{AccessType: client.ClmAccessTypeNoAccess, Href: "https://example.com/groups/group-y"},
+		},
+	}); err != nil {
+		t.Fatalf("PatchFolderSecurity (seed): %v", err)
+	}
+
+	core, logs := observer.New(zapcore.DebugLevel)
+	observedCtx := ctxzap.ToContext(ctx, zap.New(core))
+
+	b := newClmFolderBuilder(c)
+	folderResource, err := rs.NewResource("Templates", clmFolderResourceType, "folder-templates")
+	if err != nil {
+		t.Fatalf("NewResource: %v", err)
+	}
+
+	grants, _, err := b.Grants(observedCtx, folderResource, rs.SyncOpAttrs{})
+	if err != nil {
+		t.Fatalf("Grants: %v", err)
+	}
+	if len(grants) != 0 {
+		t.Fatalf("expected both entries to be skipped (neither maps to a grantable tier), got %d grants: %+v", len(grants), grants)
+	}
+
+	entries := logs.All()
+	if len(entries) != 1 {
+		t.Fatalf("expected exactly 1 log entry (the genuinely unrecognized AccessType; NoAccess should stay silent), got %d: %+v", len(entries), entries)
+	}
+	if entries[0].Level != zapcore.DebugLevel {
+		t.Errorf("expected the unmapped-AccessType log to be at Debug, got %v", entries[0].Level)
 	}
 }
 
