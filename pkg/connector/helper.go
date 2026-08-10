@@ -91,6 +91,18 @@ func clmIDFromHref(href string) string {
 // used to derive a sibling object's Href from a known-real one, instead of guessing at
 // the host from the discovered CLM base URL, whenever a real sample happens to be
 // available. See clmPreferredHref for why this matters specifically for writes.
+//
+// Reuses sampleHref's entire path, not just scheme+host, on the assumption that
+// same-collection Hrefs share the same path shape and only the trailing ID segment
+// differs. This is confirmed for every sample source this helper is actually called
+// with: ClmGroupSecurityEntry.Href and ClmUserSecurityEntry.Href are each documented in
+// clm_models.go as carrying the full Group/Member object's own native Href (not some
+// folder-scoped nested path), and ClmGroupPage's doc confirms a member's-current-groups
+// response (GetMemberGroups) shares the identical ClmGroup/Href shape as the top-level
+// groups-list endpoint. Every clmPreferredHref call site in this codebase also only
+// ever draws samples from one single collection at a time (e.g. groupSampleHrefs from
+// write.Groups alone), so a same-type sample is never a hidden assumption to re-verify
+// here — it's structurally guaranteed by the callers.
 func clmHrefWithID(sampleHref, newID string) (string, error) {
 	trimmed := strings.TrimSuffix(sampleHref, "/")
 	idx := strings.LastIndex(trimmed, "/")
