@@ -199,6 +199,11 @@ func (s *Server) handleMemberWorkflowQueues(w http.ResponseWriter, r *http.Reque
 	s.memberWorkflowQueuesRequests++
 
 	id := r.PathValue("id")
+	if forcedStatus, ok := s.forcedMemberWorkflowQueuesStatus[id]; ok {
+		w.WriteHeader(forcedStatus)
+		_ = json.NewEncoder(w).Encode(client.ClmErrorResponse{})
+		return
+	}
 	if _, ok := s.members[id]; !ok {
 		writeNotFound(w)
 		return

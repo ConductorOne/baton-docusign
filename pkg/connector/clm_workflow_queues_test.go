@@ -194,6 +194,75 @@ func TestClmWorkflowQueueBuilder_List_DiscoversQueuesViaMemberScan(t *testing.T)
 	}
 }
 
+// TestClmWorkflowQueueBuilder_List_ToleratesNotFoundMidScan confirms a single member
+// 404ing (deleted between ListMembers and this call) is skipped, not a sync-wide
+// failure — the member scan continues and still discovers every other member's queues.
+func TestClmWorkflowQueueBuilder_List_ToleratesNotFoundMidScan(t *testing.T) {
+	srv, c := clmtest.NewServer(t)
+	// member-carol is a real seeded member (clmtest/seed.go) with zero queues of its
+	// own — forcing 404 here confirms the skip doesn't disturb discovery of the other
+	// members' queues (Onboarding/Escalations), not just that the scan doesn't crash.
+	srv.ForceMemberWorkflowQueuesStatus("member-carol", 404)
+	b := newClmWorkflowQueueBuilder(c)
+	ctx := context.Background()
+
+	resources, _, err := b.List(ctx, nil, rs.SyncOpAttrs{Session: newFakeSessionStore()})
+	if err != nil {
+		t.Fatalf("expected a 404 on one member to be tolerated, got error: %v", err)
+	}
+	if len(resources) != 2 {
+		t.Fatalf("expected the other members' 2 queues to still be discovered, got %d: %+v", len(resources), resources)
+	}
+}
+
+// TestClmWorkflowQueueBuilder_List_SkipsGracefullyWhenFirstMemberDenied confirms the
+// account-wide-unavailability escalation (errClmWorkflowQueuesUnavailable) still fires
+// when nothing has been discovered yet — member-alice is first in scan order
+// (clmtest/seed.go's memberOrder) and forcing PermissionDenied there means zero queues
+// exist in membership at the point of failure.
+func TestClmWorkflowQueueBuilder_List_SkipsGracefullyWhenFirstMemberDenied(t *testing.T) {
+	srv, c := clmtest.NewServer(t)
+	srv.ForceMemberWorkflowQueuesStatus("member-alice", 403)
+	b := newClmWorkflowQueueBuilder(c)
+	ctx := context.Background()
+
+	resources, res, err := b.List(ctx, nil, rs.SyncOpAttrs{Session: newFakeSessionStore()})
+	if err != nil {
+		t.Fatalf("expected List to tolerate a PermissionDenied with nothing discovered yet, got error: %v", err)
+	}
+	if len(resources) != 0 {
+		t.Errorf("expected zero resources, got %d: %+v", len(resources), resources)
+	}
+	if res == nil {
+		t.Errorf("expected a non-nil SyncOpResults, got %+v", res)
+	}
+}
+
+// TestClmWorkflowQueueBuilder_List_FailsLoudlyWhenLaterMemberDenied is a regression
+// test: discoverClmWorkflowQueueMembership previously escalated ANY
+// isOptInFeatureUnavailableError to "CLM unavailable, return zero resources",
+// regardless of scan position — so a PermissionDenied on member N (a token expiring or
+// a scope revoked mid-scan) after earlier members had already contributed real queues
+// would silently discard every already-discovered queue as if the whole feature were
+// unavailable, the same false-deletion risk ListMembers' own memberPageToken == ""
+// narrowing exists to avoid. member-bob is scanned after member-alice (whose Onboarding
+// queue is already in membership by the time bob's call fails), so this must now fail
+// loud instead of returning zero resources with a nil error.
+func TestClmWorkflowQueueBuilder_List_FailsLoudlyWhenLaterMemberDenied(t *testing.T) {
+	srv, c := clmtest.NewServer(t)
+	srv.ForceMemberWorkflowQueuesStatus("member-bob", 403)
+	b := newClmWorkflowQueueBuilder(c)
+	ctx := context.Background()
+
+	resources, _, err := b.List(ctx, nil, rs.SyncOpAttrs{Session: newFakeSessionStore()})
+	if err == nil {
+		t.Fatal("expected a PermissionDenied after queues were already discovered to fail loudly, got nil error")
+	}
+	if len(resources) != 0 {
+		t.Errorf("expected zero resources on a hard failure, got %d: %+v", len(resources), resources)
+	}
+}
+
 // TestClmWorkflowQueueBuilder_Grants_ReadsFromCache confirms the other half of this
 // builder's design: Grants() must NOT re-scan every member per queue (that would turn
 // one O(members) traversal into O(queues * members) — see the builder's doc) — it reads

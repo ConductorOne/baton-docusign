@@ -118,6 +118,19 @@ type Server struct {
 
 	memberGroupsRequests         int // count of GET .../members/{id}/groups calls, for pagination assertions
 	memberWorkflowQueuesRequests int // count of GET .../members/{id}/workflowqueues calls, for pagination assertions
+
+	forcedMemberWorkflowQueuesStatus map[string]int // memberID -> forced HTTP status, for tests
+}
+
+// ForceMemberWorkflowQueuesStatus makes GET .../members/{id}/workflowqueues fail with
+// the given HTTP status for exactly this memberID — for tests that need a specific
+// gRPC code (e.g. PermissionDenied/Unauthenticated) out of one particular member's
+// call, distinct from the unknown-member 404 handleMemberWorkflowQueues already
+// produces for an ID absent from the seed. Call after NewServer returns.
+func (s *Server) ForceMemberWorkflowQueuesStatus(memberID string, status int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.forcedMemberWorkflowQueuesStatus[memberID] = status
 }
 
 // MemberGroupsRequestCount returns how many times GET .../members/{id}/groups has been
@@ -223,14 +236,15 @@ func (s *Server) FolderSecurity(folderID string) client.ClmFolderSecurity {
 // RunStandalone so both construct exactly the same seeded state.
 func newState() *Server {
 	return &Server{
-		folders:              make(map[string]*client.ClmFolder),
-		groups:               make(map[string]*client.ClmGroup),
-		groupMembers:         make(map[string][]string),
-		members:              make(map[string]*client.ClmMember),
-		memberGroups:         make(map[string][]string),
-		permissionSets:       make(map[string]*client.ClmPermissionSet),
-		workflowQueues:       make(map[string]*client.ClmWorkflowQueue),
-		memberWorkflowQueues: make(map[string][]string),
+		folders:                          make(map[string]*client.ClmFolder),
+		groups:                           make(map[string]*client.ClmGroup),
+		groupMembers:                     make(map[string][]string),
+		members:                          make(map[string]*client.ClmMember),
+		memberGroups:                     make(map[string][]string),
+		permissionSets:                   make(map[string]*client.ClmPermissionSet),
+		workflowQueues:                   make(map[string]*client.ClmWorkflowQueue),
+		memberWorkflowQueues:             make(map[string][]string),
+		forcedMemberWorkflowQueuesStatus: make(map[string]int),
 	}
 }
 

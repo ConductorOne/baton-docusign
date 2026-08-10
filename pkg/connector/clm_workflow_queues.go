@@ -200,7 +200,16 @@ func (b *clmWorkflowQueueBuilder) discoverClmWorkflowQueueMembership(ctx context
 					}
 					continue
 				}
-				if isOptInFeatureUnavailableError(err) {
+				if isOptInFeatureUnavailableError(err) && len(membership) == 0 {
+					// Same reasoning as ListMembers' own memberPageToken == "" check
+					// above: nothing has been discovered yet, so a failure this early
+					// plausibly means "no CLM" (or no workflowqueues scope) for the whole
+					// account — safe to skip gracefully. Once queues have already been
+					// found, CLM is clearly available, so a later failure here (an
+					// expiring token, a scope revoked mid-scan) is a real, isolated
+					// problem, not an unavailability signal — failing loud beats
+					// discarding every already-discovered queue as if the whole feature
+					// were unavailable.
 					return nil, allAnnos, fmt.Errorf("%w: %w", errClmWorkflowQueuesUnavailable, err)
 				}
 				return nil, allAnnos, fmt.Errorf("baton-docusign: getting workflow queues for CLM member %s: %w", memberID, err)
