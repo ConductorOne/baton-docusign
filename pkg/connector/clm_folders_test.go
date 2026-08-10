@@ -271,6 +271,13 @@ func TestClmFolderBuilder_Grants_LogsOnlyForGenuinelyUnrecognizedAccessType(t *t
 	if entries[0].Level != zapcore.DebugLevel {
 		t.Errorf("expected the unmapped-AccessType log to be at Debug, got %v", entries[0].Level)
 	}
+	// Pins WHICH entry logged, not just how many: an inverted clmIsBenignUnmappedAccessType
+	// check (silencing SomethingUnrecognized and logging NoAccess instead) would still
+	// produce exactly 1 Debug entry, passing the two assertions above on the exact bug
+	// this test exists to catch.
+	if got := entries[0].ContextMap()["access_type"]; got != "SomethingUnrecognized" {
+		t.Errorf("expected the logged entry's access_type to be %q, got %q", "SomethingUnrecognized", got)
+	}
 }
 
 func TestClmFolderBuilder_GrantAndRevoke_Idempotent(t *testing.T) {
