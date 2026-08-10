@@ -1,11 +1,11 @@
 package connector
 
 import (
-	"context"
 	"errors"
 	"testing"
 
-	"github.com/conductorone/baton-docusign/pkg/client/clmtest"
+	"context"
+
 	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
 	rs "github.com/conductorone/baton-sdk/pkg/types/resource"
 	"google.golang.org/grpc/codes"
@@ -86,32 +86,6 @@ func TestClmHrefWithID(t *testing.T) {
 	}
 	if want := "https://clm.example.com/v2/acct-1/groups/group-new"; got != want {
 		t.Errorf("clmHrefWithID = %q, want %q", got, want)
-	}
-}
-
-// TestClmDiscoverySourceField confirms the field correctly reports whether a tolerated
-// error actually came from CLM account discovery — both a discovery error and a plain
-// one are equally tolerated by isOptInFeatureUnavailableError, unchanged; this is purely
-// informational, not a gate. See clmDiscoverySourceField's doc for why this is a field
-// and not a log level.
-func TestClmDiscoverySourceField(t *testing.T) {
-	s, _ := clmtest.NewServer(t)
-	discoveryErr := s.NewClientWithToken("wrong-token").EnsureClmReady(context.Background())
-	if discoveryErr == nil {
-		t.Fatal("test setup: expected EnsureClmReady to fail for a bad token")
-	}
-	// Stands in for a real per-resource CLM data call (SearchFolders, ListGroups, ...)
-	// failing for an unrelated reason (an expired token mid-sync, a narrower scope
-	// problem) after discovery already succeeded — isOptInFeatureUnavailableError
-	// tolerates this identically to a discovery error, but it doesn't have the same
-	// one-directional "this means no CLM subscription" guarantee.
-	plainErr := status.Error(codes.Unauthenticated, "token expired mid-sync")
-
-	if got := clmDiscoverySourceField(discoveryErr); got.Integer != 1 {
-		t.Errorf("expected from_clm_discovery=true for a discovery-sourced error, got %+v", got)
-	}
-	if got := clmDiscoverySourceField(plainErr); got.Integer != 0 {
-		t.Errorf("expected from_clm_discovery=false for a non-discovery error, got %+v", got)
 	}
 }
 

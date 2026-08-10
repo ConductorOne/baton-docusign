@@ -75,7 +75,7 @@ func (f *clmFolderBuilder) List(ctx context.Context, _ *v2.ResourceId, attr rs.S
 	})
 	if err != nil {
 		if attr.PageToken.Token == "" && isOptInFeatureUnavailableError(err) {
-			ctxzap.Extract(ctx).Info("baton-docusign: CLM is not available for this account or token, skipping clm_folder sync", zap.Error(err), clmDiscoverySourceField(err))
+			ctxzap.Extract(ctx).Info("baton-docusign: CLM is not available for this account or token, skipping clm_folder sync", zap.Error(err))
 			return nil, &rs.SyncOpResults{}, nil
 		}
 		return nil, nil, err

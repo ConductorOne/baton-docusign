@@ -84,22 +84,6 @@ func isOptInFeatureUnavailableError(err error) bool {
 	}
 }
 
-// clmDiscoverySourceField attaches whether a tolerated "CLM is not available" error
-// actually came from CLM account discovery to the "skipping sync" log line every CLM
-// builder's List() emits when isOptInFeatureUnavailableError tolerates an error — a
-// genuine "no CLM subscription" signal can legitimately come from either CLM account
-// discovery or a later per-resource CLM data call, depending on where DocuSign enforces
-// the check for a given account, and this project has no live CLM tenant to confirm
-// which. Deliberately carried as a field, not a log level: if the per-resource-call
-// source turns out to be the common case for most eSignature-only accounts (this repo
-// can't confirm either way), logging that case louder would make the LOUD level the
-// steady state for the majority of syncs — inverting what that level is supposed to
-// signal. A field lets a dashboard/alert key on the source without either log level
-// assumption backfiring.
-func clmDiscoverySourceField(err error) zap.Field {
-	return zap.Bool("from_clm_discovery", client.IsClmDiscoveryError(err))
-}
-
 // clmIDFromHref extracts the trailing path segment from a CLM object's Href — see
 // client.IDFromHref's doc. pkg/client/clmtest can't import pkg/connector, so the single
 // definition lives in pkg/client and both packages delegate to it instead of

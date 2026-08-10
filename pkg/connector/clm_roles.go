@@ -61,7 +61,7 @@ func (b *clmRoleBuilder) List(ctx context.Context, _ *v2.ResourceId, _ rs.SyncOp
 		// there's no live CLM tenant to validate a bespoke cross-builder consistency
 		// mechanism against instead.
 		if client.IsClmDiscoveryError(err) && isOptInFeatureUnavailableError(err) {
-			ctxzap.Extract(ctx).Info("baton-docusign: CLM is not available for this account or token, skipping clm_role sync", zap.Error(err), clmDiscoverySourceField(err))
+			ctxzap.Extract(ctx).Info("baton-docusign: CLM is not available for this account or token, skipping clm_role sync", zap.Error(err))
 			return nil, &rs.SyncOpResults{}, nil
 		}
 		return nil, nil, err
