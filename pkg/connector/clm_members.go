@@ -6,6 +6,7 @@ import (
 	"github.com/conductorone/baton-docusign/pkg/client"
 	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
 	rs "github.com/conductorone/baton-sdk/pkg/types/resource"
+	"github.com/grpc-ecosystem/go-grpc-middleware/logging/zap/ctxzap"
 	"go.uber.org/zap"
 )
 
@@ -35,7 +36,7 @@ func (b *clmMemberBuilder) List(ctx context.Context, _ *v2.ResourceId, attr rs.S
 	})
 	if err != nil {
 		if attr.PageToken.Token == "" && isOptInFeatureUnavailableError(err) {
-			clmSkipLogLevel(ctx, err)("baton-docusign: CLM is not available for this account or token, skipping clm_member sync", zap.Error(err))
+			ctxzap.Extract(ctx).Info("baton-docusign: CLM is not available for this account or token, skipping clm_member sync", zap.Error(err), clmDiscoverySourceField(err))
 			return nil, &rs.SyncOpResults{}, nil
 		}
 		return nil, nil, err

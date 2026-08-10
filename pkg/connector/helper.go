@@ -84,24 +84,20 @@ func isOptInFeatureUnavailableError(err error) bool {
 	}
 }
 
-// clmSkipLogLevel picks Info or Warn for the "CLM is not available, skipping sync" log
-// line every CLM builder's List() emits when isOptInFeatureUnavailableError tolerates an
-// error. Deliberately does NOT gate whether the sync skips gracefully — a genuine "no
-// CLM subscription" signal can legitimately come from either CLM account discovery or a
-// later per-resource CLM data call, depending on where DocuSign enforces the check for a
-// given account, and this project has no live CLM tenant to confirm which; gating on the
-// source would risk turning a real account's previously-graceful skip into a hard sync
-// failure. So: the same tolerance either way, but logged louder when the source isn't
-// discovery, since that case doesn't have the same one-directional "this really is a
-// missing subscription" guarantee a discovery failure does — it could also be a
-// narrower problem (a token that expired mid-sync, a scope issue on just this endpoint)
-// being silently treated as "nothing to sync" rather than a real failure, which is worth
-// a human noticing.
-func clmSkipLogLevel(ctx context.Context, err error) func(string, ...zap.Field) {
-	if client.IsClmDiscoveryError(err) {
-		return ctxzap.Extract(ctx).Info
-	}
-	return ctxzap.Extract(ctx).Warn
+// clmDiscoverySourceField attaches whether a tolerated "CLM is not available" error
+// actually came from CLM account discovery to the "skipping sync" log line every CLM
+// builder's List() emits when isOptInFeatureUnavailableError tolerates an error — a
+// genuine "no CLM subscription" signal can legitimately come from either CLM account
+// discovery or a later per-resource CLM data call, depending on where DocuSign enforces
+// the check for a given account, and this project has no live CLM tenant to confirm
+// which. Deliberately carried as a field, not a log level: if the per-resource-call
+// source turns out to be the common case for most eSignature-only accounts (this repo
+// can't confirm either way), logging that case louder would make the LOUD level the
+// steady state for the majority of syncs — inverting what that level is supposed to
+// signal. A field lets a dashboard/alert key on the source without either log level
+// assumption backfiring.
+func clmDiscoverySourceField(err error) zap.Field {
+	return zap.Bool("from_clm_discovery", client.IsClmDiscoveryError(err))
 }
 
 // clmIDFromHref extracts the trailing path segment from a CLM object's Href — see

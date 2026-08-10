@@ -8,10 +8,6 @@ import (
 	"github.com/conductorone/baton-docusign/pkg/client/clmtest"
 	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
 	rs "github.com/conductorone/baton-sdk/pkg/types/resource"
-	"github.com/grpc-ecosystem/go-grpc-middleware/logging/zap/ctxzap"
-	"go.uber.org/zap"
-	"go.uber.org/zap/zapcore"
-	"go.uber.org/zap/zaptest/observer"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -93,22 +89,17 @@ func TestClmHrefWithID(t *testing.T) {
 	}
 }
 
-// TestClmSkipLogLevel confirms clmSkipLogLevel's only real decision: log louder (Warn,
-// not Info) when the tolerated error didn't actually come from CLM account discovery.
-// It does NOT gate whether the sync skips gracefully — both a discovery error and a
-// plain one are equally tolerated by isOptInFeatureUnavailableError, unchanged. See
-// clmSkipLogLevel's doc for why gating on the source, not just the log level, was tried
-// and reverted.
-func TestClmSkipLogLevel(t *testing.T) {
-	core, logs := observer.New(zapcore.DebugLevel)
-	ctx := ctxzap.ToContext(context.Background(), zap.New(core))
-
+// TestClmDiscoverySourceField confirms the field correctly reports whether a tolerated
+// error actually came from CLM account discovery — both a discovery error and a plain
+// one are equally tolerated by isOptInFeatureUnavailableError, unchanged; this is purely
+// informational, not a gate. See clmDiscoverySourceField's doc for why this is a field
+// and not a log level.
+func TestClmDiscoverySourceField(t *testing.T) {
 	s, _ := clmtest.NewServer(t)
-	discoveryErr := s.NewClientWithToken("wrong-token").EnsureClmReady(ctx)
+	discoveryErr := s.NewClientWithToken("wrong-token").EnsureClmReady(context.Background())
 	if discoveryErr == nil {
 		t.Fatal("test setup: expected EnsureClmReady to fail for a bad token")
 	}
-	logs.TakeAll() // discard the underlying HTTP client's own log line from that call above
 	// Stands in for a real per-resource CLM data call (SearchFolders, ListGroups, ...)
 	// failing for an unrelated reason (an expired token mid-sync, a narrower scope
 	// problem) after discovery already succeeded — isOptInFeatureUnavailableError
@@ -116,18 +107,11 @@ func TestClmSkipLogLevel(t *testing.T) {
 	// one-directional "this means no CLM subscription" guarantee.
 	plainErr := status.Error(codes.Unauthenticated, "token expired mid-sync")
 
-	clmSkipLogLevel(ctx, discoveryErr)("discovery skip")
-	clmSkipLogLevel(ctx, plainErr)("plain skip")
-
-	entries := logs.All()
-	if len(entries) != 2 {
-		t.Fatalf("expected 2 log entries, got %d: %+v", len(entries), entries)
+	if got := clmDiscoverySourceField(discoveryErr); got.Integer != 1 {
+		t.Errorf("expected from_clm_discovery=true for a discovery-sourced error, got %+v", got)
 	}
-	if entries[0].Level != zapcore.InfoLevel {
-		t.Errorf("expected a discovery-sourced error to log at Info, got %v", entries[0].Level)
-	}
-	if entries[1].Level != zapcore.WarnLevel {
-		t.Errorf("expected a non-discovery error to log at Warn, got %v", entries[1].Level)
+	if got := clmDiscoverySourceField(plainErr); got.Integer != 0 {
+		t.Errorf("expected from_clm_discovery=false for a non-discovery error, got %+v", got)
 	}
 }
 

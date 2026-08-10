@@ -7,6 +7,7 @@ import (
 	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
 	"github.com/conductorone/baton-sdk/pkg/types/entitlement"
 	rs "github.com/conductorone/baton-sdk/pkg/types/resource"
+	"github.com/grpc-ecosystem/go-grpc-middleware/logging/zap/ctxzap"
 	"go.uber.org/zap"
 )
 
@@ -42,7 +43,7 @@ func (b *clmPermissionSetBuilder) List(ctx context.Context, _ *v2.ResourceId, at
 	})
 	if err != nil {
 		if attr.PageToken.Token == "" && isOptInFeatureUnavailableError(err) {
-			clmSkipLogLevel(ctx, err)("baton-docusign: CLM is not available for this account or token, skipping clm_permission_set sync", zap.Error(err))
+			ctxzap.Extract(ctx).Info("baton-docusign: CLM is not available for this account or token, skipping clm_permission_set sync", zap.Error(err), clmDiscoverySourceField(err))
 			return nil, &rs.SyncOpResults{}, nil
 		}
 		return nil, nil, err

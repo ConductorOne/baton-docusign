@@ -6,6 +6,7 @@ import (
 	"github.com/conductorone/baton-docusign/pkg/client"
 	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
 	rs "github.com/conductorone/baton-sdk/pkg/types/resource"
+	"github.com/grpc-ecosystem/go-grpc-middleware/logging/zap/ctxzap"
 	"go.uber.org/zap"
 )
 
@@ -60,7 +61,7 @@ func (b *clmRoleBuilder) List(ctx context.Context, _ *v2.ResourceId, _ rs.SyncOp
 		// there's no live CLM tenant to validate a bespoke cross-builder consistency
 		// mechanism against instead.
 		if client.IsClmDiscoveryError(err) && isOptInFeatureUnavailableError(err) {
-			clmSkipLogLevel(ctx, err)("baton-docusign: CLM is not available for this account or token, skipping clm_role sync", zap.Error(err))
+			ctxzap.Extract(ctx).Info("baton-docusign: CLM is not available for this account or token, skipping clm_role sync", zap.Error(err), clmDiscoverySourceField(err))
 			return nil, &rs.SyncOpResults{}, nil
 		}
 		return nil, nil, err
