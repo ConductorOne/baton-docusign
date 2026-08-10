@@ -85,22 +85,18 @@ func isOptInFeatureUnavailableError(err error) bool {
 }
 
 // clmSkipLogLevel picks Info or Warn for the "CLM is not available, skipping sync" log
-// line every CLM builder's List() emits when isOptInFeatureUnavailableError tolerates
-// an error. Deliberately does NOT gate whether the sync skips gracefully — only two
-// tries at that were made and both were wrong: the original behavior tolerates any of
-// isOptInFeatureUnavailableError's codes regardless of source, and an earlier version
-// of this function required client.IsClmDiscoveryError (i.e. only a failure from
-// ensureClmInitialized's account-discovery call, never a later per-resource CLM data
-// call) — but a genuine "no CLM subscription" signal can legitimately come from either
-// place depending on where DocuSign enforces the check for a given account, and this
-// project has no live CLM tenant to confirm which. Narrowing the gate risked turning a
-// previously-graceful skip into a hard sync failure for a real account shape, which is
-// a worse regression than the observability gap it would have fixed. So: same
-// tolerance as before, but logged louder when the source isn't discovery, since that
-// case doesn't have the same one-directional guarantee a discovery failure does (it
-// could also be a narrower problem — a token that expired mid-sync, a scope issue on
-// just this endpoint — being silently treated as "nothing to sync" rather than a real
-// failure) and is worth a human noticing.
+// line every CLM builder's List() emits when isOptInFeatureUnavailableError tolerates an
+// error. Deliberately does NOT gate whether the sync skips gracefully — a genuine "no
+// CLM subscription" signal can legitimately come from either CLM account discovery or a
+// later per-resource CLM data call, depending on where DocuSign enforces the check for a
+// given account, and this project has no live CLM tenant to confirm which; gating on the
+// source would risk turning a real account's previously-graceful skip into a hard sync
+// failure. So: the same tolerance either way, but logged louder when the source isn't
+// discovery, since that case doesn't have the same one-directional "this really is a
+// missing subscription" guarantee a discovery failure does — it could also be a
+// narrower problem (a token that expired mid-sync, a scope issue on just this endpoint)
+// being silently treated as "nothing to sync" rather than a real failure, which is worth
+// a human noticing.
 func clmSkipLogLevel(ctx context.Context, err error) func(string, ...zap.Field) {
 	if client.IsClmDiscoveryError(err) {
 		return ctxzap.Extract(ctx).Info

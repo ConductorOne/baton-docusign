@@ -3,13 +3,15 @@ package connector
 import (
 	"context"
 	"errors"
-	"reflect"
 	"testing"
 
 	"github.com/conductorone/baton-docusign/pkg/client/clmtest"
 	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
 	rs "github.com/conductorone/baton-sdk/pkg/types/resource"
 	"github.com/grpc-ecosystem/go-grpc-middleware/logging/zap/ctxzap"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+	"go.uber.org/zap/zaptest/observer"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -98,13 +100,15 @@ func TestClmHrefWithID(t *testing.T) {
 // clmSkipLogLevel's doc for why gating on the source, not just the log level, was tried
 // and reverted.
 func TestClmSkipLogLevel(t *testing.T) {
-	ctx := context.Background()
+	core, logs := observer.New(zapcore.DebugLevel)
+	ctx := ctxzap.ToContext(context.Background(), zap.New(core))
 
 	s, _ := clmtest.NewServer(t)
 	discoveryErr := s.NewClientWithToken("wrong-token").EnsureClmReady(ctx)
 	if discoveryErr == nil {
 		t.Fatal("test setup: expected EnsureClmReady to fail for a bad token")
 	}
+	logs.TakeAll() // discard the underlying HTTP client's own log line from that call above
 	// Stands in for a real per-resource CLM data call (SearchFolders, ListGroups, ...)
 	// failing for an unrelated reason (an expired token mid-sync, a narrower scope
 	// problem) after discovery already succeeded — isOptInFeatureUnavailableError
@@ -112,16 +116,18 @@ func TestClmSkipLogLevel(t *testing.T) {
 	// one-directional "this means no CLM subscription" guarantee.
 	plainErr := status.Error(codes.Unauthenticated, "token expired mid-sync")
 
-	discoveryLevel := reflect.ValueOf(clmSkipLogLevel(ctx, discoveryErr)).Pointer()
-	plainLevel := reflect.ValueOf(clmSkipLogLevel(ctx, plainErr)).Pointer()
-	infoLevel := reflect.ValueOf(ctxzap.Extract(ctx).Info).Pointer()
-	warnLevel := reflect.ValueOf(ctxzap.Extract(ctx).Warn).Pointer()
+	clmSkipLogLevel(ctx, discoveryErr)("discovery skip")
+	clmSkipLogLevel(ctx, plainErr)("plain skip")
 
-	if discoveryLevel != infoLevel {
-		t.Error("expected a discovery-sourced error to log at Info")
+	entries := logs.All()
+	if len(entries) != 2 {
+		t.Fatalf("expected 2 log entries, got %d: %+v", len(entries), entries)
 	}
-	if plainLevel != warnLevel {
-		t.Error("expected a non-discovery error to log at Warn")
+	if entries[0].Level != zapcore.InfoLevel {
+		t.Errorf("expected a discovery-sourced error to log at Info, got %v", entries[0].Level)
+	}
+	if entries[1].Level != zapcore.WarnLevel {
+		t.Errorf("expected a non-discovery error to log at Warn, got %v", entries[1].Level)
 	}
 }
 
