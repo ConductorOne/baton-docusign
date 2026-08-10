@@ -90,4 +90,18 @@ var (
 		DisplayName: "CLM Folder",
 		Annotations: annotations.New(&v2.SkipEntitlements{}, &v2.OptInRequired{}),
 	}
+
+	// clmWorkflowQueueResourceType represents the CLM API's WorkflowQueue object — see
+	// pkg/connector/clm_workflow_queues.go for why this is read-only (no membership
+	// grant/revoke endpoint exists, only work-item assign/unassign, which this connector
+	// doesn't sync) and for the unconfirmed "is this the same thing as the CLM admin
+	// console's 'Task Groups'?" naming question. Uses StaticEntitlementSyncerV2 for the
+	// same reason clm_group does: every queue shares the same single "member"
+	// entitlement.
+	clmWorkflowQueueResourceType = &v2.ResourceType{
+		Id:          "clm_workflow_queue",
+		DisplayName: "CLM Workflow Queue",
+		Traits:      []v2.ResourceType_Trait{v2.ResourceType_TRAIT_GROUP},
+		Annotations: annotations.New(&v2.SkipEntitlements{}, &v2.OptInRequired{}),
+	}
 )

@@ -37,6 +37,7 @@
 //	PATCH /v2/{accountId}/members/{id}                  — PatchMemberGroups (additive)
 //	PUT   /v2/{accountId}/members/{id}                  — PutMemberGroups (full-replace)
 //	GET   /v2/{accountId}/permissionsets                 — ListPermissionSets
+//	GET   /v2/{accountId}/members/{id}/workflowqueues    — GetMemberWorkflowQueues (paginated)
 package clmtest
 
 import (
@@ -112,6 +113,9 @@ type Server struct {
 	permissionSets     map[string]*client.ClmPermissionSet
 	permissionSetOrder []string
 
+	workflowQueues       map[string]*client.ClmWorkflowQueue
+	memberWorkflowQueues map[string][]string // memberID -> workflow queue IDs, seed-only (no write endpoint)
+
 	memberGroupsRequests int // count of GET .../members/{id}/groups calls, for pagination assertions
 }
 
@@ -141,6 +145,10 @@ func (s *Server) GroupHref(id string) string {
 
 func (s *Server) MemberHref(id string) string {
 	return fmt.Sprintf("%s/v2/%s/members/%s", s.baseURL, AccountID, id)
+}
+
+func (s *Server) WorkflowQueueHref(id string) string {
+	return fmt.Sprintf("%s/v2/%s/workflowqueues/%s", s.baseURL, AccountID, id)
 }
 
 // MemberGroups returns the current (test-visible) group membership for a member, for
@@ -180,12 +188,14 @@ func (s *Server) FolderSecurity(folderID string) client.ClmFolderSecurity {
 // RunStandalone so both construct exactly the same seeded state.
 func newState() *Server {
 	return &Server{
-		folders:        make(map[string]*client.ClmFolder),
-		groups:         make(map[string]*client.ClmGroup),
-		groupMembers:   make(map[string][]string),
-		members:        make(map[string]*client.ClmMember),
-		memberGroups:   make(map[string][]string),
-		permissionSets: make(map[string]*client.ClmPermissionSet),
+		folders:              make(map[string]*client.ClmFolder),
+		groups:               make(map[string]*client.ClmGroup),
+		groupMembers:         make(map[string][]string),
+		members:              make(map[string]*client.ClmMember),
+		memberGroups:         make(map[string][]string),
+		permissionSets:       make(map[string]*client.ClmPermissionSet),
+		workflowQueues:       make(map[string]*client.ClmWorkflowQueue),
+		memberWorkflowQueues: make(map[string][]string),
 	}
 }
 
@@ -202,6 +212,7 @@ func newMux(s *Server) *http.ServeMux {
 	mux.HandleFunc("GET /v2/{accountId}/groups/{id}/groupmembers", s.requireAuth(s.handleGroupMembers))
 	mux.HandleFunc("GET /v2/{accountId}/members", s.requireAuth(s.handleListMembers))
 	mux.HandleFunc("GET /v2/{accountId}/members/{id}/groups", s.requireAuth(s.handleMemberGroups))
+	mux.HandleFunc("GET /v2/{accountId}/members/{id}/workflowqueues", s.requireAuth(s.handleMemberWorkflowQueues))
 	mux.HandleFunc("PATCH /v2/{accountId}/members/{id}", s.requireAuth(s.handlePatchMember))
 	mux.HandleFunc("PUT /v2/{accountId}/members/{id}", s.requireAuth(s.handlePutMember))
 	mux.HandleFunc("GET /v2/{accountId}/permissionsets", s.requireAuth(s.handleListPermissionSets))

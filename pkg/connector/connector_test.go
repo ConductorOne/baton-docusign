@@ -23,6 +23,7 @@ var alwaysRegisteredTypeIDs = []string{
 	"clm_group",
 	"clm_permission_set",
 	"clm_folder",
+	"clm_workflow_queue",
 }
 
 func registeredTypeIDs(ctx context.Context, d *Connector) map[string]bool {

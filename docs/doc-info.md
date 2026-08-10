@@ -10,7 +10,7 @@
    — Groups  
    — Signing Groups
    — Permissions Profile
-   — CLM Members, Roles, Groups, Folders, Folder Security, and Permission Sets (accounts with a DocuSign CLM subscription)
+   — CLM Members, Roles, Groups, Folders, Folder Security, Permission Sets, and Workflow Queues (accounts with a DocuSign CLM subscription)
 
 2. **Can the connector provision any resources? If so, which ones?**
 
@@ -50,6 +50,7 @@
    - When using ConductorOne's managed OAuth app (the default cloud-hosted authentication method), CLM also requires that managed app to be granted the CLM API scope on ConductorOne's platform side — this is outside the connector's own configuration. Self-hosted or demo-environment setups using a customer-supplied DocuSign app do not have this extra requirement.
    - CLM permission sets sync for visibility only; DocuSign's CLM API has no endpoint to assign or unassign one, so they cannot be granted or revoked.
    - CLM members are synced as their own resource type rather than merged into the existing eSignature "Users" resource, since the two could not be confirmed to represent the same identity.
+   - CLM workflow queues also sync for visibility only — the API supports work-item assign/unassign, not queue-membership grant/revoke. There's no list-all endpoint for queues, so the connector discovers them by checking every CLM member's own queue membership — one extra API call per member on top of the member sync itself.
 
 ---
 
@@ -171,7 +172,7 @@ DocuSign CLM is a separate, separately-licensed DocuSign product. To sync CLM da
 
 1. Confirm your DocuSign account has a CLM production subscription.
 2. Confirm the credential has been granted the CLM OAuth scopes (`spring_read`/`spring_write`).
-3. The connector then syncs CLM Members, Roles, Groups, Folders, Folder Security, and Permission Sets automatically — there is no flag to set.
+3. The connector then syncs CLM Members, Roles, Groups, Folders, Folder Security, Permission Sets, and Workflow Queues automatically — there is no flag to set.
 
 If running against ConductorOne's managed OAuth app (the default cloud-hosted
 production authentication method), the managed app also needs the CLM API scopes

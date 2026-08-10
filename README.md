@@ -14,7 +14,7 @@ Check out [Baton](https://github.com/conductorone/baton) to learn more about the
 - Groups
 - Signing Groups
 - Permission Profiles
-- CLM Members, Roles, Groups, Folders, Folder Security, and Permission Sets (requires a DocuSign CLM subscription — see [CLM Support](#clm-support))
+- CLM Members, Roles, Groups, Folders, Folder Security, Permission Sets, and Workflow Queues (requires a DocuSign CLM subscription — see [CLM Support](#clm-support))
 
 ### Provisioning Support
 
@@ -25,6 +25,7 @@ Check out [Baton](https://github.com/conductorone/baton) to learn more about the
 - CLM group membership (grant/revoke, requires a CLM subscription)
 - CLM folder security (grant/revoke, requires a CLM subscription)
 - CLM permission sets are synced for visibility only — the CLM API has no assignment endpoint, so they cannot be granted or revoked
+- CLM workflow queue membership is synced for visibility only — the CLM API supports work-item assign/unassign, not queue-membership grant/revoke, so it cannot be granted or revoked here
 
 ## Connector Credentials
 
@@ -101,9 +102,9 @@ Copy the `code` parameter value and paste it when prompted. Save the refresh tok
 
 DocuSign CLM (Contract Lifecycle Management) is a separate DocuSign product from
 eSignature, with its own API and a separate production subscription. CLM members, roles,
-groups, folders, folder security, and permission sets sync alongside the standard
-eSignature resources, with no config flag to enable — accounts that don't have CLM simply
-sync no CLM resources.
+groups, folders, folder security, permission sets, and workflow queues sync alongside the
+standard eSignature resources, with no config flag to enable — accounts that don't have
+CLM simply sync no CLM resources.
 
 Requirements:
 
@@ -115,7 +116,7 @@ Requirements:
   also be granted the CLM API scopes on ConductorOne's platform side before any CLM data
   will sync. Contact ConductorOne if no CLM data appears in this mode.
 
-The 5 CLM resource types are always registered and visible to C1 — this avoids a C1 sync
+The 6 CLM resource types are always registered and visible to C1 — this avoids a C1 sync
 engine treating CLM resources as deleted if they stop appearing (see
 [CHANGE_TYPES.md](CHANGE_TYPES.md) if you're touching this). Without the CLM OAuth scopes
 (or without a CLM subscription on the account), each CLM resource type's sync is skipped
@@ -123,6 +124,18 @@ gracefully rather than erroring the whole sync.
 
 CLM permission sets sync for visibility only — DocuSign's CLM API has no endpoint to
 assign or unassign a permission set, so they cannot be granted or revoked through this
+connector.
+
+CLM workflow queues (`clm_workflow_queue`) map to what the CLM admin console reportedly
+calls "Task Groups" — that equivalence is an unconfirmed assumption, not a documented
+fact, since no live CLM admin console was available to check it against. The CLM API has
+no list-all endpoint for workflow queues and no reverse lookup from a queue to its
+members, so this connector discovers them by scanning every `clm_member`'s own workflow
+queues and deduping — one API call per member, on top of the member sync itself. This
+adds meaningful request volume on large accounts; see the open rate-limit issue tracked
+as CXP-704 before enabling this on an account already seeing rate-limit errors. Workflow
+queue membership syncs for visibility only — the API supports work-item assign/unassign,
+not queue-membership grant/revoke, so it cannot be granted or revoked through this
 connector.
 
 The CLM Object API's base URL is resolved via a separate account discovery call

@@ -144,4 +144,25 @@ func seed(s *Server) {
 	contractsFolder.Href = s.FolderHref("folder-contracts")
 	s.folders["folder-contracts"] = contractsFolder
 	s.folderOrder = append(s.folderOrder, "folder-contracts")
+
+	// Workflow queues: no list-all endpoint exists for this object (see
+	// pkg/connector/clm_workflow_queues.go), so they're only discoverable by scanning
+	// members — seeded here purely via memberWorkflowQueues, never via a queueOrder
+	// slice. member-bob is in both (tests dedup across members when building the
+	// distinct-queue set); member-alice is in only one; carol/dave/eve/frank are in
+	// none (tests that a member scan handles "no queues" without emitting anything for
+	// them, and that clm_workflow_queue's List() doesn't invent queues from members
+	// that have none).
+	queueOnboardingID := "queue-onboarding"
+	queueEscalationsID := "queue-escalations"
+	s.workflowQueues[queueOnboardingID] = &client.ClmWorkflowQueue{
+		Name: "Onboarding",
+		Href: s.WorkflowQueueHref(queueOnboardingID),
+	}
+	s.workflowQueues[queueEscalationsID] = &client.ClmWorkflowQueue{
+		Name: "Escalations",
+		Href: s.WorkflowQueueHref(queueEscalationsID),
+	}
+	s.memberWorkflowQueues["member-alice"] = []string{queueOnboardingID}
+	s.memberWorkflowQueues[memberBobID] = []string{queueOnboardingID, queueEscalationsID}
 }

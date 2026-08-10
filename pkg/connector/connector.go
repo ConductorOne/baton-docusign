@@ -74,6 +74,7 @@ func (d *Connector) ResourceSyncers(_ context.Context) []connectorbuilder.Resour
 		newClmGroupBuilder(d.client),
 		newClmPermissionSetBuilder(d.client),
 		newClmFolderBuilder(d.client),
+		newClmWorkflowQueueBuilder(d.client),
 	}
 
 	// Only include signing groups if opted in

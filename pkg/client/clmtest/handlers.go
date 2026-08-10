@@ -190,6 +190,28 @@ func (s *Server) handleMemberGroups(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, client.ClmGroupPage{ClmPage: meta, Items: items})
 }
 
+// handleMemberWorkflowQueues serves GET .../members/{id}/workflowqueues — documented
+// but unexercised, no live CLM tenant confirmed this shape. Seed-only, no write
+// endpoint: unlike memberGroups, memberWorkflowQueues is never mutated by a handler.
+func (s *Server) handleMemberWorkflowQueues(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	id := r.PathValue("id")
+	if _, ok := s.members[id]; !ok {
+		writeNotFound(w)
+		return
+	}
+
+	queueIDs := s.memberWorkflowQueues[id]
+	page, meta := pageSlice(r, queueIDs)
+	items := make([]client.ClmWorkflowQueue, 0, len(page))
+	for _, qid := range page {
+		items = append(items, *s.workflowQueues[qid])
+	}
+	writeJSON(w, client.ClmWorkflowQueuePage{ClmPage: meta, Items: items})
+}
+
 // Doc URL: https://developers.docusign.com/docs/clm-api/reference/objects/members/patch/
 // Additive/merge: adds any group in the request the member isn't already in.
 func (s *Server) handlePatchMember(w http.ResponseWriter, r *http.Request) {

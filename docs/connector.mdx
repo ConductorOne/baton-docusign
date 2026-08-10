@@ -21,6 +21,7 @@ sidebarTitle: "Docusign"
 | CLM members, roles & groups** | <Icon icon="square-check" iconType="solid"  color="#c937ae"/> | Groups only |
 | CLM folders & folder security** | <Icon icon="square-check" iconType="solid"  color="#c937ae"/> | <Icon icon="square-check" iconType="solid"  color="#c937ae"/> |
 | CLM permission sets** | <Icon icon="square-check" iconType="solid"  color="#c937ae"/> | <Icon icon="square-xmark" iconType="solid" color="#c937ae"/> |
+| CLM workflow queues** | <Icon icon="square-check" iconType="solid"  color="#c937ae"/> | <Icon icon="square-xmark" iconType="solid" color="#c937ae"/> |
 
 The Docusign connector supports [automatic account provisioning and deprovisioning](/product/admin/account-provisioning).
 
@@ -28,7 +29,7 @@ Every Docusign account must be assigned at least one permission profile. If all 
 
 *By default, signing groups are not synced. Enable the **Include Signing Groups** setting to sync signing groups, if your account has the feature enabled.
 
-**DocuSign CLM (Contract Lifecycle Management) is a separate, separately-licensed DocuSign product. CLM resources sync automatically if the account has a DocuSign CLM production subscription and the credential has been granted the OAuth scopes CLM needs; accounts without CLM simply sync no CLM resources. CLM permission sets sync for visibility only; DocuSign's CLM API has no endpoint to assign or unassign one.
+**DocuSign CLM (Contract Lifecycle Management) is a separate, separately-licensed DocuSign product. CLM resources sync automatically if the account has a DocuSign CLM production subscription and the credential has been granted the OAuth scopes CLM needs; accounts without CLM simply sync no CLM resources. CLM permission sets and workflow queues sync for visibility only; DocuSign's CLM API has no endpoint to assign or unassign a permission set, and no endpoint to grant or revoke workflow queue membership (only work-item assign/unassign, which isn't synced here).
 
 <Warning>
 If you use **OAuth Authentication** (the default, managed method), syncing CLM data requires ConductorOne's managed OAuth app to be granted the CLM API scopes on the platform side. If CLM data doesn't appear after setup, contact ConductorOne. This doesn't apply to **Custom App (Demo Environment)**, where the connector requests the CLM scopes directly using your own DocuSign app credentials.

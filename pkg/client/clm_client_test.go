@@ -279,3 +279,34 @@ func TestListPermissionSets_Pagination(t *testing.T) {
 		t.Fatalf("expected 5 permission sets across all pages, got %d", len(all))
 	}
 }
+
+func TestGetMemberWorkflowQueues(t *testing.T) {
+	_, c := clmtest.NewServer(t)
+	ctx := context.Background()
+
+	t.Run("member in two queues", func(t *testing.T) {
+		queues, _, err := c.GetMemberWorkflowQueues(ctx, "member-bob")
+		if err != nil {
+			t.Fatalf("GetMemberWorkflowQueues: %v", err)
+		}
+		if len(queues) != 2 {
+			t.Fatalf("expected member-bob to be in 2 workflow queues, got %d: %+v", len(queues), queues)
+		}
+	})
+
+	t.Run("member in no queues", func(t *testing.T) {
+		queues, _, err := c.GetMemberWorkflowQueues(ctx, "member-carol")
+		if err != nil {
+			t.Fatalf("GetMemberWorkflowQueues: %v", err)
+		}
+		if len(queues) != 0 {
+			t.Fatalf("expected member-carol to be in 0 workflow queues, got %d: %+v", len(queues), queues)
+		}
+	})
+
+	t.Run("unknown member returns an error", func(t *testing.T) {
+		if _, _, err := c.GetMemberWorkflowQueues(ctx, "member-does-not-exist"); err == nil {
+			t.Error("expected an error for an unknown member ID, got nil")
+		}
+	})
+}

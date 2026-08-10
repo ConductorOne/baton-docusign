@@ -9,6 +9,7 @@ import (
 	"github.com/conductorone/baton-sdk/pkg/cli"
 	"github.com/conductorone/baton-sdk/pkg/config"
 	"github.com/conductorone/baton-sdk/pkg/connectorbuilder"
+	"github.com/conductorone/baton-sdk/pkg/connectorrunner"
 )
 
 var version = "dev"
@@ -32,5 +33,9 @@ func main() {
 		version,
 		cfg.ConfigurationSchema,
 		connectorFn,
+		// clm_workflow_queue's List() needs to cache a member->queue-membership index
+		// across the whole sync (built once during the member scan, read once per
+		// queue in Grants()) — see pkg/connector/clm_workflow_queues.go's doc.
+		connectorrunner.WithSessionStoreEnabled(),
 	)
 }

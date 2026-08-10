@@ -256,3 +256,22 @@ var ClmRoles = []ClmRole{
 	{Name: "UserAdministrator"},
 	{Name: "SuperAdministrator"},
 }
+
+// ClmWorkflowQueue represents a CLM WorkflowQueue object (the API's own term for what
+// the CLM admin console reportedly calls "Task Groups" — that equivalence is an
+// unconfirmed assumption, not a documented fact; see
+// pkg/connector/clm_workflow_queues.go's doc). Modeled on the Member's workflow queues
+// endpoint's documented response shape; like every other CLM model in this package, the
+// exact field set is documented-but-unexercised — no live CLM tenant was available to
+// confirm it against a real response.
+type ClmWorkflowQueue struct {
+	Href string `json:"Href"`
+	Name string `json:"Name"`
+}
+
+// ClmWorkflowQueuePage is the paginated collection of ClmWorkflowQueue, returned by a
+// member's workflow-queues endpoint.
+type ClmWorkflowQueuePage struct {
+	ClmPage
+	Items []ClmWorkflowQueue `json:"Items"`
+}

@@ -112,6 +112,7 @@ const (
 	clmGetMemberGroups  = "/v2/%s/members/%s/groups"
 	clmPatchPutMember   = "/v2/%s/members/%s"
 	clmGetPermissionSet = "/v2/%s/permissionsets"
+	clmGetMemberQueues  = "/v2/%s/members/%s/workflowqueues"
 )
 
 // ensureClmInitialized resolves the CLM Object API base URL, separately from
@@ -614,6 +615,65 @@ func (c *Client) ListPermissionSets(ctx context.Context, options PageOptions) ([
 	anno, err := c.doClmRequest(ctx, http.MethodGet, listURL, nil, &page)
 	if err != nil {
 		return nil, "", nil, fmt.Errorf("baton-docusign: failed to list CLM permission sets: %w", err)
+	}
+
+	nextToken, err := getClmNextToken(requestedPage, len(page.Items), page.Next != "", page.Total)
+	if err != nil {
+		return nil, "", anno, err
+	}
+	return page.Items, nextToken, anno, nil
+}
+
+// GetMemberWorkflowQueues lists the workflow queues a CLM member belongs to. Like
+// GetMemberGroups, this fetches the member's complete set rather than exposing a page
+// token: clm_workflow_queue's List() (pkg/connector/clm_workflow_queues.go) needs every
+// queue a member is in to build its member->queues index, not one page at a time.
+// Confirmed read-only intent per the API's documented surface: there is no reverse
+// lookup (queue to members) and no membership grant/revoke endpoint, only work-item
+// assign/unassign — which this connector doesn't sync (see clm_workflow_queues.go).
+func (c *Client) GetMemberWorkflowQueues(ctx context.Context, memberID string) ([]ClmWorkflowQueue, annotations.Annotations, error) {
+	// maxMemberQueuePages mirrors GetMemberGroups' identical safety bound — see its
+	// comment for the rationale.
+	const maxMemberQueuePages = 1000
+
+	var all []ClmWorkflowQueue
+	var anno annotations.Annotations
+	pageToken := ""
+
+	for i := 0; i < maxMemberQueuePages; i++ {
+		page, nextPageToken, pageAnno, err := c.getMemberWorkflowQueuesPage(ctx, memberID, PageOptions{PageToken: pageToken})
+		if err != nil {
+			return nil, anno, err
+		}
+		anno = append(anno, pageAnno...)
+		all = append(all, page...)
+
+		if nextPageToken == "" {
+			return all, anno, nil
+		}
+		if nextPageToken == pageToken {
+			return nil, anno, fmt.Errorf("baton-docusign: CLM API returned a non-advancing pagination token while listing workflow queues for member %s", memberID)
+		}
+		pageToken = nextPageToken
+	}
+
+	return nil, anno, fmt.Errorf("baton-docusign: exceeded %d pages while listing workflow queues for member %s", maxMemberQueuePages, memberID)
+}
+
+func (c *Client) getMemberWorkflowQueuesPage(ctx context.Context, memberID string, options PageOptions) ([]ClmWorkflowQueue, string, annotations.Annotations, error) {
+	if err := c.ensureClmReady(ctx); err != nil {
+		return nil, "", nil, err
+	}
+
+	queuesURL, requestedPage, err := c.prepareClmPagedRequest(clmGetMemberQueues, options, memberID)
+	if err != nil {
+		return nil, "", nil, err
+	}
+
+	var page ClmWorkflowQueuePage
+	anno, err := c.doClmRequest(ctx, http.MethodGet, queuesURL, nil, &page)
+	if err != nil {
+		return nil, "", nil, fmt.Errorf("baton-docusign: failed to get workflow queues for CLM member %s: %w", memberID, err)
 	}
 
 	nextToken, err := getClmNextToken(requestedPage, len(page.Items), page.Next != "", page.Total)
