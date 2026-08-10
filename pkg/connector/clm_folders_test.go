@@ -368,7 +368,7 @@ func assertUsersPreserved(t *testing.T, before, after []client.ClmUserSecurityEn
 
 // TestClmFolderBuilder_GrantAndRevoke_ToleratesBareIDOnRead is a regression test: the
 // CLM API's read-side Href representation isn't confirmed to always match the exact
-// Href shape clmGroupHrefFromResource constructs on the write side. Grant/Revoke's
+// Href shape client.GroupHref constructs on the write side. Grant/Revoke's
 // existence checks compare via clmIDFromHref (not raw equality) specifically so a bare
 // ID and a full Href ending in that ID are still treated as the same principal — if
 // the API ever returns Href as a bare ID, a raw-equality comparison would never match,
@@ -382,7 +382,7 @@ func TestClmFolderBuilder_GrantAndRevoke_ToleratesBareIDOnRead(t *testing.T) {
 	ctx := context.Background()
 
 	// Seed folder-templates' group Security entry with a bare group ID, not the full
-	// Href clmGroupHrefFromResource would construct.
+	// Href client.GroupHref would construct.
 	if _, err := c.PatchFolderSecurity(ctx, "folder-templates", client.ClmFolderSecurityWrite{
 		Groups: []client.ClmGroupSecurityEntry{{AccessType: client.ClmAccessTypeViewEdit, Href: "group-ops"}},
 	}); err != nil {

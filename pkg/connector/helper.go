@@ -101,19 +101,16 @@ func clmHrefWithID(sampleHref, newID string) (string, error) {
 }
 
 // clmPreferredHref resolves the href to send in a WRITE targeting id: it prefers
-// deriving the href from a real, server-issued sample href (the first non-empty entry
-// in sampleHrefs) over guessing at the host from the discovered CLM base URL. A write
-// that carries a subtly-wrong host — if the discovered base URL ever differs from what
-// CLM's own Href values actually use, since no live tenant confirmed this — risks CLM
-// rejecting it or storing it inconsistently; a read-side comparison doesn't have this
-// risk, since clmIDFromHref only ever looks at the trailing ID. Falls back to
-// deriveFallback when no real sample href is available (e.g. a member with no other
-// group memberships yet, or a folder with no other security entries yet).
+// deriving the href from a real, server-issued sample href (the first entry in
+// sampleHrefs that clmHrefWithID can use) over guessing at the host from the discovered
+// CLM base URL. CLM's Href host is not guaranteed to match the discovered base URL — a
+// write that carries a subtly-wrong host risks CLM rejecting it or storing it
+// inconsistently; a read-side comparison doesn't have this risk, since clmIDFromHref
+// only ever looks at the trailing ID. Falls back to deriveFallback when no real sample
+// href is available (e.g. a member with no other group memberships yet, or a folder
+// with no other security entries yet).
 func clmPreferredHref(id string, sampleHrefs []string, deriveFallback func() (string, error)) (string, error) {
 	for _, sample := range sampleHrefs {
-		if sample == "" {
-			continue
-		}
 		if derived, err := clmHrefWithID(sample, id); err == nil {
 			return derived, nil
 		}
