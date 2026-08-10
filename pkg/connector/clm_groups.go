@@ -150,14 +150,10 @@ func (g *clmGroupBuilder) Grant(ctx context.Context, principal *v2.Resource, ent
 
 	memberID := principal.Id.Resource
 	groupID := ent.Resource.Id.Resource
-	// Derive the group's Href from its ID rather than reading it off ent.Resource: the
-	// pebble storage engine hydrates an entitlement's Resource as an identity-only stub
-	// (no profile, no annotations) — see client.GroupHref's doc.
-	groupHref, err := g.client.GroupHref(ctx, groupID)
-	if err != nil {
-		return nil, nil, err
-	}
 
+	// Don't read the group's Href off ent.Resource: the pebble storage engine hydrates
+	// an entitlement's Resource as an identity-only stub (no profile, no annotations) —
+	// see client.GroupHref's doc.
 	currentGroups, annos, err := g.client.GetMemberGroups(ctx, memberID)
 	if err != nil {
 		return nil, annos, fmt.Errorf("getting current groups for CLM member %s: %w", memberID, err)
@@ -168,6 +164,20 @@ func (g *clmGroupBuilder) Grant(ctx context.Context, principal *v2.Resource, ent
 			// Already a member — idempotent Grant.
 			return nil, annotations.New(&v2.GrantAlreadyExists{}), nil
 		}
+	}
+
+	// Prefer a real, server-issued Href already on hand (any of this member's OTHER
+	// current groups) over one derived from the discovered CLM base URL — see
+	// clmPreferredHref's doc.
+	sampleHrefs := make([]string, len(currentGroups))
+	for i, current := range currentGroups {
+		sampleHrefs[i] = current.Href
+	}
+	groupHref, err := clmPreferredHref(groupID, sampleHrefs, func() (string, error) {
+		return g.client.GroupHref(ctx, groupID)
+	})
+	if err != nil {
+		return nil, nil, err
 	}
 
 	newGroups := make([]client.ClmGroup, 0, len(currentGroups)+1)

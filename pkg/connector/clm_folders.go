@@ -200,7 +200,16 @@ func (f *clmFolderBuilder) Grant(ctx context.Context, principal *v2.Resource, en
 
 	switch principal.Id.ResourceType {
 	case clmGroupResourceType.Id:
-		groupHref, err := f.client.GroupHref(ctx, principal.Id.Resource)
+		// Prefer a real, server-issued Href already on hand (any OTHER group-security
+		// entry this folder already carries) over one derived from the discovered CLM
+		// base URL — see clmPreferredHref's doc.
+		groupSampleHrefs := make([]string, len(write.Groups))
+		for i, entry := range write.Groups {
+			groupSampleHrefs[i] = entry.Href
+		}
+		groupHref, err := clmPreferredHref(principal.Id.Resource, groupSampleHrefs, func() (string, error) {
+			return f.client.GroupHref(ctx, principal.Id.Resource)
+		})
 		if err != nil {
 			return nil, nil, err
 		}
@@ -223,7 +232,14 @@ func (f *clmFolderBuilder) Grant(ctx context.Context, principal *v2.Resource, en
 			write.Roles = append(write.Roles, client.ClmRoleSecurityEntry{AccessType: accessType, Item: roleName})
 		}
 	case clmMemberResourceType.Id:
-		memberHref, err := f.client.MemberHref(ctx, principal.Id.Resource)
+		// Same rationale as the group case above.
+		userSampleHrefs := make([]string, len(write.Users))
+		for i, entry := range write.Users {
+			userSampleHrefs[i] = entry.Href
+		}
+		memberHref, err := clmPreferredHref(principal.Id.Resource, userSampleHrefs, func() (string, error) {
+			return f.client.MemberHref(ctx, principal.Id.Resource)
+		})
 		if err != nil {
 			return nil, nil, err
 		}
@@ -401,4 +417,3 @@ func clmIsKnownRole(name string) bool {
 	}
 	return false
 }
-

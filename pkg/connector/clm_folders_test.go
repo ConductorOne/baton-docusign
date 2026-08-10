@@ -488,7 +488,7 @@ func TestClmFolderBuilder_GrantAndRevoke_SurvivesIdentityOnlyPrincipal(t *testin
 
 		grantObj := &v2.Grant{Principal: principal, Entitlement: ent}
 		if _, err := b.Revoke(ctx, grantObj); err != nil {
-			t.Fatalf("Revoke with a provisioner-reconstructed principal: %v", err)
+			t.Fatalf("Revoke with an identity-only principal: %v", err)
 		}
 	})
 }

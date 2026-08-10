@@ -1,6 +1,7 @@
 package connector
 
 import (
+	"fmt"
 	"strings"
 
 	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
@@ -84,4 +85,38 @@ func clmIDFromHref(href string) string {
 		return href[idx+1:]
 	}
 	return href
+}
+
+// clmHrefWithID rebuilds sampleHref with its trailing ID segment replaced by newID —
+// used to derive a sibling object's Href from a known-real one, instead of guessing at
+// the host from the discovered CLM base URL, whenever a real sample happens to be
+// available. See clmPreferredHref for why this matters specifically for writes.
+func clmHrefWithID(sampleHref, newID string) (string, error) {
+	trimmed := strings.TrimSuffix(sampleHref, "/")
+	idx := strings.LastIndex(trimmed, "/")
+	if idx == -1 {
+		return "", fmt.Errorf("baton-docusign: cannot derive a sibling href from %q — no path separator found", sampleHref)
+	}
+	return trimmed[:idx+1] + newID, nil
+}
+
+// clmPreferredHref resolves the href to send in a WRITE targeting id: it prefers
+// deriving the href from a real, server-issued sample href (the first non-empty entry
+// in sampleHrefs) over guessing at the host from the discovered CLM base URL. A write
+// that carries a subtly-wrong host — if the discovered base URL ever differs from what
+// CLM's own Href values actually use, since no live tenant confirmed this — risks CLM
+// rejecting it or storing it inconsistently; a read-side comparison doesn't have this
+// risk, since clmIDFromHref only ever looks at the trailing ID. Falls back to
+// deriveFallback when no real sample href is available (e.g. a member with no other
+// group memberships yet, or a folder with no other security entries yet).
+func clmPreferredHref(id string, sampleHrefs []string, deriveFallback func() (string, error)) (string, error) {
+	for _, sample := range sampleHrefs {
+		if sample == "" {
+			continue
+		}
+		if derived, err := clmHrefWithID(sample, id); err == nil {
+			return derived, nil
+		}
+	}
+	return deriveFallback()
 }
