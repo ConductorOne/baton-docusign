@@ -25,6 +25,13 @@ import (
 // logging (see List()'s use of it).
 var errClmWorkflowQueuesUnavailable = errors.New("baton-docusign: CLM is not available for this account or token")
 
+// clmWorkflowQueueUnavailableThreshold is how many CONSECUTIVE tolerated per-member
+// failures (with nothing yet successfully scanned) discoverClmWorkflowQueueMembership
+// requires before concluding the whole account can't use this endpoint — see the
+// escalation branch's doc for why a single failure isn't enough. An arbitrary but
+// deliberately small judgment call: no live CLM tenant to derive it from empirically.
+const clmWorkflowQueueUnavailableThreshold = 3
+
 var _ connectorbuilder.StaticEntitlementSyncerV2 = (*clmWorkflowQueueBuilder)(nil)
 
 // entitlementClmWorkflowQueueMember is the single entitlement every CLM workflow queue
@@ -169,6 +176,7 @@ func (b *clmWorkflowQueueBuilder) discoverClmWorkflowQueueMembership(ctx context
 	var allAnnos annotations.Annotations
 	var skippedMembers, skippedQueues int
 	var succeededAtLeastOnce bool
+	var consecutiveUnavailableFailures int
 
 	memberPageToken := ""
 	for {
@@ -196,11 +204,23 @@ func (b *clmWorkflowQueueBuilder) discoverClmWorkflowQueueMembership(ctx context
 						// the object or the object does not exist, a 404 response code is
 						// returned"). So a NotFound here is just as plausible a signal
 						// that workflow queues aren't available for this whole account as
-						// PermissionDenied/Unauthenticated are — treat it the same way and
-						// escalate to skipping the whole resource type, rather than paying
-						// one wasted request per member before ever concluding that (a
-						// real concern given CXP-704's open rate-limit issue).
-						return nil, allAnnos, fmt.Errorf("%w: %w", errClmWorkflowQueuesUnavailable, err)
+						// PermissionDenied/Unauthenticated are — treat it the same way.
+						//
+						// But escalating on a SINGLE failure reintroduces a different
+						// false-deletion race: a member that was genuinely deleted between
+						// ListMembers and this call (the case the isolated-NotFound skip
+						// below exists for) would wipe the whole resource type if it just
+						// happens to be first in scan order. A systemic failure (the
+						// endpoint disabled for this account) 404s/403s on EVERY member,
+						// while an isolated deletion race hits exactly one — so require a
+						// few consecutive failures before concluding "systemic", capping
+						// the wasted-request cost CXP-704 cares about without letting one
+						// unlucky ordering empty the resource type.
+						consecutiveUnavailableFailures++
+						if consecutiveUnavailableFailures >= clmWorkflowQueueUnavailableThreshold {
+							return nil, allAnnos, fmt.Errorf("%w: %w", errClmWorkflowQueuesUnavailable, err)
+						}
+						continue
 					}
 					if status.Code(err) == codes.NotFound {
 						// Once at least one call has already succeeded, this endpoint is

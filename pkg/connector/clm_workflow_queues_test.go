@@ -199,8 +199,8 @@ func TestClmWorkflowQueueBuilder_List_DiscoversQueuesViaMemberScan(t *testing.T)
 // failure, once at least one other member has already proven the endpoint works —
 // member-carol is scanned after member-alice (who succeeds and contributes a queue),
 // so this exercises the "isolated NotFound" branch specifically, not the "nothing has
-// succeeded yet" escalation TestClmWorkflowQueueBuilder_List_SkipsGracefullyOnFirst404
-// covers.
+// succeeded yet" escalation
+// TestClmWorkflowQueueBuilder_List_SkipsGracefullyAfterConsecutiveFailures covers.
 func TestClmWorkflowQueueBuilder_List_ToleratesNotFoundMidScan(t *testing.T) {
 	srv, c := clmtest.NewServer(t)
 	// member-carol is a real seeded member (clmtest/seed.go) with zero queues of its
@@ -219,46 +219,46 @@ func TestClmWorkflowQueueBuilder_List_ToleratesNotFoundMidScan(t *testing.T) {
 	}
 }
 
-// TestClmWorkflowQueueBuilder_List_SkipsGracefullyOnFirst404 is a regression test:
-// DocuSign's own CLM API docs (Response and Error Codes) confirm NotFound is the SAME
-// response CLM returns for "no access rights" as for "object doesn't exist" — a 403
-// never leaks whether the object exists. So a 404 on the very first member (nothing
-// discovered yet) must escalate to the account-wide-unavailability skip exactly like
-// 401/403 do, not be treated as an isolated "this one member is gone" case — otherwise
-// an account systemically lacking workflow-queues access would pay one wasted request
-// per member, every sync, before ever concluding that (CXP-704).
-func TestClmWorkflowQueueBuilder_List_SkipsGracefullyOnFirst404(t *testing.T) {
+// TestClmWorkflowQueueBuilder_List_TeleratesBelowThresholdFailures is a regression
+// test: escalating to the account-wide-unavailability skip on a SINGLE tolerated
+// failure (the previous behavior) reintroduced the exact false-deletion race the
+// isolated-NotFound skip exists to avoid — a member genuinely deleted between
+// ListMembers and this call would wipe the whole resource type if it happened to be
+// first in scan order. Forcing a 404 on only member-alice (first in scan order, below
+// clmWorkflowQueueUnavailableThreshold) must NOT escalate: member-bob's real queues
+// still get discovered normally.
+func TestClmWorkflowQueueBuilder_List_ToleratesBelowThresholdFailures(t *testing.T) {
 	srv, c := clmtest.NewServer(t)
 	srv.ForceMemberWorkflowQueuesStatus("member-alice", 404)
 	b := newClmWorkflowQueueBuilder(c)
 	ctx := context.Background()
 
-	resources, res, err := b.List(ctx, nil, rs.SyncOpAttrs{Session: newFakeSessionStore()})
+	resources, _, err := b.List(ctx, nil, rs.SyncOpAttrs{Session: newFakeSessionStore()})
 	if err != nil {
-		t.Fatalf("expected List to tolerate a 404 on the first member with nothing discovered yet, got error: %v", err)
+		t.Fatalf("expected a single below-threshold failure to be tolerated, got error: %v", err)
 	}
-	if len(resources) != 0 {
-		t.Errorf("expected zero resources, got %d: %+v", len(resources), resources)
-	}
-	if res == nil {
-		t.Errorf("expected a non-nil SyncOpResults, got %+v", res)
+	if len(resources) != 2 {
+		t.Fatalf("expected member-bob's 2 real queues to still be discovered, got %d: %+v", len(resources), resources)
 	}
 }
 
-// TestClmWorkflowQueueBuilder_List_SkipsGracefullyWhenFirstMemberDenied confirms the
-// account-wide-unavailability escalation (errClmWorkflowQueuesUnavailable) still fires
-// when nothing has been discovered yet — member-alice is first in scan order
-// (clmtest/seed.go's memberOrder) and forcing PermissionDenied there means zero queues
-// exist in membership at the point of failure.
-func TestClmWorkflowQueueBuilder_List_SkipsGracefullyWhenFirstMemberDenied(t *testing.T) {
+// TestClmWorkflowQueueBuilder_List_SkipsGracefullyAfterConsecutiveFailures confirms
+// the account-wide-unavailability escalation still fires once
+// clmWorkflowQueueUnavailableThreshold consecutive members fail with nothing
+// discovered yet — member-alice, member-bob, and member-carol are first in scan order
+// (clmtest/seed.go's memberOrder), so forcing all three to fail reaches the threshold
+// before any of them can succeed.
+func TestClmWorkflowQueueBuilder_List_SkipsGracefullyAfterConsecutiveFailures(t *testing.T) {
 	srv, c := clmtest.NewServer(t)
 	srv.ForceMemberWorkflowQueuesStatus("member-alice", 403)
+	srv.ForceMemberWorkflowQueuesStatus("member-bob", 403)
+	srv.ForceMemberWorkflowQueuesStatus("member-carol", 403)
 	b := newClmWorkflowQueueBuilder(c)
 	ctx := context.Background()
 
 	resources, res, err := b.List(ctx, nil, rs.SyncOpAttrs{Session: newFakeSessionStore()})
 	if err != nil {
-		t.Fatalf("expected List to tolerate a PermissionDenied with nothing discovered yet, got error: %v", err)
+		t.Fatalf("expected List to tolerate %d consecutive failures with nothing discovered yet, got error: %v", clmWorkflowQueueUnavailableThreshold, err)
 	}
 	if len(resources) != 0 {
 		t.Errorf("expected zero resources, got %d: %+v", len(resources), resources)
@@ -287,6 +287,31 @@ func TestClmWorkflowQueueBuilder_List_FailsLoudlyWhenLaterMemberDenied(t *testin
 	resources, _, err := b.List(ctx, nil, rs.SyncOpAttrs{Session: newFakeSessionStore()})
 	if err == nil {
 		t.Fatal("expected a PermissionDenied after queues were already discovered to fail loudly, got nil error")
+	}
+	if len(resources) != 0 {
+		t.Errorf("expected zero resources on a hard failure, got %d: %+v", len(resources), resources)
+	}
+}
+
+// TestClmWorkflowQueueBuilder_List_ZeroQueueSuccessCountsAsSucceeded is a regression
+// test for succeededAtLeastOnce's exact semantics: it must be set by ANY successful
+// GetMemberWorkflowQueues call, including one that finds zero queues, not just one that
+// contributes to membership. member-alice and member-bob (the only two seeded members
+// with real queues) are both forced to fail — below clmWorkflowQueueUnavailableThreshold,
+// so neither escalates — and member-carol (zero queues, clmtest/seed.go) succeeds next,
+// which must count as proof the endpoint works. member-dave failing afterward must then
+// fail loud, not be treated as still-pre-success.
+func TestClmWorkflowQueueBuilder_List_ZeroQueueSuccessCountsAsSucceeded(t *testing.T) {
+	srv, c := clmtest.NewServer(t)
+	srv.ForceMemberWorkflowQueuesStatus("member-alice", 403)
+	srv.ForceMemberWorkflowQueuesStatus("member-bob", 403)
+	srv.ForceMemberWorkflowQueuesStatus("member-dave", 403)
+	b := newClmWorkflowQueueBuilder(c)
+	ctx := context.Background()
+
+	resources, _, err := b.List(ctx, nil, rs.SyncOpAttrs{Session: newFakeSessionStore()})
+	if err == nil {
+		t.Fatal("expected member-dave's failure (after member-carol's zero-queue success) to fail loudly, got nil error")
 	}
 	if len(resources) != 0 {
 		t.Errorf("expected zero resources on a hard failure, got %d: %+v", len(resources), resources)
