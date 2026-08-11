@@ -219,7 +219,7 @@ func TestClmWorkflowQueueBuilder_List_ToleratesNotFoundMidScan(t *testing.T) {
 	}
 }
 
-// TestClmWorkflowQueueBuilder_List_TeleratesBelowThresholdFailures is a regression
+// TestClmWorkflowQueueBuilder_List_ToleratesBelowThresholdFailures is a regression
 // test: escalating to the account-wide-unavailability skip on a SINGLE tolerated
 // failure (the previous behavior) reintroduced the exact false-deletion race the
 // isolated-NotFound skip exists to avoid — a member genuinely deleted between

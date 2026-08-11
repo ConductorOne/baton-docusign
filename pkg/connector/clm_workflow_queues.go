@@ -19,10 +19,12 @@ import (
 )
 
 // errClmWorkflowQueuesUnavailable is a sentinel discoverClmWorkflowQueueMembership wraps
-// its return error with when the very first ListMembers call in the scan fails with
-// isOptInFeatureUnavailableError — lets List() distinguish "skip this resource type
-// gracefully" from a real failure via errors.Is, without losing the underlying error for
-// logging (see List()'s use of it).
+// its return error with when the account-wide-unavailability signal fires — either the
+// very first ListMembers call failing with isOptInFeatureUnavailableError, or
+// clmWorkflowQueueUnavailableThreshold consecutive per-member GetMemberWorkflowQueues
+// calls doing the same with nothing yet successfully scanned. Lets List() distinguish
+// "skip this resource type gracefully" from a real failure via errors.Is, without losing
+// the underlying error for logging (see List()'s use of it).
 var errClmWorkflowQueuesUnavailable = errors.New("baton-docusign: CLM is not available for this account or token")
 
 // clmWorkflowQueueUnavailableThreshold is how many CONSECUTIVE tolerated per-member
@@ -169,8 +171,10 @@ type clmWorkflowQueueMembershipEntry struct {
 // then build resources" shape like every sibling CLM builder's List().
 //
 // Returns a nil map and an error wrapping errClmWorkflowQueuesUnavailable if the very
-// first ListMembers call fails with isOptInFeatureUnavailableError — List() checks for
-// that sentinel via errors.Is to decide whether to skip this resource type gracefully.
+// first ListMembers call fails with isOptInFeatureUnavailableError, or if
+// clmWorkflowQueueUnavailableThreshold consecutive per-member GetMemberWorkflowQueues
+// calls do the same before any member has succeeded — List() checks for that sentinel
+// via errors.Is to decide whether to skip this resource type gracefully.
 func (b *clmWorkflowQueueBuilder) discoverClmWorkflowQueueMembership(ctx context.Context) (map[string]*clmWorkflowQueueMembershipEntry, annotations.Annotations, error) {
 	membership := make(map[string]*clmWorkflowQueueMembershipEntry)
 	var allAnnos annotations.Annotations
