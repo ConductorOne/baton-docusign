@@ -16,8 +16,9 @@ const (
 	profileFieldEmail      = "email"
 	profileFieldUsername   = "username"
 	profileFieldGroupName  = "group_name"
-	profileFieldPermission = "permission"
-	profileFieldStatus     = "status"
+	profileFieldPermission   = "permission"
+	profileFieldStatus       = "status"
+	profileFieldPermissionID = "permission_profile_id"
 )
 
 // userStatusActive is the DocuSign UserStatus value this connector treats as "active" —
@@ -25,6 +26,33 @@ const (
 // distinction GetUserDetails' PermissionProfileID-empty check already relies on (see
 // users.go), not a new assumption.
 const userStatusActive = "Active"
+
+// isReclassifiedRateLimitError reports whether err represents a genuine rate-limit
+// overlimit — either DocuSign's hourly error (pkg/client/helper.go's
+// reclassifyHourlyRateLimitError) or a plain HTTP 429 uhttp's own
+// WrapErrorsWithRateLimitInfo already classifies this way — identified by a
+// RateLimitDescription with Status == STATUS_OVERLIMIT specifically, not merely the
+// presence of a RateLimitDescription at all: uhttp's wrapper.go attaches one to every
+// non-2xx response unconditionally (ratelimit.ExtractRateLimitData never errors, so
+// WrapErrorsWithRateLimitInfo's `if err == nil { st.WithDetails(description) }` always
+// runs), almost always with Status left at its unset zero value — so a bare presence
+// check would false-positive-match ordinary unrelated errors (403s, validation errors,
+// anything non-2xx). codes.Unavailable alone is also too broad on its own: uhttp maps a
+// plain 503 or a transient network failure to it too, and those are genuinely different
+// failures a caller may want to handle differently (e.g. still fall back to another
+// endpoint) rather than treat as an account already over its rate-limit budget.
+func isReclassifiedRateLimitError(err error) bool {
+	st, ok := status.FromError(err)
+	if !ok {
+		return false
+	}
+	for _, d := range st.Details() {
+		if rl, ok := d.(*v2.RateLimitDescription); ok && rl.GetStatus() == v2.RateLimitDescription_STATUS_OVERLIMIT {
+			return true
+		}
+	}
+	return false
+}
 
 // parsePageToken deserializes the Baton token and returns the Bag and page number for upstream.
 func parsePageToken(i string, resourceID *v2.ResourceId) (*pagination.Bag, string, error) {
@@ -87,10 +115,12 @@ func isOptInFeatureUnavailableError(err error) bool {
 // permissionProfileIDByName returns the ID of the permission profile named name, and
 // whether one was found — shared by userBuilder.Grants' list-response fast path and
 // permissionProfilesBuilder.Revoke's default-profile lookup, which independently
-// duplicated this same linear scan before this helper existed.
+// duplicated this same linear scan before this helper existed. Requires a non-empty ID,
+// matching Revoke's original inline check (`if defaultProfileID == ""`) that a name match
+// with no usable ID counts as not found, not as an empty-string result.
 func permissionProfileIDByName(profiles []client.PermissionProfile, name string) (string, bool) {
 	for _, p := range profiles {
-		if p.PermissionProfileName == name {
+		if p.PermissionProfileName == name && p.PermissionProfileId != "" {
 			return p.PermissionProfileId, true
 		}
 	}

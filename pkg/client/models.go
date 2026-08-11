@@ -49,6 +49,13 @@ type User struct {
 	UserStatus string `json:"userStatus"`
 	IsAdmin    string `json:"isAdmin"`
 	Permission string `json:"permissionProfileName"`
+	// PermissionProfileID mirrors UserDetail.PermissionProfileID's json tag on the
+	// chance the list-users response includes it alongside permissionProfileName —
+	// not confirmed against a live account (no DocuSign tenant available to verify).
+	// If DocuSign's list response doesn't actually send this field, it just stays
+	// empty and callers fall back to their existing name-based/GetUserDetails paths
+	// unchanged — this field is additive, never required.
+	PermissionProfileID string `json:"permissionProfileId"`
 }
 
 type GroupsResponse struct {

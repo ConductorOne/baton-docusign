@@ -26,10 +26,11 @@ const DefaultPageSize = 100
 // reason), so detection below checks the body field independent of resp.StatusCode.
 const docusignHourlyRateLimitErrorCode = "HOURLY_APIINVOCATION_LIMIT_EXCEEDED"
 
-// docusignRateLimitDefaultResetWindow is used when DocuSign's response carries no
-// X-RateLimit-Reset (or equivalent) header to derive a reset time from — the limit this
-// error names is hourly, so an hour is the sane default, matching the spirit of (but
-// longer than) uhttp/ratelimit's own 60s default for a headerless 429.
+// docusignRateLimitDefaultResetWindow is the fixed wait this connector asks the SDK's
+// retry loop to use for docusignHourlyRateLimitErrorCode — applied unconditionally, not
+// just as a fallback (see reclassifyHourlyRateLimitError's doc for why response headers
+// are deliberately never consulted for this error). The limit this error names is
+// hourly, so an hour is the sane, safe choice.
 const docusignRateLimitDefaultResetWindow = time.Hour
 
 // reclassifyHourlyRateLimitError recognizes docusignHourlyRateLimitErrorCode in errTarget (the
@@ -53,7 +54,7 @@ const docusignRateLimitDefaultResetWindow = time.Hour
 // Retryer (vendor pkg/retry/retry.go) computing a short wait off a nonzero Remaining from
 // the wrong bucket and hammering an account that's still over its hourly budget. Always
 // uses the fixed hourly default window instead — safe by construction, if coarser.
-func reclassifyHourlyRateLimitError(resp *http.Response, errTarget uhttp.ErrorResponse, origErr error) error {
+func reclassifyHourlyRateLimitError(errTarget uhttp.ErrorResponse, origErr error) error {
 	er, ok := errTarget.(*ErrorResponse)
 	if !ok || er.ErrorCode != docusignHourlyRateLimitErrorCode {
 		return nil
@@ -108,7 +109,7 @@ func doRequestCommon(wrapper *uhttp.BaseHttpClient, req *http.Request, res any, 
 		// resp is non-nil here whenever the error came from a well-formed non-2xx HTTP
 		// response (as opposed to a network/transport failure) — see wrapper.Do.
 		if resp != nil {
-			if rlErr := reclassifyHourlyRateLimitError(resp, errTarget, err); rlErr != nil {
+			if rlErr := reclassifyHourlyRateLimitError(errTarget, err); rlErr != nil {
 				return resp.Header, nil, rlErr
 			}
 		}

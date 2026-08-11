@@ -10,8 +10,8 @@ import (
 	"github.com/conductorone/baton-sdk/pkg/connectorbuilder"
 	"github.com/conductorone/baton-sdk/pkg/types/grant"
 	rs "github.com/conductorone/baton-sdk/pkg/types/resource"
-	"google.golang.org/grpc/codes"
-	grpcstatus "google.golang.org/grpc/status"
+	"github.com/grpc-ecosystem/go-grpc-middleware/logging/zap/ctxzap"
+	"go.uber.org/zap"
 )
 
 var _ connectorbuilder.AccountManagerV2 = &userBuilder{}
@@ -121,22 +121,36 @@ func (b *userBuilder) Grants(ctx context.Context, resource *v2.Resource, _ rs.Sy
 	}, &rs.SyncOpResults{Annotations: annos}, nil
 }
 
-// tryFastPathGrant is Grants' fast path: an Active user's permission-profile NAME,
-// already captured on the resource's profile during List(), resolved via
-// GetPermissionProfiles (one account-wide call, already served from uhttp's default GET
-// cache on every call after the first in this sync — see pkg/client/clm_client.go's
-// WithNoCache usage for this repo's opt-out convention when a fresh read matters, which
-// this doesn't need) instead of a per-user GetUserDetails call.
+// tryFastPathGrant is Grants' fast path for an Active user, avoiding the per-user
+// GetUserDetails call Pylon #11445 flagged as contributing to DocuSign's hourly rate
+// limit. Two ways it can resolve the grant without that call, both already captured on
+// the resource's profile during List():
+//   - Preferred: client.User.PermissionProfileID directly, if the list response included
+//     it (unconfirmed against a live account — see that field's doc) — no API call at all.
+//   - Otherwise: the permission-profile NAME, resolved to an ID via GetPermissionProfiles
+//     (one account-wide call, already served from uhttp's default GET cache on every call
+//     after the first in this sync — see pkg/client/clm_client.go's WithNoCache usage for
+//     this repo's opt-out convention when a fresh read matters, which this doesn't need).
 //
 // handled=false means "no decision, fall back to Grants' original GetUserDetails path
 // unchanged" — covers a non-active user, a missing profile field, an unresolvable name
 // (profile renamed/deleted since listing), or a GetPermissionProfiles failure unrelated
 // to rate limiting. handled=true with a non-nil err means GetPermissionProfiles hit the
-// same rate limit GetUserDetails would also hit (codes.Unavailable — see
-// pkg/client/helper.go); propagate it directly rather than also burning that call —
-// otherwise every active user would pay for two failing calls instead of one while the
-// account is already over budget, exactly the amplification this fix exists to reduce.
-// handled=true with a nil err means the grant was resolved.
+// same rate limit GetUserDetails would also hit — identified specifically via
+// isReclassifiedRateLimitError, not codes.Unavailable alone (that code is broader —
+// uhttp also maps a plain 503 or a transient network failure to it, and those should
+// still fall back rather than fail every active user's Grants for the rest of the sync).
+// Propagating the rate-limit case directly, rather than also falling back, avoids every
+// active user paying for two failing calls instead of one while the account is already
+// over budget — exactly the amplification this fix exists to reduce. handled=true with a
+// nil err means the grant was resolved.
+//
+// Never forwards GetPermissionProfiles' annotations: after the first real call in a
+// sync, repeat calls are served from uhttp's GET cache, which replays that first
+// response's rate-limit snapshot verbatim — forwarding it on every subsequent active
+// user would feed the SDK's self-throttling rate limiter a frozen, increasingly stale
+// signal instead of the fresh per-request data GetUserDetails supplied before this fast
+// path existed.
 func (b *userBuilder) tryFastPathGrant(ctx context.Context, resource *v2.Resource, userID *v2.ResourceId) (*v2.Grant, annotations.Annotations, error, bool) {
 	profile := rs.GetProfile(resource)
 
@@ -144,16 +158,31 @@ func (b *userBuilder) tryFastPathGrant(ctx context.Context, resource *v2.Resourc
 	if !ok || userStatus != userStatusActive {
 		return nil, nil, nil, false
 	}
+
+	// If the list response happened to include the profile ID directly (unconfirmed
+	// against a live account — see client.User.PermissionProfileID's doc), this skips
+	// GetPermissionProfiles entirely: no API call, no name lookup, no cache dependency.
+	if id, ok := rs.GetProfileStringValue(profile, profileFieldPermissionID); ok && id != "" {
+		newGrant := grant.NewGrant(
+			&v2.Resource{Id: &v2.ResourceId{ResourceType: permissionProfilesResourceType.Id, Resource: id}},
+			permissionProfileAssignedTag,
+			userID,
+		)
+		return newGrant, nil, nil, true
+	}
+
 	name, ok := rs.GetProfileStringValue(profile, profileFieldPermission)
 	if !ok || name == "" {
 		return nil, nil, nil, false
 	}
 
-	profiles, annos, err := b.client.GetPermissionProfiles(ctx)
+	profiles, _, err := b.client.GetPermissionProfiles(ctx)
 	if err != nil {
-		if grpcstatus.Code(err) == codes.Unavailable {
+		if isReclassifiedRateLimitError(err) {
 			return nil, nil, err, true
 		}
+		ctxzap.Extract(ctx).Debug("baton-docusign: GetPermissionProfiles failed, falling back to per-user GetUserDetails for this Grants call",
+			zap.String("user_id", userID.Resource), zap.Error(err))
 		return nil, nil, nil, false
 	}
 
@@ -166,7 +195,7 @@ func (b *userBuilder) tryFastPathGrant(ctx context.Context, resource *v2.Resourc
 		permissionProfileAssignedTag,
 		userID,
 	)
-	return newGrant, annos, nil, true
+	return newGrant, nil, nil, true
 }
 
 // CreateAccountCapabilityDetails declares support for account provisioning without a password.
@@ -299,11 +328,12 @@ func parseIntoUserResource(user *client.User) (*v2.Resource, error) {
 	}
 
 	profile := map[string]any{
-		"userName":             user.UserName,
-		profileFieldEmail:      user.Email,
-		"isAdmin":              user.IsAdmin,
-		profileFieldPermission: user.Permission,
-		profileFieldStatus:     user.UserStatus,
+		"userName":               user.UserName,
+		profileFieldEmail:        user.Email,
+		"isAdmin":                user.IsAdmin,
+		profileFieldPermission:   user.Permission,
+		profileFieldStatus:       user.UserStatus,
+		profileFieldPermissionID: user.PermissionProfileID,
 	}
 
 	userTraits := []rs.UserTraitOption{

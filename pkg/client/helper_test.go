@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"strconv"
 	"testing"
 	"time"
 
@@ -29,71 +28,27 @@ import (
 func TestReclassifyHourlyRateLimitError(t *testing.T) {
 	origErr := errors.New("400 Bad Request")
 
-	t.Run("matches on errorCode regardless of HTTP status", func(t *testing.T) {
-		for _, statusCode := range []int{http.StatusBadRequest, http.StatusTooManyRequests} {
-			resp := &http.Response{
-				StatusCode: statusCode,
-				Header:     http.Header{},
-			}
-			errTarget := &ErrorResponse{
-				ErrorCode:    docusignHourlyRateLimitErrorCode,
-				ErrorMessage: "The maximum number of hourly API invocations has been exceeded. The hourly limit is 3000.",
-			}
-
-			got := reclassifyHourlyRateLimitError(resp, errTarget, origErr)
-			if got == nil {
-				t.Fatalf("status %d: expected a rate-limit error, got nil", statusCode)
-			}
-			st, ok := status.FromError(got)
-			if !ok {
-				t.Fatalf("status %d: expected a gRPC status error, got %v", statusCode, got)
-			}
-			if st.Code() != codes.Unavailable {
-				t.Errorf("status %d: expected codes.Unavailable, got %v", statusCode, st.Code())
-			}
-
-			var desc *v2.RateLimitDescription
-			for _, d := range st.Details() {
-				if rl, ok := d.(*v2.RateLimitDescription); ok {
-					desc = rl
-				}
-			}
-			if desc == nil {
-				t.Fatalf("status %d: expected a RateLimitDescription in the error's status details, got %+v", statusCode, st.Details())
-			}
-			if desc.GetStatus() != v2.RateLimitDescription_STATUS_OVERLIMIT {
-				t.Errorf("status %d: expected STATUS_OVERLIMIT, got %v", statusCode, desc.GetStatus())
-			}
-			if desc.GetResetAt() == nil || desc.GetResetAt().AsTime().Before(time.Now()) {
-				t.Errorf("status %d: expected a future ResetAt when no header is present, got %v", statusCode, desc.GetResetAt())
-			}
+	t.Run("matches on errorCode and always uses the fixed hourly window", func(t *testing.T) {
+		// The function takes no status code or headers at all — it can only ever see
+		// errTarget's parsed body, so there's nothing header-derived to test here beyond
+		// confirming the fixed window is what gets used.
+		errTarget := &ErrorResponse{
+			ErrorCode:    docusignHourlyRateLimitErrorCode,
+			ErrorMessage: "The maximum number of hourly API invocations has been exceeded. The hourly limit is 3000.",
 		}
-	})
 
-	t.Run("ignores rate-limit headers and always uses the fixed hourly window", func(t *testing.T) {
-		// DocuSign documents no dedicated headers for this hourly/daily-scoped limit —
-		// any generic X-RateLimit-*/Ratelimit-* headers present most plausibly describe
-		// an unrelated shorter-window limit (e.g. a burst counter), not the hourly one
-		// that produced this error. Trusting them would risk the SDK's Retryer computing
-		// a too-short wait off the wrong bucket's Remaining and re-hitting an account
-		// that's still over its hourly budget (a deep-code-review finding on this PR) —
-		// so a header claiming an imminent reset must NOT shorten the wait below the
-		// fixed default window.
-		soonResetAt := time.Now().Add(5 * time.Minute)
-		resp := &http.Response{
-			StatusCode: http.StatusBadRequest,
-			Header: http.Header{
-				"X-Ratelimit-Reset":     []string{strconv.FormatInt(soonResetAt.Unix(), 10)},
-				"X-Ratelimit-Remaining": []string{"5"},
-			},
-		}
-		errTarget := &ErrorResponse{ErrorCode: docusignHourlyRateLimitErrorCode}
-
-		got := reclassifyHourlyRateLimitError(resp, errTarget, origErr)
+		got := reclassifyHourlyRateLimitError(errTarget, origErr)
 		if got == nil {
 			t.Fatal("expected a rate-limit error, got nil")
 		}
-		st, _ := status.FromError(got)
+		st, ok := status.FromError(got)
+		if !ok {
+			t.Fatalf("expected a gRPC status error, got %v", got)
+		}
+		if st.Code() != codes.Unavailable {
+			t.Errorf("expected codes.Unavailable, got %v", st.Code())
+		}
+
 		var desc *v2.RateLimitDescription
 		for _, d := range st.Details() {
 			if rl, ok := d.(*v2.RateLimitDescription); ok {
@@ -101,33 +56,34 @@ func TestReclassifyHourlyRateLimitError(t *testing.T) {
 			}
 		}
 		if desc == nil {
-			t.Fatal("expected a RateLimitDescription in the error's status details")
+			t.Fatalf("expected a RateLimitDescription in the error's status details, got %+v", st.Details())
+		}
+		if desc.GetStatus() != v2.RateLimitDescription_STATUS_OVERLIMIT {
+			t.Errorf("expected STATUS_OVERLIMIT, got %v", desc.GetStatus())
 		}
 		if desc.GetRemaining() != 0 {
-			t.Errorf("expected Remaining to stay 0 (header-derived value ignored), got %d", desc.GetRemaining())
+			t.Errorf("expected Remaining to be 0 (matches OVERLIMIT, no header data is ever read), got %d", desc.GetRemaining())
 		}
-		if resetAt := desc.GetResetAt().AsTime(); resetAt.Before(soonResetAt.Add(time.Minute)) {
-			t.Errorf("expected ResetAt to use the ~1h default window, not the header's near-term value: got %v", resetAt)
+		if desc.GetResetAt() == nil || desc.GetResetAt().AsTime().Before(time.Now().Add(50*time.Minute)) {
+			t.Errorf("expected a ResetAt roughly an hour out, got %v", desc.GetResetAt())
 		}
 	})
 
 	t.Run("does not match an unrelated errorCode", func(t *testing.T) {
-		resp := &http.Response{StatusCode: http.StatusBadRequest, Header: http.Header{}}
 		errTarget := &ErrorResponse{ErrorCode: "USER_LACKS_PERMISSIONS"}
 
-		if got := reclassifyHourlyRateLimitError(resp, errTarget, origErr); got != nil {
+		if got := reclassifyHourlyRateLimitError(errTarget, origErr); got != nil {
 			t.Errorf("expected nil for an unrelated errorCode, got %v", got)
 		}
 	})
 
 	t.Run("does not match CLM's distinct error envelope", func(t *testing.T) {
-		resp := &http.Response{StatusCode: http.StatusBadRequest, Header: http.Header{}}
 		// ClmErrorResponse is a different type from *ErrorResponse even if some CLM error
 		// happened to carry the same string in an analogous field — the type assertion
 		// alone must reject it, since this function's evidence is eSignature-specific.
 		errTarget := &ClmErrorResponse{}
 
-		if got := reclassifyHourlyRateLimitError(resp, errTarget, origErr); got != nil {
+		if got := reclassifyHourlyRateLimitError(errTarget, origErr); got != nil {
 			t.Errorf("expected nil for a non-eSignature error envelope, got %v", got)
 		}
 	})

@@ -31,12 +31,20 @@ func (t *rewriteTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	return http.DefaultTransport.RoundTrip(req)
 }
 
+// Forced-error modes for newUsersTestClient's permission_profiles endpoint.
+const (
+	permissionProfilesOK                 = ""
+	permissionProfilesRateLimit          = "rate_limit"          // DocuSign's real hourly-limit body
+	permissionProfilesForbidden          = "forbidden"           // a generic, unrelated failure
+	permissionProfilesServiceUnavailable = "service_unavailable" // a plain 503, no rate-limit body at all
+)
+
 // usersTestServer wires a *client.Client to a mock server handling /oauth/userinfo,
 // GET permission_profiles, and GET users/{id} — everything userBuilder.Grants needs
-// across both its fast path and its GetUserDetails fallback. If forcePermissionProfilesRateLimit
-// is set, the permission_profiles endpoint returns DocuSign's real hourly-rate-limit body
-// instead of the profiles list, regardless of what's in profiles.
-func newUsersTestClient(t *testing.T, profiles []client.PermissionProfile, userDetails map[string]client.UserDetail, forcePermissionProfilesRateLimit bool) *client.Client {
+// across both its fast path and its GetUserDetails fallback. forcedPermissionProfilesError
+// selects what the permission_profiles endpoint returns instead of the profiles list —
+// see the permissionProfiles* constants above.
+func newUsersTestClient(t *testing.T, profiles []client.PermissionProfile, userDetails map[string]client.UserDetail, forcedPermissionProfilesError string) *client.Client {
 	t.Helper()
 	mockServer := httptest.NewServer(nil)
 	t.Cleanup(mockServer.Close)
@@ -53,12 +61,24 @@ func newUsersTestClient(t *testing.T, profiles []client.PermissionProfile, userD
 				},
 			})
 		case "/restapi/v2.1/accounts/acct-1/permission_profiles":
-			if forcePermissionProfilesRateLimit {
+			switch forcedPermissionProfilesError {
+			case permissionProfilesRateLimit:
 				w.WriteHeader(http.StatusBadRequest)
 				_ = json.NewEncoder(w).Encode(client.ErrorResponse{
 					ErrorCode:    "HOURLY_APIINVOCATION_LIMIT_EXCEEDED",
 					ErrorMessage: "The maximum number of hourly API invocations has been exceeded. The hourly limit is 3000.",
 				})
+				return
+			case permissionProfilesForbidden:
+				w.WriteHeader(http.StatusForbidden)
+				_ = json.NewEncoder(w).Encode(client.ErrorResponse{
+					ErrorCode:    "USER_LACKS_PERMISSIONS",
+					ErrorMessage: "The user does not have permission to access permission profiles.",
+				})
+				return
+			case permissionProfilesServiceUnavailable:
+				w.WriteHeader(http.StatusServiceUnavailable)
+				_ = json.NewEncoder(w).Encode(client.ErrorResponse{ErrorMessage: "service unavailable"})
 				return
 			}
 			_ = json.NewEncoder(w).Encode(client.PermissionProfilesResponse{PermissionProfiles: profiles})
@@ -98,7 +118,7 @@ func TestUserBuilder_Grants_FastPath_ActiveUserWithKnownProfile(t *testing.T) {
 	c := newUsersTestClient(t, []client.PermissionProfile{
 		{PermissionProfileId: "pp-1", PermissionProfileName: "DocuSign Admin"},
 		{PermissionProfileId: "pp-2", PermissionProfileName: "DocuSign Viewer"},
-	}, nil, false) // no user-details fixtures — a fallback call here would 404 and fail the test
+	}, nil, permissionProfilesOK) // no user-details fixtures — a fallback call here would 404 and fail the test
 	b := newUserBuilder(c)
 	resource := userResourceWithProfile(t, "user-1", userStatusActive, "DocuSign Admin")
 
@@ -126,7 +146,7 @@ func TestUserBuilder_Grants_FallsBackWhenNotActive(t *testing.T) {
 		{PermissionProfileId: "pp-1", PermissionProfileName: "DocuSign Admin"},
 	}, map[string]client.UserDetail{
 		"user-1": {UserID: "user-1", PermissionProfileID: ""}, // matches "non-active users have no PP"
-	}, false)
+	}, permissionProfilesOK)
 	b := newUserBuilder(c)
 	resource := userResourceWithProfile(t, "user-1", "Disabled", "DocuSign Admin")
 
@@ -147,7 +167,7 @@ func TestUserBuilder_Grants_FallsBackWhenProfileNameUnresolvable(t *testing.T) {
 		{PermissionProfileId: "pp-1", PermissionProfileName: "DocuSign Admin"},
 	}, map[string]client.UserDetail{
 		"user-1": {UserID: "user-1", PermissionProfileID: "pp-1"},
-	}, false)
+	}, permissionProfilesOK)
 	b := newUserBuilder(c)
 	resource := userResourceWithProfile(t, "user-1", userStatusActive, "A Since-Renamed Profile")
 
@@ -171,7 +191,7 @@ func TestUserBuilder_Grants_PropagatesRateLimitInsteadOfDoublingCalls(t *testing
 		// it "succeed" and hide the bug — present specifically so the fallthrough case
 		// would be caught if it fired instead of propagating.
 		"user-1": {UserID: "user-1", PermissionProfileID: "pp-1"},
-	}, true)
+	}, permissionProfilesRateLimit)
 	b := newUserBuilder(c)
 	resource := userResourceWithProfile(t, "user-1", userStatusActive, "DocuSign Admin")
 
@@ -184,6 +204,72 @@ func TestUserBuilder_Grants_PropagatesRateLimitInsteadOfDoublingCalls(t *testing
 	}
 }
 
+// TestUserBuilder_Grants_FallsBackOnNonRateLimitPermissionProfilesFailure covers the
+// other half of the fast path's error handling: a GetPermissionProfiles failure that
+// ISN'T the reclassified rate-limit error (e.g. a permissions/scope issue) must still
+// fall through to GetUserDetails and resolve the grant, not propagate the error.
+func TestUserBuilder_Grants_FallsBackOnNonRateLimitPermissionProfilesFailure(t *testing.T) {
+	c := newUsersTestClient(t, nil, map[string]client.UserDetail{
+		"user-1": {UserID: "user-1", PermissionProfileID: "pp-1"},
+	}, permissionProfilesForbidden)
+	b := newUserBuilder(c)
+	resource := userResourceWithProfile(t, "user-1", userStatusActive, "DocuSign Admin")
+
+	grants, _, err := b.Grants(context.Background(), resource, rs.SyncOpAttrs{})
+	if err != nil {
+		t.Fatalf("Grants: %v", err)
+	}
+	if len(grants) != 1 || grants[0].Entitlement.Resource.Id.Resource != "pp-1" {
+		t.Errorf("expected the GetUserDetails fallback to resolve pp-1, got %+v", grants)
+	}
+}
+
+// TestUserBuilder_Grants_FallsBackOnServiceUnavailable is a regression test for a
+// deep-code-review finding: codes.Unavailable is broader than "already rate-limited" —
+// uhttp also maps a plain HTTP 503 to it. A 503 from GetPermissionProfiles (no
+// RateLimitDescription attached, unlike the reclassified rate-limit error) must fall
+// through to GetUserDetails, not be mistaken for the rate-limit case and propagated.
+func TestUserBuilder_Grants_FallsBackOnServiceUnavailable(t *testing.T) {
+	c := newUsersTestClient(t, nil, map[string]client.UserDetail{
+		"user-1": {UserID: "user-1", PermissionProfileID: "pp-1"},
+	}, permissionProfilesServiceUnavailable)
+	b := newUserBuilder(c)
+	resource := userResourceWithProfile(t, "user-1", userStatusActive, "DocuSign Admin")
+
+	grants, _, err := b.Grants(context.Background(), resource, rs.SyncOpAttrs{})
+	if err != nil {
+		t.Fatalf("Grants: %v", err)
+	}
+	if len(grants) != 1 || grants[0].Entitlement.Resource.Id.Resource != "pp-1" {
+		t.Errorf("expected the GetUserDetails fallback to resolve pp-1, got %+v", grants)
+	}
+}
+
+// TestUserBuilder_Grants_FastPath_PrefersDirectProfileIDOverName covers the
+// PermissionProfileID-on-the-list-response path: when present, it must skip
+// GetPermissionProfiles entirely (no profiles fixture is provided — a call would 404 and
+// fail this test) and use the ID directly.
+func TestUserBuilder_Grants_FastPath_PrefersDirectProfileIDOverName(t *testing.T) {
+	c := newUsersTestClient(t, nil, nil, permissionProfilesOK)
+	b := newUserBuilder(c)
+	resource, err := rs.NewUserResource("user-1", userResourceType, "user-1", nil, rs.WithResourceProfile(map[string]any{
+		profileFieldStatus:       userStatusActive,
+		profileFieldPermission:   "DocuSign Admin",
+		profileFieldPermissionID: "pp-1",
+	}))
+	if err != nil {
+		t.Fatalf("NewUserResource: %v", err)
+	}
+
+	grants, _, err := b.Grants(context.Background(), resource, rs.SyncOpAttrs{})
+	if err != nil {
+		t.Fatalf("Grants: %v", err)
+	}
+	if len(grants) != 1 || grants[0].Entitlement.Resource.Id.Resource != "pp-1" {
+		t.Errorf("expected the direct profile ID to resolve pp-1 with no API call, got %+v", grants)
+	}
+}
+
 func TestUserBuilder_Grants_FallsBackWhenProfileFieldMissing(t *testing.T) {
 	// An identity-only or otherwise profile-less resource must not panic or skip the
 	// grant — it should behave exactly as it did before the fast path existed.
@@ -191,7 +277,7 @@ func TestUserBuilder_Grants_FallsBackWhenProfileFieldMissing(t *testing.T) {
 		{PermissionProfileId: "pp-1", PermissionProfileName: "DocuSign Admin"},
 	}, map[string]client.UserDetail{
 		"user-1": {UserID: "user-1", PermissionProfileID: "pp-1"},
-	}, false)
+	}, permissionProfilesOK)
 	b := newUserBuilder(c)
 	resource, err := rs.NewUserResource("user-1", userResourceType, "user-1", nil)
 	if err != nil {
