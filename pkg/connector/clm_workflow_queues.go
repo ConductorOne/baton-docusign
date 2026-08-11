@@ -224,6 +224,14 @@ func (b *clmWorkflowQueueBuilder) discoverClmWorkflowQueueMembership(ctx context
 						if consecutiveUnavailableFailures >= clmWorkflowQueueUnavailableThreshold {
 							return nil, allAnnos, fmt.Errorf("%w: %w", errClmWorkflowQueuesUnavailable, err)
 						}
+						// Below the threshold: same visibility as the post-success
+						// isolated-NotFound skip below — this member's queue membership
+						// (if any) is silently missing from this sync otherwise.
+						skippedMembers++
+						if n := skippedMembers; n == 1 || n == 10 || n == 100 || n%1000 == 0 {
+							ctxzap.Extract(ctx).Warn("baton-docusign: failed to get CLM workflow queues for member, skipping",
+								zap.String("member_id", memberID), zap.Int("total_occurrences", n), zap.Error(err))
+						}
 						continue
 					}
 					if status.Code(err) == codes.NotFound {
