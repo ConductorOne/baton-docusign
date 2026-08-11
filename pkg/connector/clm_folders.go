@@ -141,14 +141,8 @@ func (f *clmFolderBuilder) Grants(ctx context.Context, folderResource *v2.Resour
 	for _, entry := range folder.Security.Groups {
 		slug, ok := clmSlugForAccessType(entry.AccessType)
 		if !ok {
-			switch {
-			case entry.AccessType == client.ClmAccessTypeCustom:
-				ctxzap.Extract(ctx).Debug("baton-docusign: skipping CLM folder group-security entry with an unrepresentable Custom AccessType — a real, active grant C1 won't see",
-					zap.String("folder_id", folderResource.Id.Resource), zap.String("group_href", entry.Href))
-			case !clmIsBenignUnmappedAccessType(entry.AccessType):
-				ctxzap.Extract(ctx).Debug("baton-docusign: skipping CLM folder group-security entry with an unmapped AccessType",
-					zap.String("folder_id", folderResource.Id.Resource), zap.String("group_href", entry.Href), zap.String("access_type", entry.AccessType))
-			}
+			logSkippedFolderSecurityEntry(ctx, "group", entry.AccessType,
+				zap.String("folder_id", folderResource.Id.Resource), zap.String("group_href", entry.Href))
 			continue
 		}
 		principalID := &v2.ResourceId{ResourceType: clmGroupResourceType.Id, Resource: clmIDFromHref(entry.Href)}
@@ -164,14 +158,8 @@ func (f *clmFolderBuilder) Grants(ctx context.Context, folderResource *v2.Resour
 	for _, entry := range folder.Security.Roles {
 		slug, ok := clmSlugForAccessType(entry.AccessType)
 		if !ok {
-			switch {
-			case entry.AccessType == client.ClmAccessTypeCustom:
-				ctxzap.Extract(ctx).Debug("baton-docusign: skipping CLM folder role-security entry with an unrepresentable Custom AccessType — a real, active grant C1 won't see",
-					zap.String("folder_id", folderResource.Id.Resource), zap.String("role", entry.Item))
-			case !clmIsBenignUnmappedAccessType(entry.AccessType):
-				ctxzap.Extract(ctx).Debug("baton-docusign: skipping CLM folder role-security entry with an unmapped AccessType",
-					zap.String("folder_id", folderResource.Id.Resource), zap.String("role", entry.Item), zap.String("access_type", entry.AccessType))
-			}
+			logSkippedFolderSecurityEntry(ctx, "role", entry.AccessType,
+				zap.String("folder_id", folderResource.Id.Resource), zap.String("role", entry.Item))
 			continue
 		}
 		if !clmIsKnownRole(entry.Item) {
@@ -189,14 +177,8 @@ func (f *clmFolderBuilder) Grants(ctx context.Context, folderResource *v2.Resour
 	for _, entry := range folder.Security.Users {
 		slug, ok := clmSlugForAccessType(entry.AccessType)
 		if !ok {
-			switch {
-			case entry.AccessType == client.ClmAccessTypeCustom:
-				ctxzap.Extract(ctx).Debug("baton-docusign: skipping CLM folder user-security entry with an unrepresentable Custom AccessType — a real, active grant C1 won't see",
-					zap.String("folder_id", folderResource.Id.Resource), zap.String("member_href", entry.Href))
-			case !clmIsBenignUnmappedAccessType(entry.AccessType):
-				ctxzap.Extract(ctx).Debug("baton-docusign: skipping CLM folder user-security entry with an unmapped AccessType",
-					zap.String("folder_id", folderResource.Id.Resource), zap.String("member_href", entry.Href), zap.String("access_type", entry.AccessType))
-			}
+			logSkippedFolderSecurityEntry(ctx, "user", entry.AccessType,
+				zap.String("folder_id", folderResource.Id.Resource), zap.String("member_href", entry.Href))
 			continue
 		}
 		principalID := &v2.ResourceId{ResourceType: clmMemberResourceType.Id, Resource: clmIDFromHref(entry.Href)}
@@ -204,6 +186,28 @@ func (f *clmFolderBuilder) Grants(ctx context.Context, folderResource *v2.Resour
 	}
 
 	return grants, &rs.SyncOpResults{Annotations: annos}, nil
+}
+
+// logSkippedFolderSecurityEntry logs the one Debug line for a folder-security entry
+// whose AccessType didn't map to a grantable tier — shared by the Groups/Roles/Users
+// branches of Grants, which differ only in kind ("group"/"role"/"user") and the
+// caller-supplied fields identifying the entry. Custom gets its own message, since
+// unlike NoAccess/InheritFromParentFolder (clmIsBenignUnmappedAccessType) it's a real,
+// active grant this connector can't represent — fully silencing it would hide an actual
+// access-visibility gap. Both branches carry access_type so either case is findable by
+// the same structured-log query as every other skip line in this file.
+func logSkippedFolderSecurityEntry(ctx context.Context, kind, accessType string, fields ...zap.Field) {
+	fields = append(fields, zap.String("access_type", accessType))
+	switch {
+	case accessType == client.ClmAccessTypeCustom:
+		ctxzap.Extract(ctx).Debug(
+			fmt.Sprintf("baton-docusign: skipping CLM folder %s-security entry with an unrepresentable Custom AccessType — a real, active grant C1 won't see", kind),
+			fields...)
+	case !clmIsBenignUnmappedAccessType(accessType):
+		ctxzap.Extract(ctx).Debug(
+			fmt.Sprintf("baton-docusign: skipping CLM folder %s-security entry with an unmapped AccessType", kind),
+			fields...)
+	}
 }
 
 // Grant sets a folder-security entry for the principal at the entitlement's tier.

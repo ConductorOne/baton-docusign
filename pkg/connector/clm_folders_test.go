@@ -361,7 +361,10 @@ func TestClmFolderBuilder_Grants_LogsDistinctlyForCustomAccessType(t *testing.T)
 		t.Fatalf("expected both entries to be skipped, got %d grants: %+v", len(grants), grants)
 	}
 
-	entries := logs.All()
+	// Scoped to access_type-carrying entries only, like the sibling test above, so
+	// unrelated log traffic from the HTTP/cache layer underneath GetFolder can't leak
+	// into the count.
+	entries := logs.FilterFieldKey("access_type").All()
 	if len(entries) != 1 {
 		t.Fatalf("expected exactly 1 log entry (Custom; NoAccess should stay silent), got %d: %+v", len(entries), entries)
 	}
@@ -370,6 +373,9 @@ func TestClmFolderBuilder_Grants_LogsDistinctlyForCustomAccessType(t *testing.T)
 	}
 	if !strings.Contains(entries[0].Message, "Custom") {
 		t.Errorf("expected the log message to distinctly mention Custom, got %q", entries[0].Message)
+	}
+	if got := entries[0].ContextMap()["access_type"]; got != client.ClmAccessTypeCustom {
+		t.Errorf("expected access_type field to be %q, got %q", client.ClmAccessTypeCustom, got)
 	}
 }
 
