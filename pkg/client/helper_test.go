@@ -18,15 +18,15 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-// TestRateLimitErrorFromResponse is a regression test for Pylon #11445: DocuSign signals
+// TestReclassifyHourlyRateLimitError is a regression test for Pylon #11445: DocuSign signals
 // "hourly API-call budget exhausted" via a JSON error body (errorCode
 // HOURLY_APIINVOCATION_LIMIT_EXCEEDED) on HTTP 400, which uhttp.GrpcCodeFromHTTPStatus maps
 // to codes.InvalidArgument — a code the SDK's sync-retry loop treats as fatal, not
 // retryable, so a real customer's initial full sync failed outright instead of pausing and
-// resuming. rateLimitErrorFromResponse must re-classify exactly this case as
+// resuming. reclassifyHourlyRateLimitError must re-classify exactly this case as
 // codes.Unavailable (which the SDK does retry) carrying a RateLimitDescription, and leave
 // every other error (including CLM's distinct error envelope) untouched.
-func TestRateLimitErrorFromResponse(t *testing.T) {
+func TestReclassifyHourlyRateLimitError(t *testing.T) {
 	origErr := errors.New("400 Bad Request")
 
 	t.Run("matches on errorCode regardless of HTTP status", func(t *testing.T) {
@@ -40,7 +40,7 @@ func TestRateLimitErrorFromResponse(t *testing.T) {
 				ErrorMessage: "The maximum number of hourly API invocations has been exceeded. The hourly limit is 3000.",
 			}
 
-			got := rateLimitErrorFromResponse(resp, errTarget, origErr)
+			got := reclassifyHourlyRateLimitError(resp, errTarget, origErr)
 			if got == nil {
 				t.Fatalf("status %d: expected a rate-limit error, got nil", statusCode)
 			}
@@ -89,7 +89,7 @@ func TestRateLimitErrorFromResponse(t *testing.T) {
 		}
 		errTarget := &ErrorResponse{ErrorCode: docusignHourlyRateLimitErrorCode}
 
-		got := rateLimitErrorFromResponse(resp, errTarget, origErr)
+		got := reclassifyHourlyRateLimitError(resp, errTarget, origErr)
 		if got == nil {
 			t.Fatal("expected a rate-limit error, got nil")
 		}
@@ -115,7 +115,7 @@ func TestRateLimitErrorFromResponse(t *testing.T) {
 		resp := &http.Response{StatusCode: http.StatusBadRequest, Header: http.Header{}}
 		errTarget := &ErrorResponse{ErrorCode: "USER_LACKS_PERMISSIONS"}
 
-		if got := rateLimitErrorFromResponse(resp, errTarget, origErr); got != nil {
+		if got := reclassifyHourlyRateLimitError(resp, errTarget, origErr); got != nil {
 			t.Errorf("expected nil for an unrelated errorCode, got %v", got)
 		}
 	})
@@ -127,7 +127,7 @@ func TestRateLimitErrorFromResponse(t *testing.T) {
 		// alone must reject it, since this function's evidence is eSignature-specific.
 		errTarget := &ClmErrorResponse{}
 
-		if got := rateLimitErrorFromResponse(resp, errTarget, origErr); got != nil {
+		if got := reclassifyHourlyRateLimitError(resp, errTarget, origErr); got != nil {
 			t.Errorf("expected nil for a non-eSignature error envelope, got %v", got)
 		}
 	})
@@ -135,8 +135,8 @@ func TestRateLimitErrorFromResponse(t *testing.T) {
 
 // TestGetUsers_ClassifiesHourlyRateLimitAsRetryable is an end-to-end regression test for
 // Pylon #11445, exercising the real request path (GetUsers -> doRequestCommon ->
-// rateLimitErrorFromResponse) against a mock server that returns DocuSign's actual
-// observed 400 body, rather than calling rateLimitErrorFromResponse directly.
+// reclassifyHourlyRateLimitError) against a mock server that returns DocuSign's actual
+// observed 400 body, rather than calling reclassifyHourlyRateLimitError directly.
 func TestGetUsers_ClassifiesHourlyRateLimitAsRetryable(t *testing.T) {
 	mockServer := httptest.NewServer(nil)
 	defer mockServer.Close()

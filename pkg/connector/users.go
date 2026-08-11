@@ -77,55 +77,20 @@ func (b *userBuilder) Entitlements(_ context.Context, _ *v2.Resource, _ rs.SyncO
 
 // Grants assigns permissions to users based on their DocuSign settings.
 //
-// Fast path: an Active user's permission-profile NAME was already captured on the
-// resource's profile during List() (parseIntoUserResource's profileFieldPermission
-// field) from the same GetUsers list response every sync already pages through.
-// Resolving that name to an ID via GetPermissionProfiles (one account-wide call,
-// already served from uhttp's default GET cache on every call after the first in this
-// sync — see pkg/client/clm_client.go's WithNoCache usage for this repo's opt-out
-// convention when a fresh read matters, which this doesn't need) avoids a per-user
-// GetUserDetails call for the common case — the N+1 pattern Pylon #11445 flagged as
-// contributing to DocuSign's hourly rate limit.
-//
-// Gated on status == Active for the exact same reason GetUserDetails.PermissionProfileID
-// is empty for non-active users below (that pre-existing rule, not a new assumption) —
-// so a non-active user, an unresolvable name (profile renamed/deleted since listing), or
-// a failed GetPermissionProfiles call all fall through to the always-correct per-user
-// GetUserDetails path unchanged from before this fast path existed. The one exception:
-// if GetPermissionProfiles itself fails because the account is already rate-limited
-// (codes.Unavailable — see pkg/client/helper.go), GetUserDetails below would hit the
-// identical limit, so that error is propagated directly instead of also burning that
-// call — otherwise every active user would pay for two failing calls instead of one
-// while the account is already over budget, exactly the amplification this fix exists
-// to reduce.
+// Tries tryFastPathGrant first (an Active user's permission-profile NAME, already
+// captured on the resource's profile during List(), resolved via one account-wide
+// GetPermissionProfiles call instead of a per-user GetUserDetails call — the N+1
+// pattern Pylon #11445 flagged as contributing to DocuSign's hourly rate limit) and
+// falls back to the always-correct per-user GetUserDetails path unchanged from before
+// that fast path existed whenever it declines to handle the request (see its own doc).
 func (b *userBuilder) Grants(ctx context.Context, resource *v2.Resource, _ rs.SyncOpAttrs) ([]*v2.Grant, *rs.SyncOpResults, error) {
 	userID := resource.Id
-	profile := rs.GetProfile(resource)
 
-	var annos annotations.Annotations
-
-	if userStatus, ok := rs.GetProfileStringValue(profile, profileFieldStatus); ok && userStatus == userStatusActive {
-		if name, ok := rs.GetProfileStringValue(profile, profileFieldPermission); ok && name != "" {
-			profiles, profileAnnos, err := b.client.GetPermissionProfiles(ctx)
-			if err != nil && grpcstatus.Code(err) == codes.Unavailable {
-				return nil, nil, err
-			}
-			if err == nil {
-				for _, a := range profileAnnos {
-					annos.Append(a)
-				}
-				for _, p := range profiles {
-					if p.PermissionProfileName == name {
-						newGrant := grant.NewGrant(
-							&v2.Resource{Id: &v2.ResourceId{ResourceType: permissionProfilesResourceType.Id, Resource: p.PermissionProfileId}},
-							permissionProfileAssignedTag,
-							userID,
-						)
-						return []*v2.Grant{newGrant}, &rs.SyncOpResults{Annotations: annos}, nil
-					}
-				}
-			}
+	if newGrant, annos, err, handled := b.tryFastPathGrant(ctx, resource, userID); handled {
+		if err != nil {
+			return nil, nil, err
 		}
+		return []*v2.Grant{newGrant}, &rs.SyncOpResults{Annotations: annos}, nil
 	}
 
 	userDetail, annotation, err := b.client.GetUserDetails(ctx, userID.Resource)
@@ -133,6 +98,7 @@ func (b *userBuilder) Grants(ctx context.Context, resource *v2.Resource, _ rs.Sy
 		return nil, nil, fmt.Errorf("failed to fetch details for %s: %w", userID.Resource, err)
 	}
 
+	var annos annotations.Annotations
 	for _, annon := range annotation {
 		annos.Append(annon)
 	}
@@ -150,8 +116,57 @@ func (b *userBuilder) Grants(ctx context.Context, resource *v2.Resource, _ rs.Sy
 		},
 	}
 
-	newGrant := grant.NewGrant(permissionProfileResource, permissionProfileAssignedTag, userID)
-	return []*v2.Grant{newGrant}, &rs.SyncOpResults{Annotations: annos}, nil
+	return []*v2.Grant{
+		grant.NewGrant(permissionProfileResource, permissionProfileAssignedTag, userID),
+	}, &rs.SyncOpResults{Annotations: annos}, nil
+}
+
+// tryFastPathGrant is Grants' fast path: an Active user's permission-profile NAME,
+// already captured on the resource's profile during List(), resolved via
+// GetPermissionProfiles (one account-wide call, already served from uhttp's default GET
+// cache on every call after the first in this sync — see pkg/client/clm_client.go's
+// WithNoCache usage for this repo's opt-out convention when a fresh read matters, which
+// this doesn't need) instead of a per-user GetUserDetails call.
+//
+// handled=false means "no decision, fall back to Grants' original GetUserDetails path
+// unchanged" — covers a non-active user, a missing profile field, an unresolvable name
+// (profile renamed/deleted since listing), or a GetPermissionProfiles failure unrelated
+// to rate limiting. handled=true with a non-nil err means GetPermissionProfiles hit the
+// same rate limit GetUserDetails would also hit (codes.Unavailable — see
+// pkg/client/helper.go); propagate it directly rather than also burning that call —
+// otherwise every active user would pay for two failing calls instead of one while the
+// account is already over budget, exactly the amplification this fix exists to reduce.
+// handled=true with a nil err means the grant was resolved.
+func (b *userBuilder) tryFastPathGrant(ctx context.Context, resource *v2.Resource, userID *v2.ResourceId) (*v2.Grant, annotations.Annotations, error, bool) {
+	profile := rs.GetProfile(resource)
+
+	userStatus, ok := rs.GetProfileStringValue(profile, profileFieldStatus)
+	if !ok || userStatus != userStatusActive {
+		return nil, nil, nil, false
+	}
+	name, ok := rs.GetProfileStringValue(profile, profileFieldPermission)
+	if !ok || name == "" {
+		return nil, nil, nil, false
+	}
+
+	profiles, annos, err := b.client.GetPermissionProfiles(ctx)
+	if err != nil {
+		if grpcstatus.Code(err) == codes.Unavailable {
+			return nil, nil, err, true
+		}
+		return nil, nil, nil, false
+	}
+
+	id, ok := permissionProfileIDByName(profiles, name)
+	if !ok {
+		return nil, nil, nil, false
+	}
+	newGrant := grant.NewGrant(
+		&v2.Resource{Id: &v2.ResourceId{ResourceType: permissionProfilesResourceType.Id, Resource: id}},
+		permissionProfileAssignedTag,
+		userID,
+	)
+	return newGrant, annos, nil, true
 }
 
 // CreateAccountCapabilityDetails declares support for account provisioning without a password.

@@ -32,7 +32,7 @@ const docusignHourlyRateLimitErrorCode = "HOURLY_APIINVOCATION_LIMIT_EXCEEDED"
 // longer than) uhttp/ratelimit's own 60s default for a headerless 429.
 const docusignRateLimitDefaultResetWindow = time.Hour
 
-// rateLimitErrorFromResponse recognizes docusignHourlyRateLimitErrorCode in errTarget (the
+// reclassifyHourlyRateLimitError recognizes docusignHourlyRateLimitErrorCode in errTarget (the
 // same *ErrorResponse instance uhttp.WithErrorResponse already unmarshaled the error body
 // into before returning origErr — no re-parsing needed) and, if matched, returns a
 // codes.Unavailable error carrying a RateLimitDescription. This matters because
@@ -53,7 +53,7 @@ const docusignRateLimitDefaultResetWindow = time.Hour
 // Retryer (vendor pkg/retry/retry.go) computing a short wait off a nonzero Remaining from
 // the wrong bucket and hammering an account that's still over its hourly budget. Always
 // uses the fixed hourly default window instead — safe by construction, if coarser.
-func rateLimitErrorFromResponse(resp *http.Response, errTarget uhttp.ErrorResponse, origErr error) error {
+func reclassifyHourlyRateLimitError(resp *http.Response, errTarget uhttp.ErrorResponse, origErr error) error {
 	er, ok := errTarget.(*ErrorResponse)
 	if !ok || er.ErrorCode != docusignHourlyRateLimitErrorCode {
 		return nil
@@ -91,6 +91,12 @@ func buildURL(base, path string, params ...any) (*url.URL, error) {
 // DoRequestCommon executes the HTTP request and handles rate limit annotations.
 // errTarget receives the parsed error body on non-2xx responses (e.g. &ErrorResponse{}
 // for eSignature, &ClmErrorResponse{} for CLM) since the two APIs use different error envelopes.
+//
+// On the error path, one specific eSignature error (DocuSign's hourly API-call-budget
+// error — see reclassifyHourlyRateLimitError) has its gRPC code silently overridden from
+// whatever uhttp.GrpcCodeFromHTTPStatus would otherwise produce to codes.Unavailable, so
+// the SDK's sync-retry loop treats it as retryable instead of fatal. Every other error is
+// returned unchanged.
 func doRequestCommon(wrapper *uhttp.BaseHttpClient, req *http.Request, res any, errTarget uhttp.ErrorResponse) (http.Header, annotations.Annotations, error) {
 	opts := []uhttp.DoOption{}
 	if res != nil {
@@ -102,7 +108,7 @@ func doRequestCommon(wrapper *uhttp.BaseHttpClient, req *http.Request, res any, 
 		// resp is non-nil here whenever the error came from a well-formed non-2xx HTTP
 		// response (as opposed to a network/transport failure) — see wrapper.Do.
 		if resp != nil {
-			if rlErr := rateLimitErrorFromResponse(resp, errTarget, err); rlErr != nil {
+			if rlErr := reclassifyHourlyRateLimitError(resp, errTarget, err); rlErr != nil {
 				return resp.Header, nil, rlErr
 			}
 		}

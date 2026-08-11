@@ -3,6 +3,7 @@ package connector
 import (
 	"strings"
 
+	"github.com/conductorone/baton-docusign/pkg/client"
 	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
 	"github.com/conductorone/baton-sdk/pkg/pagination"
 	"google.golang.org/grpc/codes"
@@ -81,6 +82,19 @@ func isOptInFeatureUnavailableError(err error) bool {
 	default:
 		return false
 	}
+}
+
+// permissionProfileIDByName returns the ID of the permission profile named name, and
+// whether one was found — shared by userBuilder.Grants' list-response fast path and
+// permissionProfilesBuilder.Revoke's default-profile lookup, which independently
+// duplicated this same linear scan before this helper existed.
+func permissionProfileIDByName(profiles []client.PermissionProfile, name string) (string, bool) {
+	for _, p := range profiles {
+		if p.PermissionProfileName == name {
+			return p.PermissionProfileId, true
+		}
+	}
+	return "", false
 }
 
 // clmIDFromHref extracts the trailing path segment from a CLM object's Href — CLM's

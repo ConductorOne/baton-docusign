@@ -117,15 +117,8 @@ func (p *permissionProfilesBuilder) Revoke(ctx context.Context, grantObj *v2.Gra
 		return profileAnnos, fmt.Errorf("failed to get permission profiles: %w", err)
 	}
 
-	var defaultProfileID string
-	for _, profile := range permissionProfiles {
-		if profile.PermissionProfileName == defaultPermissionProfileName {
-			defaultProfileID = profile.PermissionProfileId
-			break
-		}
-	}
-
-	if defaultProfileID == "" {
+	defaultProfileID, ok := permissionProfileIDByName(permissionProfiles, defaultPermissionProfileName)
+	if !ok {
 		return profileAnnos, fmt.Errorf("default permission profile '%s' not found in account", defaultPermissionProfileName)
 	}
 
