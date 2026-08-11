@@ -54,7 +54,14 @@ func parsePageToken(i string, resourceID *v2.ResourceId) (*pagination.Bag, strin
 //   - PermissionDenied/Unauthenticated: the account/token lacks the CLM subscription
 //     or OAuth scope — the expected case for most eSignature-only accounts.
 //   - NotFound: the discovery endpoint 404s for an account that was never provisioned
-//     in the legacy SpringCM system CLM discovery still runs through.
+//     in the legacy SpringCM system CLM discovery still runs through. Confirmed via
+//     DocuSign's own CLM API docs (Response and Error Codes) that 404 isn't unique to
+//     "this object doesn't exist" across the whole CLM Object API — it's the same
+//     response CLM returns for "this exists but you don't have access rights",
+//     specifically so a 403 never leaks whether the object exists ("If the user does
+//     not have permissions to see the object or the object does not exist, a 404
+//     response code is returned"). So a 404 is just as plausible a "no access" signal
+//     as PermissionDenied/Unauthenticated are, not only a genuinely-missing account.
 //   - FailedPrecondition: ensureClmInitialized wraps its "response didn't contain a
 //     recognized base-URL field" error with this code specifically — a non-CLM
 //     account's discovery response plausibly has a different shape entirely (no CLM
