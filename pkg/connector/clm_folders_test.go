@@ -238,10 +238,22 @@ func TestClmFolderBuilder_Grants_LogsOnlyForGenuinelyUnrecognizedAccessType(t *t
 	_, c := clmtest.NewServer(t)
 	ctx := context.Background()
 
+	// Seeds all three principal-type collections, not just Groups: clmIsBenignUnmappedAccessType
+	// is re-checked by hand in each of the Groups/Roles/Users loops in clm_folders.go, so a
+	// copy-paste slip in just one of them (an inverted !, or the guard omitted entirely) would
+	// leave a Groups-only test green.
 	if _, err := c.PatchFolderSecurity(ctx, "folder-templates", client.ClmFolderSecurityWrite{
 		Groups: []client.ClmGroupSecurityEntry{
 			{AccessType: "SomethingUnrecognized", Href: "https://example.com/groups/group-x"},
 			{AccessType: client.ClmAccessTypeNoAccess, Href: "https://example.com/groups/group-y"},
+		},
+		Roles: []client.ClmRoleSecurityEntry{
+			{AccessType: "SomethingUnrecognized", Item: "FullSubscriber"},
+			{AccessType: client.ClmAccessTypeNoAccess, Item: "Guest"},
+		},
+		Users: []client.ClmUserSecurityEntry{
+			{AccessType: "SomethingUnrecognized", Href: "https://example.com/members/member-x"},
+			{AccessType: client.ClmAccessTypeNoAccess, Href: "https://example.com/members/member-y"},
 		},
 	}); err != nil {
 		t.Fatalf("PatchFolderSecurity (seed): %v", err)
@@ -261,22 +273,27 @@ func TestClmFolderBuilder_Grants_LogsOnlyForGenuinelyUnrecognizedAccessType(t *t
 		t.Fatalf("Grants: %v", err)
 	}
 	if len(grants) != 0 {
-		t.Fatalf("expected both entries to be skipped (neither maps to a grantable tier), got %d grants: %+v", len(grants), grants)
+		t.Fatalf("expected all 6 entries to be skipped (none map to a grantable tier), got %d grants: %+v", len(grants), grants)
 	}
 
-	entries := logs.All()
-	if len(entries) != 1 {
-		t.Fatalf("expected exactly 1 log entry (the genuinely unrecognized AccessType; NoAccess should stay silent), got %d: %+v", len(entries), entries)
+	// Scoped to the access_type field so this only counts the three skip-log lines
+	// Grants() emits, not any unrelated log traffic from the HTTP/cache layer
+	// underneath GetFolder.
+	entries := logs.FilterFieldKey("access_type").All()
+	if len(entries) != 3 {
+		t.Fatalf("expected exactly 3 log entries (one per Groups/Roles/Users branch, for the genuinely unrecognized AccessType only), got %d: %+v", len(entries), entries)
 	}
-	if entries[0].Level != zapcore.DebugLevel {
-		t.Errorf("expected the unmapped-AccessType log to be at Debug, got %v", entries[0].Level)
-	}
-	// Pins WHICH entry logged, not just how many: an inverted clmIsBenignUnmappedAccessType
-	// check (silencing SomethingUnrecognized and logging NoAccess instead) would still
-	// produce exactly 1 Debug entry, passing the two assertions above on the exact bug
-	// this test exists to catch.
-	if got := entries[0].ContextMap()["access_type"]; got != "SomethingUnrecognized" {
-		t.Errorf("expected the logged entry's access_type to be %q, got %q", "SomethingUnrecognized", got)
+	for _, e := range entries {
+		if e.Level != zapcore.DebugLevel {
+			t.Errorf("expected the unmapped-AccessType log to be at Debug, got %v", e.Level)
+		}
+		// Pins WHICH entry logged, not just how many: an inverted clmIsBenignUnmappedAccessType
+		// check (silencing SomethingUnrecognized and logging NoAccess instead) would still
+		// produce exactly 3 Debug entries, passing the assertions above on the exact bug this
+		// test exists to catch.
+		if got := e.ContextMap()["access_type"]; got != "SomethingUnrecognized" {
+			t.Errorf("expected the logged entry's access_type to be %q, got %q", "SomethingUnrecognized", got)
+		}
 	}
 }
 
