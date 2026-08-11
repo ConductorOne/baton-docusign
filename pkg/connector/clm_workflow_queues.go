@@ -80,9 +80,8 @@ func clmSessionKeyQueueMembers(queueID string) string {
 //     resources; every earlier chunk returns zero resources plus a NextPageToken.
 //   - Grants(ctx, queueResource, attr) reads that queue's member list straight back out
 //     of the session cache instead of re-scanning every member per queue, which would
-//     turn one expensive O(members) traversal into O(queues * members) — a real concern
-//     on a connector that already has an open rate-limit bug for this same customer
-//     (CXP-704).
+//     turn one expensive O(members) traversal into O(queues * members) API calls against
+//     an already rate-limited endpoint.
 //
 // This only works because the session cache persists for the whole sync (across all of
 // List()'s own chunked calls, and through to when Grants() runs for every resource of
@@ -163,9 +162,9 @@ func (b *clmWorkflowQueueBuilder) List(ctx context.Context, _ *v2.ResourceId, at
 					// endpoint disabled for this account) 404s/403s on EVERY member,
 					// while an isolated deletion race hits exactly one — so require a
 					// few consecutive failures (spanning as many chunks as it takes)
-					// before concluding "systemic", capping the wasted-request cost
-					// CXP-704 cares about without letting one unlucky ordering empty
-					// the resource type.
+					// before concluding "systemic", capping wasted requests against an
+					// already rate-limited endpoint without letting one unlucky
+					// ordering empty the resource type.
 					state.ConsecutiveUnavailableFailures++
 					if state.ConsecutiveUnavailableFailures >= clmWorkflowQueueUnavailableThreshold {
 						ctxzap.Extract(ctx).Info("baton-docusign: CLM is not available for this account or token, skipping clm_workflow_queue sync", zap.Error(err))
@@ -234,10 +233,6 @@ func (b *clmWorkflowQueueBuilder) List(ctx context.Context, _ *v2.ResourceId, at
 		// true of the rest of the sync — a hard error here would fail every other
 		// resource type too. Skip gracefully instead, same as an unavailable CLM
 		// subscription.
-		// Debug, not Warn: a customer never sees Warn-level logs, and a session-store
-		// write failure here is an infra/config issue (store not wired), not something
-		// actionable by the customer — unlike the per-member/per-queue Warn logs below,
-		// which flag a specific member or queue that may need investigation.
 		ctxzap.Extract(ctx).Debug("baton-docusign: failed to cache CLM workflow queue discovery progress, skipping clm_workflow_queue sync", zap.Error(err))
 		return nil, &rs.SyncOpResults{Annotations: dedupeRateLimitAnnotations(allAnnos)}, nil
 	}

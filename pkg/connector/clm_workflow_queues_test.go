@@ -377,10 +377,11 @@ func TestClmWorkflowQueueBuilder_Grants_CacheMiss(t *testing.T) {
 }
 
 // TestClmWorkflowQueueBuilder_List_ChunksAcrossPages is the core regression test for
-// this builder's chunked design (a review finding: an earlier version ran the entire
-// member scan inside one List() call, violating this connector's usual one-page-per-call
-// convention). Forcing PageSize 2 against the 6 seeded members (alice, bob, carol, dave,
-// eve, frank) produces 3 ListMembers pages, so 3 separate List() calls are required.
+// this builder's chunked design: List() must page one ListMembers page per call, like
+// every other builder in this connector, instead of running the entire member scan
+// inside a single call. Forcing PageSize 2 against the 6 seeded members (alice, bob,
+// carol, dave, eve, frank) produces 3 ListMembers pages, so 3 separate List() calls are
+// required.
 // Every call but the last must return zero resources with a non-empty NextPageToken —
 // the queue set can't be confirmed complete before the member scan is — and the final
 // call must return the same 2 distinct queues (Onboarding, Escalations) the single-call
