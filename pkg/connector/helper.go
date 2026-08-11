@@ -2,6 +2,7 @@ package connector
 
 import (
 	"fmt"
+	"net/url"
 	"strings"
 
 	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
@@ -115,6 +116,13 @@ func clmHrefWithID(sampleHref, newID string) (string, error) {
 	idx := strings.LastIndex(trimmed, "/")
 	if idx == -1 {
 		return "", fmt.Errorf("baton-docusign: cannot derive a sibling href from %q — no path separator found", sampleHref)
+	}
+	// A bare scheme+host like "https://clm.example.com" also contains a "/" (the one
+	// separating scheme from host), so the LastIndex check above alone accepts it —
+	// producing a garbage "https://<newID>" href with no real path. Require an actual
+	// path segment before the trailing one being replaced.
+	if u, err := url.Parse(trimmed); err != nil || u.Path == "" || u.Path == "/" {
+		return "", fmt.Errorf("baton-docusign: cannot derive a sibling href from %q — no path segment found", sampleHref)
 	}
 	return trimmed[:idx+1] + newID, nil
 }

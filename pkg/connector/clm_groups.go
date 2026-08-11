@@ -178,7 +178,7 @@ func (g *clmGroupBuilder) Grant(ctx context.Context, principal *v2.Resource, ent
 		return g.client.GroupHref(ctx, groupID)
 	})
 	if err != nil {
-		return nil, nil, err
+		return nil, annos, fmt.Errorf("baton-docusign: resolving href for CLM group %s: %w", groupID, err)
 	}
 
 	newGroups := make([]client.ClmGroup, 0, len(currentGroups)+1)

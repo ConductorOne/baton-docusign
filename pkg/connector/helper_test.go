@@ -45,6 +45,13 @@ func TestClmHrefWithID(t *testing.T) {
 	if _, err := clmHrefWithID("no-path-separator", "x"); err == nil {
 		t.Error("expected an error for a sample href with no path separator")
 	}
+
+	// A bare scheme+host contains a "/" too (separating scheme from host), so this must
+	// be rejected on its own — not accepted as a valid sample producing a garbage
+	// "https://x"-shaped href with no real path.
+	if _, err := clmHrefWithID("https://clm.example.com", "x"); err == nil {
+		t.Error("expected an error for a sample href with no path segment (bare scheme+host)")
+	}
 }
 
 func TestClmPreferredHref(t *testing.T) {
