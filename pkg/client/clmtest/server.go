@@ -155,6 +155,19 @@ func (s *Server) GroupHref(id string) string {
 	return fmt.Sprintf("%s/v2/%s/groups/%s", s.baseURL, AccountID, id)
 }
 
+// SetGroupHref overrides the Href a seeded group reports on GetMemberGroups, letting a
+// test make it observably different from what GroupHref (and so client.GroupHref's
+// fallback derivation, which builds the same shape from the discovered base URL) would
+// produce — needed to distinguish a sample-derived Href from a fallback-derived one when
+// both would otherwise be byte-identical.
+func (s *Server) SetGroupHref(id, href string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if g, ok := s.groups[id]; ok {
+		g.Href = href
+	}
+}
+
 func (s *Server) MemberHref(id string) string {
 	return fmt.Sprintf("%s/v2/%s/members/%s", s.baseURL, AccountID, id)
 }

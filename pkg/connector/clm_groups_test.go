@@ -2,6 +2,7 @@ package connector
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/conductorone/baton-docusign/pkg/client"
@@ -229,7 +230,15 @@ func TestClmGroupBuilder_Grant_SurvivesIdentityOnlyEntitlementResource(t *testin
 
 		// member-carol is seeded into group-finance (clmtest/seed.go), giving
 		// clmPreferredHref a real sample Href to derive group-legal's Href from instead
-		// of falling back to client.GroupHref.
+		// of falling back to client.GroupHref. srv.GroupHref and the fallback
+		// client.GroupHref build the same shape from the same discovered base URL, so
+		// they'd be byte-identical here — overriding group-finance's Href to a
+		// different host makes the sample branch's output actually distinguishable from
+		// what the fallback branch would have produced.
+		const sampleHost = "https://other.example.com"
+		altGroupFinanceHref := fmt.Sprintf("%s/v2/%s/groups/group-finance", sampleHost, clmtest.AccountID)
+		srv.SetGroupHref("group-finance", altGroupFinanceHref)
+
 		memberResource, err := rs.NewResource("Carol", clmMemberResourceType, "member-carol")
 		if err != nil {
 			t.Fatalf("NewResource: %v", err)
@@ -253,11 +262,11 @@ func TestClmGroupBuilder_Grant_SurvivesIdentityOnlyEntitlementResource(t *testin
 
 		// MemberGroups reduces every Href to its trailing ID (matching the real API's
 		// own comparison semantics), which can't tell a sample-derived Href from a
-		// fallback-derived one — this mock's srv.GroupHref and client.GroupHref happen
-		// to build byte-identical strings either way. Asserting on the raw Href the
-		// server actually received at least pins the exact value clmPreferredHref
-		// computed, derived from carol's existing group-finance sample.
-		wantHref, err := clmHrefWithID(srv.GroupHref("group-finance"), "group-legal")
+		// fallback-derived one. Asserting on the raw Href the server actually received,
+		// derived from the overridden group-finance sample (a different host than
+		// client.GroupHref's fallback would produce), pins that clmPreferredHref
+		// actually used the sample rather than falling back.
+		wantHref, err := clmHrefWithID(altGroupFinanceHref, "group-legal")
 		if err != nil {
 			t.Fatalf("clmHrefWithID (computing expected Href): %v", err)
 		}
