@@ -167,7 +167,7 @@ func (f *clmFolderBuilder) Grants(ctx context.Context, folderResource *v2.Resour
 			// name outside that set has no synced principal to grant against. Skip
 			// rather than emit a grant to a dangling/unsynced resource.
 			ctxzap.Extract(ctx).Debug("baton-docusign: skipping CLM folder role-security entry for an unrecognized role",
-				zap.String("folder_id", folderResource.Id.Resource), zap.String("role", entry.Item))
+				zap.String("folder_id", folderResource.Id.Resource), zap.String("role", entry.Item), zap.String("access_type", entry.AccessType))
 			continue
 		}
 		principalID := &v2.ResourceId{ResourceType: clmRoleResourceType.Id, Resource: entry.Item}
