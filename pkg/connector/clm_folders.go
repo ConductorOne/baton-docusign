@@ -175,7 +175,8 @@ func (f *clmFolderBuilder) Grants(ctx context.Context, folderResource *v2.Resour
 			// name outside that set has no synced principal to grant against. Skip
 			// rather than emit a grant to a dangling/unsynced resource.
 			ctxzap.Extract(ctx).Debug("baton-docusign: skipping CLM folder role-security entry for an unrecognized role",
-				zap.String("folder_id", folderResource.Id.Resource), zap.String("role", entry.Item), zap.String("access_type", entry.AccessType))
+				zap.String("folder_id", folderResource.Id.Resource), zap.String("role", entry.Item), zap.String("access_type", entry.AccessType),
+				zap.String("principal_kind", clmFolderPrincipalKindRole))
 			continue
 		}
 		principalID := &v2.ResourceId{ResourceType: clmRoleResourceType.Id, Resource: entry.Item}
@@ -207,17 +208,22 @@ func (f *clmFolderBuilder) Grants(ctx context.Context, folderResource *v2.Resour
 // branches carry access_type so either case is findable by the same structured-log
 // query as every other skip line in this file.
 func logSkippedFolderSecurityEntry(ctx context.Context, kind, accessType string, fields ...zap.Field) {
+	if accessType != client.ClmAccessTypeCustom && clmIsBenignUnmappedAccessType(accessType) {
+		// The common steady-state case (NoAccess/InheritFromParentFolder, on every
+		// folder of every sync) — return before building fields, not just before
+		// logging, so it stays allocation-free like the Sprintf removal above.
+		return
+	}
 	fields = append(fields, zap.String("principal_kind", kind), zap.String("access_type", accessType))
-	switch {
-	case accessType == client.ClmAccessTypeCustom:
+	if accessType == client.ClmAccessTypeCustom {
 		ctxzap.Extract(ctx).Debug(
 			"baton-docusign: skipping CLM folder security entry with an unrepresentable Custom AccessType — a real, active grant C1 won't see",
 			fields...)
-	case !clmIsBenignUnmappedAccessType(accessType):
-		ctxzap.Extract(ctx).Debug(
-			"baton-docusign: skipping CLM folder security entry with an unmapped AccessType",
-			fields...)
+		return
 	}
+	ctxzap.Extract(ctx).Debug(
+		"baton-docusign: skipping CLM folder security entry with an unmapped AccessType",
+		fields...)
 }
 
 // Grant sets a folder-security entry for the principal at the entitlement's tier.
