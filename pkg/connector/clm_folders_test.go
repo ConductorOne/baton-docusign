@@ -287,12 +287,16 @@ func TestClmFolderBuilder_Grants_LogsOnlyForGenuinelyUnrecognizedAccessType(t *t
 	if len(entries) != 3 {
 		t.Fatalf("expected exactly 3 log entries (one per Groups/Roles/Users branch, for the genuinely unrecognized AccessType only), got %d: %+v", len(entries), entries)
 	}
-	// Each branch logs a different distinguishing field alongside access_type — Groups:
-	// group_href, Roles: role, Users: member_href — so a copy-paste slip that fires the
-	// right branch's guard but with another branch's field name/message (e.g. Users
-	// logging group_href) still needs catching, not just the count/level/access_type.
-	distinguishingFields := []string{"group_href", "role", "member_href"}
-	seenDistinguishingField := map[string]bool{}
+	// Each branch's message names its own distinguishing field alongside access_type —
+	// binding message to field (not just checking each field appears SOMEWHERE across
+	// the 3 entries) catches a copy-paste slip that swaps them between branches, e.g.
+	// the Users loop emitting group_href under its own "user-security" message.
+	wantFieldForMessage := map[string]string{
+		"baton-docusign: skipping CLM folder group-security entry with an unmapped AccessType": "group_href",
+		"baton-docusign: skipping CLM folder role-security entry with an unmapped AccessType":  "role",
+		"baton-docusign: skipping CLM folder user-security entry with an unmapped AccessType":  "member_href",
+	}
+	seenMessage := map[string]bool{}
 	for _, e := range entries {
 		if e.Level != zapcore.DebugLevel {
 			t.Errorf("expected the unmapped-AccessType log to be at Debug, got %v", e.Level)
@@ -301,19 +305,23 @@ func TestClmFolderBuilder_Grants_LogsOnlyForGenuinelyUnrecognizedAccessType(t *t
 		// check (silencing SomethingUnrecognized and logging NoAccess instead) would still
 		// produce exactly 3 Debug entries, passing the assertions above on the exact bug this
 		// test exists to catch.
-		ctx := e.ContextMap()
-		if got := ctx["access_type"]; got != "SomethingUnrecognized" {
+		fields := e.ContextMap()
+		if got := fields["access_type"]; got != "SomethingUnrecognized" {
 			t.Errorf("expected the logged entry's access_type to be %q, got %q", "SomethingUnrecognized", got)
 		}
-		for _, key := range distinguishingFields {
-			if _, ok := ctx[key]; ok {
-				seenDistinguishingField[key] = true
-			}
+		wantField, ok := wantFieldForMessage[e.Message]
+		if !ok {
+			t.Errorf("unexpected log message %q", e.Message)
+			continue
+		}
+		seenMessage[e.Message] = true
+		if _, ok := fields[wantField]; !ok {
+			t.Errorf("expected message %q to carry the %q field, got fields %v", e.Message, wantField, fields)
 		}
 	}
-	for _, key := range distinguishingFields {
-		if !seenDistinguishingField[key] {
-			t.Errorf("expected one log entry carrying the %q field (the branch that never fired, or fired under the wrong field name)", key)
+	for msg := range wantFieldForMessage {
+		if !seenMessage[msg] {
+			t.Errorf("expected one log entry with message %q (the branch that never fired)", msg)
 		}
 	}
 }
