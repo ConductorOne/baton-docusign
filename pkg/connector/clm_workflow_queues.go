@@ -234,10 +234,10 @@ func (b *clmWorkflowQueueBuilder) List(ctx context.Context, _ *v2.ResourceId, at
 		// true of the rest of the sync — a hard error here would fail every other
 		// resource type too. Skip gracefully instead, same as an unavailable CLM
 		// subscription.
-		// Debug, not Warn: a customer never sees Warn-level logs, and this is the same
-		// class of "skip gracefully" condition every other tolerated-error branch in this
-		// file already logs at Debug/Info — there's no reason this one specific failure
-		// mode should be the exception.
+		// Debug, not Warn: a customer never sees Warn-level logs, and a session-store
+		// write failure here is an infra/config issue (store not wired), not something
+		// actionable by the customer — unlike the per-member/per-queue Warn logs below,
+		// which flag a specific member or queue that may need investigation.
 		ctxzap.Extract(ctx).Debug("baton-docusign: failed to cache CLM workflow queue discovery progress, skipping clm_workflow_queue sync", zap.Error(err))
 		return nil, &rs.SyncOpResults{Annotations: dedupeRateLimitAnnotations(allAnnos)}, nil
 	}
