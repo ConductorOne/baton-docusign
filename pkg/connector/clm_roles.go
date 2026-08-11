@@ -60,6 +60,11 @@ func (b *clmRoleBuilder) List(ctx context.Context, _ *v2.ResourceId, _ rs.SyncOp
 		// doesn't change mid-sync — so retrying would fight that platform convention, and
 		// there's no live CLM tenant to validate a bespoke cross-builder consistency
 		// mechanism against instead.
+		//
+		// This gate only helps when DocuSign rejects CLM at discovery. If some accounts
+		// are instead rejected only on a later per-resource data call (unconfirmed either
+		// way), clm_role still emits its 5 roles while the other CLM builders skip —
+		// clm_role has no data call of its own to check that case with.
 		if client.IsClmDiscoveryError(err) && isOptInFeatureUnavailableError(err) {
 			ctxzap.Extract(ctx).Info("baton-docusign: CLM is not available for this account or token, skipping clm_role sync", zap.Error(err))
 			return nil, &rs.SyncOpResults{}, nil

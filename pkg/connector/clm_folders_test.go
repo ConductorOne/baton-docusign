@@ -3,6 +3,7 @@ package connector
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/conductorone/baton-docusign/pkg/client"
@@ -217,7 +218,10 @@ func TestClmIsBenignUnmappedAccessType(t *testing.T) {
 		want       bool
 	}{
 		{client.ClmAccessTypeNoAccess, true},
-		{client.ClmAccessTypeCustom, true},
+		// Custom is deliberately excluded — it's a real, active grant this connector
+		// can't round-trip, so it gets its own distinct Debug log at each Grants() call
+		// site instead of being silenced like the truly-inert values here.
+		{client.ClmAccessTypeCustom, false},
 		{client.ClmAccessTypeInherit, true},
 		{client.ClmAccessTypeView, false},
 		{"SomethingUnrecognized", false},
@@ -311,6 +315,53 @@ func TestClmFolderBuilder_Grants_LogsOnlyForGenuinelyUnrecognizedAccessType(t *t
 		if !seenDistinguishingField[key] {
 			t.Errorf("expected one log entry carrying the %q field (the branch that never fired, or fired under the wrong field name)", key)
 		}
+	}
+}
+
+// TestClmFolderBuilder_Grants_LogsDistinctlyForCustomAccessType confirms Custom gets its
+// own distinct Debug line, not silence like NoAccess/InheritFromParentFolder: unlike
+// those two, Custom represents a real, active grant this connector can't round-trip to
+// a single tier, so silencing it the same way would hide an actual access-visibility
+// gap rather than just an expected inert state.
+func TestClmFolderBuilder_Grants_LogsDistinctlyForCustomAccessType(t *testing.T) {
+	_, c := clmtest.NewServer(t)
+	ctx := context.Background()
+
+	if _, err := c.PatchFolderSecurity(ctx, "folder-templates", client.ClmFolderSecurityWrite{
+		Groups: []client.ClmGroupSecurityEntry{
+			{AccessType: client.ClmAccessTypeCustom, Href: "https://example.com/groups/group-x"},
+			{AccessType: client.ClmAccessTypeNoAccess, Href: "https://example.com/groups/group-y"},
+		},
+	}); err != nil {
+		t.Fatalf("PatchFolderSecurity (seed): %v", err)
+	}
+
+	core, logs := observer.New(zapcore.DebugLevel)
+	observedCtx := ctxzap.ToContext(ctx, zap.New(core))
+
+	b := newClmFolderBuilder(c)
+	folderResource, err := rs.NewResource("Templates", clmFolderResourceType, "folder-templates")
+	if err != nil {
+		t.Fatalf("NewResource: %v", err)
+	}
+
+	grants, _, err := b.Grants(observedCtx, folderResource, rs.SyncOpAttrs{})
+	if err != nil {
+		t.Fatalf("Grants: %v", err)
+	}
+	if len(grants) != 0 {
+		t.Fatalf("expected both entries to be skipped, got %d grants: %+v", len(grants), grants)
+	}
+
+	entries := logs.All()
+	if len(entries) != 1 {
+		t.Fatalf("expected exactly 1 log entry (Custom; NoAccess should stay silent), got %d: %+v", len(entries), entries)
+	}
+	if entries[0].Level != zapcore.DebugLevel {
+		t.Errorf("expected the Custom-AccessType log to be at Debug, got %v", entries[0].Level)
+	}
+	if !strings.Contains(entries[0].Message, "Custom") {
+		t.Errorf("expected the log message to distinctly mention Custom, got %q", entries[0].Message)
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"github.com/conductorone/baton-docusign/pkg/client"
 	"github.com/conductorone/baton-docusign/pkg/client/clmtest"
 	rs "github.com/conductorone/baton-sdk/pkg/types/resource"
+	"google.golang.org/grpc/status"
 )
 
 func TestClmRoleBuilder_List(t *testing.T) {
@@ -95,6 +96,17 @@ func TestClmRoleBuilder_List_FailsLoudlyOnNonDiscoveryTolerableError(t *testing.
 	resources, _, err := b.List(ctx, nil, rs.SyncOpAttrs{})
 	if err == nil {
 		t.Fatal("expected a tolerated code from a non-discovery source to fail loudly, got nil error")
+	}
+	// Pins the two preconditions that make this a regression test for the
+	// IsClmDiscoveryError conjunct rather than for "any error at all": the error must
+	// carry a code isOptInFeatureUnavailableError tolerates, and must not be
+	// discovery-sourced. Otherwise a change to the userinfo failure's code mapping
+	// would leave this test green while no longer exercising the gate.
+	if !isOptInFeatureUnavailableError(err) {
+		t.Fatalf("test setup: expected a tolerated code so this test exercises the discovery-source conjunct, got %v: %v", status.Code(err), err)
+	}
+	if client.IsClmDiscoveryError(err) {
+		t.Fatalf("test setup: expected a non-discovery-sourced error, got: %v", err)
 	}
 	if len(resources) != 0 {
 		t.Errorf("expected zero resources on a hard failure, got %d", len(resources))

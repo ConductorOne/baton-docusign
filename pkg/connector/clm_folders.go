@@ -141,7 +141,11 @@ func (f *clmFolderBuilder) Grants(ctx context.Context, folderResource *v2.Resour
 	for _, entry := range folder.Security.Groups {
 		slug, ok := clmSlugForAccessType(entry.AccessType)
 		if !ok {
-			if !clmIsBenignUnmappedAccessType(entry.AccessType) {
+			switch {
+			case entry.AccessType == client.ClmAccessTypeCustom:
+				ctxzap.Extract(ctx).Debug("baton-docusign: skipping CLM folder group-security entry with an unrepresentable Custom AccessType — a real, active grant C1 won't see",
+					zap.String("folder_id", folderResource.Id.Resource), zap.String("group_href", entry.Href))
+			case !clmIsBenignUnmappedAccessType(entry.AccessType):
 				ctxzap.Extract(ctx).Debug("baton-docusign: skipping CLM folder group-security entry with an unmapped AccessType",
 					zap.String("folder_id", folderResource.Id.Resource), zap.String("group_href", entry.Href), zap.String("access_type", entry.AccessType))
 			}
@@ -160,7 +164,11 @@ func (f *clmFolderBuilder) Grants(ctx context.Context, folderResource *v2.Resour
 	for _, entry := range folder.Security.Roles {
 		slug, ok := clmSlugForAccessType(entry.AccessType)
 		if !ok {
-			if !clmIsBenignUnmappedAccessType(entry.AccessType) {
+			switch {
+			case entry.AccessType == client.ClmAccessTypeCustom:
+				ctxzap.Extract(ctx).Debug("baton-docusign: skipping CLM folder role-security entry with an unrepresentable Custom AccessType — a real, active grant C1 won't see",
+					zap.String("folder_id", folderResource.Id.Resource), zap.String("role", entry.Item))
+			case !clmIsBenignUnmappedAccessType(entry.AccessType):
 				ctxzap.Extract(ctx).Debug("baton-docusign: skipping CLM folder role-security entry with an unmapped AccessType",
 					zap.String("folder_id", folderResource.Id.Resource), zap.String("role", entry.Item), zap.String("access_type", entry.AccessType))
 			}
@@ -181,7 +189,11 @@ func (f *clmFolderBuilder) Grants(ctx context.Context, folderResource *v2.Resour
 	for _, entry := range folder.Security.Users {
 		slug, ok := clmSlugForAccessType(entry.AccessType)
 		if !ok {
-			if !clmIsBenignUnmappedAccessType(entry.AccessType) {
+			switch {
+			case entry.AccessType == client.ClmAccessTypeCustom:
+				ctxzap.Extract(ctx).Debug("baton-docusign: skipping CLM folder user-security entry with an unrepresentable Custom AccessType — a real, active grant C1 won't see",
+					zap.String("folder_id", folderResource.Id.Resource), zap.String("member_href", entry.Href))
+			case !clmIsBenignUnmappedAccessType(entry.AccessType):
 				ctxzap.Extract(ctx).Debug("baton-docusign: skipping CLM folder user-security entry with an unmapped AccessType",
 					zap.String("folder_id", folderResource.Id.Resource), zap.String("member_href", entry.Href), zap.String("access_type", entry.AccessType))
 			}
@@ -447,18 +459,22 @@ func clmSlugForAccessType(accessType string) (string, bool) {
 	return "", false
 }
 
-// clmIsBenignUnmappedAccessType reports whether accessType is one of the three
-// documented non-grantable values every folder-security entry can legitimately carry —
-// NoAccess (this connector's own Revoke leaves entries in place at this value, so it
-// appears on every subsequent sync of a revoked entry), Custom, and
-// InheritFromParentFolder (an arbitrary flag combination or an absence-of-override
-// marker, neither round-trippable to a single tier — see clmFolderEntitlement's doc).
-// Grants() skips all three the same way, but only logs the ones NOT in this set, so a
-// genuinely unrecognized AccessType doesn't get lost in three expected values large
-// accounts can produce on every single sync.
+// clmIsBenignUnmappedAccessType reports whether accessType is one of the two documented
+// non-grantable-but-truly-inert values every folder-security entry can legitimately
+// carry — NoAccess (this connector's own Revoke leaves entries in place at this value,
+// so it appears on every subsequent sync of a revoked entry) and InheritFromParentFolder
+// (an absence-of-override marker — see clmFolderEntitlement's doc). Grants() skips these
+// the same way it skips Custom, but stays fully silent for them, unlike Custom: neither
+// represents an access grant C1 is failing to show, so logging them would only add
+// per-sync noise for two expected states large accounts can produce on every sync.
+//
+// Custom is deliberately NOT in this set — see its own Debug log at each call site: it's
+// a real, active grant this connector can't round-trip to a single tier (an arbitrary
+// flag combination), so silencing it the same way would hide an actual access-visibility
+// gap, not just an expected inert state.
 func clmIsBenignUnmappedAccessType(accessType string) bool {
 	switch accessType {
-	case client.ClmAccessTypeNoAccess, client.ClmAccessTypeCustom, client.ClmAccessTypeInherit:
+	case client.ClmAccessTypeNoAccess, client.ClmAccessTypeInherit:
 		return true
 	default:
 		return false
