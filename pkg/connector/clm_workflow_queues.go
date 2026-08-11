@@ -256,7 +256,9 @@ func (b *clmWorkflowQueueBuilder) List(ctx context.Context, _ *v2.ResourceId, at
 		membersByKey := make(map[string][]string, len(chunkMembersByQueue))
 		for queueID, newMembers := range chunkMembersByQueue {
 			key := clmSessionKeyQueueMembers(queueID)
-			membersByKey[key] = append(existing[key], newMembers...)
+			merged := existing[key]
+			merged = append(merged, newMembers...)
+			membersByKey[key] = merged
 		}
 		if err := session.SetManyJSON(ctx, attr.Session, membersByKey); err != nil {
 			ctxzap.Extract(ctx).Debug("baton-docusign: failed to cache CLM workflow queue membership, skipping clm_workflow_queue sync", zap.Error(err))
