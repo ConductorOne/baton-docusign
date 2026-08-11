@@ -30,18 +30,19 @@ const clmWorkflowQueueUnavailableThreshold = 3
 // why the scan is chunked this way instead of running to completion inside one call.
 const clmSessionKeyWorkflowQueueDiscoveryState = "clm_workflow_queue_discovery_state"
 
-// clmWorkflowQueueDiscoveryState is List()'s accumulator: the queueID->membership index
-// the scan builds up, plus the escalation-threshold counters that must span every chunk
-// of the scan, not reset per chunk (three tolerated failures on members split across two
-// separate List() calls must still escalate, exactly as three in one call would).
-// Exported fields: this round-trips through session.SetJSON/GetJSON (encoding/json can't
-// see unexported fields).
+// clmWorkflowQueueDiscoveryState is List()'s accumulator: the registry of distinct
+// queues the scan has found so far (metadata only — member lists are persisted
+// separately and incrementally, see List()'s doc), plus the escalation-threshold
+// counters that must span every chunk of the scan, not reset per chunk (three tolerated
+// failures on members split across two separate List() calls must still escalate,
+// exactly as three in one call would). Exported fields: this round-trips through
+// session.SetJSON/GetJSON (encoding/json can't see unexported fields).
 type clmWorkflowQueueDiscoveryState struct {
-	Membership                     map[string]*clmWorkflowQueueMembershipEntry `json:"membership"`
-	SucceededAtLeastOnce           bool                                        `json:"succeeded_at_least_once"`
-	ConsecutiveUnavailableFailures int                                         `json:"consecutive_unavailable_failures"`
-	SkippedMembers                 int                                         `json:"skipped_members"`
-	SkippedQueues                  int                                         `json:"skipped_queues"`
+	Queues                         map[string]client.ClmWorkflowQueue `json:"queues"`
+	SucceededAtLeastOnce           bool                               `json:"succeeded_at_least_once"`
+	ConsecutiveUnavailableFailures int                                `json:"consecutive_unavailable_failures"`
+	SkippedMembers                 int                                `json:"skipped_members"`
+	SkippedQueues                  int                                `json:"skipped_queues"`
 }
 
 var _ connectorbuilder.StaticEntitlementSyncerV2 = (*clmWorkflowQueueBuilder)(nil)
@@ -70,13 +71,17 @@ func clmSessionKeyQueueMembers(queueID string) string {
 //   - List() chunks the scan one ListMembers page per SDK-driven call — the usual
 //     one-page-per-call shape every sibling builder in this connector uses, unlike an
 //     earlier version of this file that ran the entire member scan (every ListMembers
-//     page, plus a GetMemberWorkflowQueues call per member) inside a single call. It
-//     persists its accumulating queueID -> []memberID index and escalation-threshold
-//     counters (clmWorkflowQueueDiscoveryState) to the SDK's session cache between
-//     chunks, since a plain Go value doesn't survive across separate List() invocations.
-//     Only on the LAST member page — the queue set can't be confirmed complete before
-//     then (there's no list-all endpoint to check it against) — does it write the final
-//     per-queue membership caches Grants() reads and emit the discovered queues as
+//     page, plus a GetMemberWorkflowQueues call per member) inside a single call. Each
+//     chunk merges its own contribution into every touched queue's own session key
+//     (clmSessionKeyQueueMembers) rather than accumulating one all-queues blob in
+//     memory: a single growing value would both rewrite on every chunk (O(members^2)
+//     session-store traffic over a full scan) and risk crossing the session store's
+//     per-value size ceiling on a large account. A separate, small
+//     clmWorkflowQueueDiscoveryState blob — just the distinct queues seen so far plus
+//     the escalation-threshold counters — persists across chunks instead, since a plain
+//     Go value doesn't survive across separate List() invocations. Only on the LAST
+//     member page — the queue set can't be confirmed complete before then (there's no
+//     list-all endpoint to check it against) — does it emit the discovered queues as
 //     resources; every earlier chunk returns zero resources plus a NextPageToken.
 //   - Grants(ctx, queueResource, attr) reads that queue's member list straight back out
 //     of the session cache instead of re-scanning every member per queue, which would
@@ -119,10 +124,18 @@ func (b *clmWorkflowQueueBuilder) List(ctx context.Context, _ *v2.ResourceId, at
 
 	state, _, err := session.GetJSON[clmWorkflowQueueDiscoveryState](ctx, attr.Session, clmSessionKeyWorkflowQueueDiscoveryState)
 	if err != nil {
-		return nil, nil, fmt.Errorf("baton-docusign: failed to read CLM workflow queue discovery state: %w", err)
+		// The session store is opt-in end-to-end: WithSessionStoreEnabled (main.go) only
+		// tells the SDK to accept a store connection — whether one actually exists still
+		// depends on the parent process wiring a listen port, and it falls back to
+		// NoOpSessionStore (every Get call fails too) whenever it doesn't. This resource
+		// type's Grants() cannot function without the cache, but that's not true of the
+		// rest of the sync — a hard error here would fail every other resource type too.
+		// Skip gracefully instead, same as an unavailable CLM subscription.
+		ctxzap.Extract(ctx).Debug("baton-docusign: failed to read CLM workflow queue discovery state, skipping clm_workflow_queue sync", zap.Error(err))
+		return nil, &rs.SyncOpResults{}, nil
 	}
-	if state.Membership == nil {
-		state.Membership = make(map[string]*clmWorkflowQueueMembershipEntry)
+	if state.Queues == nil {
+		state.Queues = make(map[string]client.ClmWorkflowQueue)
 	}
 
 	members, nextMemberPageToken, allAnnos, err := b.client.ListMembers(ctx, client.PageOptions{
@@ -136,6 +149,11 @@ func (b *clmWorkflowQueueBuilder) List(ctx context.Context, _ *v2.ResourceId, at
 		}
 		return nil, nil, err
 	}
+
+	// chunkMembersByQueue accumulates only THIS chunk's contribution to each queue's
+	// membership — merged into that queue's own session key below instead of growing
+	// state.Queues without bound (see this builder's doc for why).
+	chunkMembersByQueue := make(map[string][]string)
 
 	for _, member := range members {
 		memberID := clmIDFromHref(member.Href)
@@ -215,12 +233,34 @@ func (b *clmWorkflowQueueBuilder) List(ctx context.Context, _ *v2.ResourceId, at
 				}
 				continue
 			}
-			entry, ok := state.Membership[queueID]
-			if !ok {
-				entry = &clmWorkflowQueueMembershipEntry{Queue: q}
-				state.Membership[queueID] = entry
+			if _, ok := state.Queues[queueID]; !ok {
+				state.Queues[queueID] = q
 			}
-			entry.Members = append(entry.Members, memberID)
+			chunkMembersByQueue[queueID] = append(chunkMembersByQueue[queueID], memberID)
+		}
+	}
+
+	// Merge this chunk's contribution into each touched queue's own session key rather
+	// than growing a single all-queues blob every chunk — see this builder's doc for why.
+	if len(chunkMembersByQueue) > 0 {
+		keys := make([]string, 0, len(chunkMembersByQueue))
+		for queueID := range chunkMembersByQueue {
+			keys = append(keys, clmSessionKeyQueueMembers(queueID))
+		}
+		existing, err := session.GetManyJSON[[]string](ctx, attr.Session, keys)
+		if err != nil {
+			// Same opt-in-session-store reasoning as the discovery-state read above.
+			ctxzap.Extract(ctx).Debug("baton-docusign: failed to read cached CLM workflow queue membership, skipping clm_workflow_queue sync", zap.Error(err))
+			return nil, &rs.SyncOpResults{Annotations: dedupeRateLimitAnnotations(allAnnos)}, nil
+		}
+		membersByKey := make(map[string][]string, len(chunkMembersByQueue))
+		for queueID, newMembers := range chunkMembersByQueue {
+			key := clmSessionKeyQueueMembers(queueID)
+			membersByKey[key] = append(existing[key], newMembers...)
+		}
+		if err := session.SetManyJSON(ctx, attr.Session, membersByKey); err != nil {
+			ctxzap.Extract(ctx).Debug("baton-docusign: failed to cache CLM workflow queue membership, skipping clm_workflow_queue sync", zap.Error(err))
+			return nil, &rs.SyncOpResults{Annotations: dedupeRateLimitAnnotations(allAnnos)}, nil
 		}
 	}
 
@@ -246,21 +286,11 @@ func (b *clmWorkflowQueueBuilder) List(ctx context.Context, _ *v2.ResourceId, at
 	}
 
 	// Last member page: the queue set is only guaranteed complete now (see this
-	// builder's doc) — finalize the per-queue membership caches Grants() reads (one
-	// SetManyJSON call instead of one SetJSON call per queue) and emit every discovered
-	// queue as a resource.
-	membersByKey := make(map[string][]string, len(state.Membership))
-	for queueID, entry := range state.Membership {
-		membersByKey[clmSessionKeyQueueMembers(queueID)] = entry.Members
-	}
-	if err := session.SetManyJSON(ctx, attr.Session, membersByKey); err != nil {
-		ctxzap.Extract(ctx).Debug("baton-docusign: failed to cache CLM workflow queue membership, skipping clm_workflow_queue sync", zap.Error(err))
-		return nil, &rs.SyncOpResults{Annotations: dedupeRateLimitAnnotations(allAnnos)}, nil
-	}
-
-	resources := make([]*v2.Resource, 0, len(state.Membership))
-	for _, entry := range state.Membership {
-		queueResource, err := parseIntoClmWorkflowQueueResource(&entry.Queue)
+	// builder's doc) — every queue's membership was already persisted incrementally
+	// above, so just emit every discovered queue as a resource.
+	resources := make([]*v2.Resource, 0, len(state.Queues))
+	for _, q := range state.Queues {
+		queueResource, err := parseIntoClmWorkflowQueueResource(&q)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -291,17 +321,6 @@ func dedupeRateLimitAnnotations(annos annotations.Annotations) annotations.Annot
 		out = append(out, annos[lastRateLimitIdx])
 	}
 	return out
-}
-
-// clmWorkflowQueueMembershipEntry pairs a discovered queue with the member IDs found
-// to belong to it — the two pieces of data the member scan produces for every queue,
-// kept together under one key instead of two parallel maps that would otherwise always
-// share the same key set. Exported fields: this struct round-trips through
-// session.SetJSON/GetJSON as part of clmWorkflowQueueDiscoveryState (encoding/json
-// can't see unexported fields).
-type clmWorkflowQueueMembershipEntry struct {
-	Queue   client.ClmWorkflowQueue `json:"queue"`
-	Members []string                `json:"members"`
 }
 
 // Entitlements returns nil — the SDK does not call this when StaticEntitlementSyncerV2

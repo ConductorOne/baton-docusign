@@ -35,19 +35,22 @@ func (f *fakeSessionStore) Get(_ context.Context, key string, _ ...sessions.Sess
 	return v, ok, nil
 }
 
+// GetMany's second return is for keys this call couldn't get to and wants retried —
+// session.UnrollGetMany loops passing it straight back in as the next call's key list,
+// erroring if it ever stops shrinking. It is NOT "missing/never-written keys": those
+// simply aren't present in the returned map, matching every real SessionStore
+// implementation (e.g. dotc1z's SQL "WHERE key IN (...)" naturally omits absent rows).
+// This fake never has a reason to ask for a retry, so it always returns nil here.
 func (f *fakeSessionStore) GetMany(_ context.Context, keys []string, _ ...sessions.SessionStoreOption) (map[string][]byte, []string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	out := make(map[string][]byte)
-	var missing []string
 	for _, k := range keys {
 		if v, ok := f.data[k]; ok {
 			out[k] = v
-		} else {
-			missing = append(missing, k)
 		}
 	}
-	return out, missing, nil
+	return out, nil, nil
 }
 
 func (f *fakeSessionStore) Set(_ context.Context, key string, value []byte, _ ...sessions.SessionStoreOption) error {
@@ -90,10 +93,9 @@ func (f *fakeSessionStore) GetAll(_ context.Context, _ string, _ ...sessions.Ses
 	return out, "", nil
 }
 
-// failingSessionStore wraps fakeSessionStore but every Set/SetMany call fails — stands
-// in for the SDK's real NoOpSessionStore (returned whenever the parent process hasn't
-// wired a session-store listen port; see session.NoOpSessionStore), which every write
-// to it fails the exact same way.
+// failingSessionStore wraps fakeSessionStore but every Set/SetMany call fails — isolates
+// the write-failure path (e.g. a value that exceeds the store's size limit) from reads,
+// which still succeed via the embedded fakeSessionStore.
 type failingSessionStore struct {
 	*fakeSessionStore
 }
@@ -104,6 +106,22 @@ func (f *failingSessionStore) Set(_ context.Context, _ string, _ []byte, _ ...se
 
 func (f *failingSessionStore) SetMany(_ context.Context, _ map[string][]byte, _ ...sessions.SessionStoreOption) error {
 	return errClmSessionStoreDisabledForTest
+}
+
+// readFailingSessionStore wraps fakeSessionStore but every Get/GetMany call fails —
+// stands in for the SDK's real NoOpSessionStore (returned whenever the parent process
+// hasn't wired a session-store listen port; see session.NoOpSessionStore), whose reads
+// fail the exact same way as its writes.
+type readFailingSessionStore struct {
+	*fakeSessionStore
+}
+
+func (f *readFailingSessionStore) Get(_ context.Context, _ string, _ ...sessions.SessionStoreOption) ([]byte, bool, error) {
+	return nil, false, errClmSessionStoreDisabledForTest
+}
+
+func (f *readFailingSessionStore) GetMany(_ context.Context, _ []string, _ ...sessions.SessionStoreOption) (map[string][]byte, []string, error) {
+	return nil, nil, errClmSessionStoreDisabledForTest
 }
 
 var errClmSessionStoreDisabledForTest = errors.New("session store disabled (test double)")
@@ -125,6 +143,27 @@ func TestClmWorkflowQueueBuilder_List_SkipsGracefullyOnSessionStoreWriteFailure(
 	}
 	if len(resources) != 0 {
 		t.Errorf("expected zero resources when the session store can't be written to, got %d", len(resources))
+	}
+	if res == nil {
+		t.Errorf("expected a non-nil SyncOpResults, got %+v", res)
+	}
+}
+
+// TestClmWorkflowQueueBuilder_List_SkipsGracefullyOnSessionStoreReadFailure confirms
+// List() degrades to a graceful skip (not a hard error) when it can't read its
+// discovery state from the session cache — the same NoOpSessionStore fallback as the
+// write-failure case above, just hit on the read that now happens first in every call.
+func TestClmWorkflowQueueBuilder_List_SkipsGracefullyOnSessionStoreReadFailure(t *testing.T) {
+	_, c := clmtest.NewServer(t)
+	b := newClmWorkflowQueueBuilder(c)
+	ctx := context.Background()
+
+	resources, res, err := b.List(ctx, nil, rs.SyncOpAttrs{Session: &readFailingSessionStore{fakeSessionStore: newFakeSessionStore()}})
+	if err != nil {
+		t.Fatalf("expected a session-store read failure to be tolerated, not an error: %v", err)
+	}
+	if len(resources) != 0 {
+		t.Errorf("expected zero resources when the session store can't be read from, got %d", len(resources))
 	}
 	if res == nil {
 		t.Errorf("expected a non-nil SyncOpResults, got %+v", res)
@@ -270,8 +309,8 @@ func TestClmWorkflowQueueBuilder_List_SkipsGracefullyAfterConsecutiveFailures(t 
 }
 
 // TestClmWorkflowQueueBuilder_List_FailsLoudlyWhenLaterMemberDenied is a regression
-// test: discoverClmWorkflowQueueMembership previously escalated ANY
-// isOptInFeatureUnavailableError to "CLM unavailable, return zero resources",
+// test: List() previously escalated ANY isOptInFeatureUnavailableError to "CLM
+// unavailable, return zero resources",
 // regardless of scan position — so a PermissionDenied on member N (a token expiring or
 // a scope revoked mid-scan) after earlier members had already contributed real queues
 // would silently discard every already-discovered queue as if the whole feature were
@@ -432,6 +471,47 @@ func TestClmWorkflowQueueBuilder_List_ChunksAcrossPages(t *testing.T) {
 	}
 	if len(grants) != 2 {
 		t.Fatalf("expected 2 members (alice, bob) in Onboarding, got %d: %+v", len(grants), grants)
+	}
+}
+
+// TestClmWorkflowQueueBuilder_List_MergesMembershipAcrossChunks is the regression test
+// for the incremental per-queue session write: each chunk merges its own contribution
+// into a queue's session key via a Get-then-append-then-Set round trip, and a wrong
+// merge (e.g. overwriting instead of appending) would silently drop every earlier
+// chunk's members. member-alice and member-bob are both in the Onboarding queue (see
+// clmtest/seed.go) but PageSize 1 puts them in separate chunks, so this only passes if
+// chunk 2's write actually preserves chunk 1's contribution.
+func TestClmWorkflowQueueBuilder_List_MergesMembershipAcrossChunks(t *testing.T) {
+	_, c := clmtest.NewServer(t)
+	b := newClmWorkflowQueueBuilder(c)
+	ctx := context.Background()
+	attr := rs.SyncOpAttrs{Session: newFakeSessionStore()}
+
+	var resources []*v2.Resource
+	pageToken := ""
+	for i := 0; i < 10; i++ {
+		attr.PageToken = pagination.Token{Size: 1, Token: pageToken}
+		res, syncRes, err := b.List(ctx, nil, attr)
+		if err != nil {
+			t.Fatalf("List page %d: %v", i, err)
+		}
+		if syncRes.NextPageToken == "" {
+			resources = res
+			break
+		}
+		pageToken = syncRes.NextPageToken
+	}
+
+	byName := make(map[string]*v2.Resource)
+	for _, r := range resources {
+		byName[r.DisplayName] = r
+	}
+	grants, _, err := b.Grants(ctx, byName["Onboarding"], attr)
+	if err != nil {
+		t.Fatalf("Grants(Onboarding): %v", err)
+	}
+	if len(grants) != 2 {
+		t.Fatalf("expected both alice (chunk 1) and bob (chunk 2) merged into Onboarding, got %d: %+v", len(grants), grants)
 	}
 }
 
