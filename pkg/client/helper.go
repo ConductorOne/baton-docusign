@@ -20,10 +20,10 @@ import (
 const DefaultPageSize = 100
 
 // docusignHourlyRateLimitErrorCode is the eSignature API's JSON error-body errorCode for
-// "the account's hourly API-call budget is exhausted" — confirmed against a real account
-// (Pylon #11445). DocuSign returns this as HTTP 400 today and is mid-migration to 429
-// (DocuSign's own guidance is to key off errorCode, not HTTP status, for exactly this
-// reason), so detection below checks the body field independent of resp.StatusCode.
+// "the account's hourly API-call budget is exhausted" — confirmed against a real account.
+// DocuSign returns this as HTTP 400 today and is mid-migration to 429 (DocuSign's own
+// guidance is to key off errorCode, not HTTP status, for exactly this reason), so
+// detection below checks the body field independent of resp.StatusCode.
 const docusignHourlyRateLimitErrorCode = "HOURLY_APIINVOCATION_LIMIT_EXCEEDED"
 
 // docusignRateLimitDefaultResetWindow is the fixed wait this connector asks the SDK's

@@ -17,14 +17,13 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-// TestReclassifyHourlyRateLimitError is a regression test for Pylon #11445: DocuSign signals
-// "hourly API-call budget exhausted" via a JSON error body (errorCode
-// HOURLY_APIINVOCATION_LIMIT_EXCEEDED) on HTTP 400, which uhttp.GrpcCodeFromHTTPStatus maps
-// to codes.InvalidArgument — a code the SDK's sync-retry loop treats as fatal, not
-// retryable, so a real customer's initial full sync failed outright instead of pausing and
-// resuming. reclassifyHourlyRateLimitError must re-classify exactly this case as
-// codes.Unavailable (which the SDK does retry) carrying a RateLimitDescription, and leave
-// every other error (including CLM's distinct error envelope) untouched.
+// TestReclassifyHourlyRateLimitError: DocuSign signals "hourly API-call budget exhausted"
+// via a JSON error body (errorCode HOURLY_APIINVOCATION_LIMIT_EXCEEDED) on HTTP 400,
+// which uhttp.GrpcCodeFromHTTPStatus maps to codes.InvalidArgument — a code the SDK's
+// sync-retry loop treats as fatal, not retryable, so a full sync fails outright instead
+// of pausing and resuming. reclassifyHourlyRateLimitError must re-classify exactly this
+// case as codes.Unavailable (which the SDK does retry) carrying a RateLimitDescription,
+// and leave every other error (including CLM's distinct error envelope) untouched.
 func TestReclassifyHourlyRateLimitError(t *testing.T) {
 	origErr := errors.New("400 Bad Request")
 
@@ -89,8 +88,8 @@ func TestReclassifyHourlyRateLimitError(t *testing.T) {
 	})
 }
 
-// TestGetUsers_ClassifiesHourlyRateLimitAsRetryable is an end-to-end regression test for
-// Pylon #11445, exercising the real request path (GetUsers -> doRequestCommon ->
+// TestGetUsers_ClassifiesHourlyRateLimitAsRetryable is an end-to-end regression test,
+// exercising the real request path (GetUsers -> doRequestCommon ->
 // reclassifyHourlyRateLimitError) against a mock server that returns DocuSign's actual
 // observed 400 body, rather than calling reclassifyHourlyRateLimitError directly.
 func TestGetUsers_ClassifiesHourlyRateLimitAsRetryable(t *testing.T) {

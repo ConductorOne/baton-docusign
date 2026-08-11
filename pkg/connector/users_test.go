@@ -139,9 +139,8 @@ func TestUserBuilder_Grants_FastPath_ActiveUserWithKnownProfile(t *testing.T) {
 
 func TestUserBuilder_Grants_FallsBackWhenNotActive(t *testing.T) {
 	// A non-active user must go through GetUserDetails, exactly like before this fast
-	// path existed — this is the regression test for the review finding that the fast
-	// path could otherwise grant a profile to a disabled/closed user the old code
-	// would have correctly skipped.
+	// path existed — otherwise the fast path could grant a profile to a disabled/closed
+	// user that GetUserDetails would correctly skip.
 	c := newUsersTestClient(t, []client.PermissionProfile{
 		{PermissionProfileId: "pp-1", PermissionProfileName: "DocuSign Admin"},
 	}, map[string]client.UserDetail{
@@ -180,11 +179,10 @@ func TestUserBuilder_Grants_FallsBackWhenProfileNameUnresolvable(t *testing.T) {
 	}
 }
 
-// TestUserBuilder_Grants_PropagatesRateLimitInsteadOfDoublingCalls is a regression test
-// for a deep-code-review finding: if GetPermissionProfiles fails because the account is
-// already rate-limited (the exact scenario Pylon #11445 is about), falling through to
-// GetUserDetails would hit the identical limit and double the failing calls per active
-// user instead of reducing them. Grants must propagate that error directly.
+// TestUserBuilder_Grants_PropagatesRateLimitInsteadOfDoublingCalls: if
+// GetPermissionProfiles fails because the account is already rate-limited, falling
+// through to GetUserDetails would hit the identical limit and double the failing calls
+// per active user instead of reducing them. Grants must propagate that error directly.
 func TestUserBuilder_Grants_PropagatesRateLimitInsteadOfDoublingCalls(t *testing.T) {
 	c := newUsersTestClient(t, nil, map[string]client.UserDetail{
 		// If Grants incorrectly falls through to GetUserDetails, this fixture would let
@@ -224,11 +222,11 @@ func TestUserBuilder_Grants_FallsBackOnNonRateLimitPermissionProfilesFailure(t *
 	}
 }
 
-// TestUserBuilder_Grants_FallsBackOnServiceUnavailable is a regression test for a
-// deep-code-review finding: codes.Unavailable is broader than "already rate-limited" —
-// uhttp also maps a plain HTTP 503 to it. A 503 from GetPermissionProfiles (no
-// RateLimitDescription attached, unlike the reclassified rate-limit error) must fall
-// through to GetUserDetails, not be mistaken for the rate-limit case and propagated.
+// TestUserBuilder_Grants_FallsBackOnServiceUnavailable: codes.Unavailable is broader
+// than "already rate-limited" — uhttp also maps a plain HTTP 503 to it. A 503 from
+// GetPermissionProfiles (no RateLimitDescription attached, unlike the reclassified
+// rate-limit error) must fall through to GetUserDetails, not be mistaken for the
+// rate-limit case and propagated.
 func TestUserBuilder_Grants_FallsBackOnServiceUnavailable(t *testing.T) {
 	c := newUsersTestClient(t, nil, map[string]client.UserDetail{
 		"user-1": {UserID: "user-1", PermissionProfileID: "pp-1"},

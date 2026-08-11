@@ -79,10 +79,10 @@ func (b *userBuilder) Entitlements(_ context.Context, _ *v2.Resource, _ rs.SyncO
 //
 // Tries tryFastPathGrant first (an Active user's permission-profile NAME, already
 // captured on the resource's profile during List(), resolved via one account-wide
-// GetPermissionProfiles call instead of a per-user GetUserDetails call — the N+1
-// pattern Pylon #11445 flagged as contributing to DocuSign's hourly rate limit) and
-// falls back to the always-correct per-user GetUserDetails path unchanged from before
-// that fast path existed whenever it declines to handle the request (see its own doc).
+// GetPermissionProfiles call instead of a per-user GetUserDetails call — avoiding the
+// N+1 pattern that contributes to DocuSign's hourly rate limit) and falls back to the
+// always-correct per-user GetUserDetails path unchanged from before that fast path
+// existed whenever it declines to handle the request (see its own doc).
 func (b *userBuilder) Grants(ctx context.Context, resource *v2.Resource, _ rs.SyncOpAttrs) ([]*v2.Grant, *rs.SyncOpResults, error) {
 	userID := resource.Id
 
@@ -122,9 +122,9 @@ func (b *userBuilder) Grants(ctx context.Context, resource *v2.Resource, _ rs.Sy
 }
 
 // tryFastPathGrant is Grants' fast path for an Active user, avoiding the per-user
-// GetUserDetails call Pylon #11445 flagged as contributing to DocuSign's hourly rate
-// limit. Two ways it can resolve the grant without that call, both already captured on
-// the resource's profile during List():
+// GetUserDetails call that contributes to DocuSign's hourly rate limit. Two ways it can
+// resolve the grant without that call, both already captured on the resource's profile
+// during List():
 //   - Preferred: client.User.PermissionProfileID directly, if the list response included
 //     it (unconfirmed against a live account — see that field's doc) — no API call at all.
 //   - Otherwise: the permission-profile NAME, resolved to an ID via GetPermissionProfiles
