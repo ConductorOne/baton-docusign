@@ -209,13 +209,16 @@ func (s *Server) handlePatchMember(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	hrefs := make([]string, 0, len(body.Groups.Items))
 	for _, g := range body.Groups.Items {
+		hrefs = append(hrefs, g.Href)
 		gid := idFromHref(g.Href)
 		if !containsString(s.memberGroups[id], gid) {
 			s.memberGroups[id] = append(s.memberGroups[id], gid)
 			s.groupMembers[gid] = append(s.groupMembers[gid], id)
 		}
 	}
+	s.lastPatchedMemberGroupHrefs[id] = hrefs
 
 	writeJSON(w, *m)
 }

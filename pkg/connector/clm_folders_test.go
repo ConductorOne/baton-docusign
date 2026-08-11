@@ -476,8 +476,20 @@ func TestClmFolderBuilder_GrantAndRevoke_SurvivesIdentityOnlyPrincipal(t *testin
 		}
 
 		grantObj := &v2.Grant{Principal: principal, Entitlement: ent}
-		if _, err := b.Revoke(ctx, grantObj); err != nil {
+		annos, err := b.Revoke(ctx, grantObj)
+		if err != nil {
 			t.Fatalf("Revoke with an identity-only principal: %v", err)
+		}
+		// If the derived Href ever stopped matching the entry Grant wrote,
+		// clmFindGroupSecurityIndex would return -1 and Revoke would report
+		// GrantAlreadyRevoked with a nil error instead of actually revoking — asserting
+		// only err == nil would still pass while access was silently left in place.
+		if hasAlreadyRevoked(annos) {
+			t.Fatal("Revoke incorrectly reported GrantAlreadyRevoked — the derived Href didn't match the entry Grant wrote")
+		}
+		groups = srv.FolderSecurity("folder-templates").Groups.Items
+		if len(groups) != 1 || groups[0].AccessType != client.ClmAccessTypeNoAccess {
+			t.Fatalf("expected the entry's AccessType to become NoAccess after Revoke, got %+v", groups)
 		}
 	})
 
@@ -499,8 +511,85 @@ func TestClmFolderBuilder_GrantAndRevoke_SurvivesIdentityOnlyPrincipal(t *testin
 		}
 
 		grantObj := &v2.Grant{Principal: principal, Entitlement: ent}
-		if _, err := b.Revoke(ctx, grantObj); err != nil {
+		annos, err := b.Revoke(ctx, grantObj)
+		if err != nil {
 			t.Fatalf("Revoke with an identity-only principal: %v", err)
+		}
+		// Same rationale as the clm_group subtest above.
+		if hasAlreadyRevoked(annos) {
+			t.Fatal("Revoke incorrectly reported GrantAlreadyRevoked — the derived Href didn't match the entry Grant wrote")
+		}
+		users = srv.FolderSecurity("folder-templates").Users.Items
+		if len(users) != 1 || users[0].AccessType != client.ClmAccessTypeNoAccess {
+			t.Fatalf("expected the entry's AccessType to become NoAccess after Revoke, got %+v", users)
+		}
+	})
+}
+
+// TestClmFolderBuilder_Grant_SurvivesIdentityOnlyPrincipal_SampleBranch covers the
+// clmPreferredHref branch TestClmFolderBuilder_GrantAndRevoke_SurvivesIdentityOnlyPrincipal
+// doesn't: folder-templates always starts with no security entries, so every Grant
+// there hits clmPreferredHref's fallback (client.GroupHref/MemberHref) — the newer,
+// riskier sample branch (deriving a written Href from an existing folder-security
+// entry) never runs. folder-contracts is already seeded with real group/user security
+// entries (clmtest/seed.go), so granting a DIFFERENT group/member there exercises the
+// sample branch and lets this assert the derived Href end to end.
+func TestClmFolderBuilder_Grant_SurvivesIdentityOnlyPrincipal_SampleBranch(t *testing.T) {
+	srv, c := clmtest.NewServer(t)
+	b := newClmFolderBuilder(c)
+	ctx := context.Background()
+
+	folderResource, err := rs.NewResource("Contracts", clmFolderResourceType, "folder-contracts")
+	if err != nil {
+		t.Fatalf("NewResource: %v", err)
+	}
+
+	t.Run("clm_group principal", func(t *testing.T) {
+		// group-ops is not among folder-contracts' existing entries (group-legal,
+		// group-finance), so clmPreferredHref must derive group-ops' Href from one of
+		// those samples via clmHrefWithID, not just echo a pre-existing entry.
+		principal := clmIdentityOnlyResource(clmGroupResourceType, "group-ops")
+		ent := &v2.Entitlement{Slug: "view", Resource: folderResource}
+
+		if _, _, err := b.Grant(ctx, principal, ent); err != nil {
+			t.Fatalf("Grant with an identity-only principal: %v", err)
+		}
+		groups := srv.FolderSecurity("folder-contracts").Groups.Items
+		var found *client.ClmGroupSecurityEntry
+		for i := range groups {
+			if groups[i].Href == srv.GroupHref("group-ops") {
+				found = &groups[i]
+			}
+		}
+		if found == nil {
+			t.Fatalf("expected a group-ops entry with the sample-derived Href, got %+v", groups)
+		}
+		if found.AccessType != client.ClmAccessTypeView {
+			t.Errorf("expected View AccessType, got %q", found.AccessType)
+		}
+	})
+
+	t.Run("clm_member principal", func(t *testing.T) {
+		// member-dave is not folder-contracts' existing member entry (member-bob), so
+		// clmPreferredHref must derive member-dave's Href from that sample.
+		principal := clmIdentityOnlyResource(clmMemberResourceType, "member-dave")
+		ent := &v2.Entitlement{Slug: "view", Resource: folderResource}
+
+		if _, _, err := b.Grant(ctx, principal, ent); err != nil {
+			t.Fatalf("Grant with an identity-only principal: %v", err)
+		}
+		users := srv.FolderSecurity("folder-contracts").Users.Items
+		var found *client.ClmUserSecurityEntry
+		for i := range users {
+			if users[i].Href == srv.MemberHref("member-dave") {
+				found = &users[i]
+			}
+		}
+		if found == nil {
+			t.Fatalf("expected a member-dave entry with the sample-derived Href, got %+v", users)
+		}
+		if found.AccessType != client.ClmAccessTypeView {
+			t.Errorf("expected View AccessType, got %q", found.AccessType)
 		}
 	})
 }

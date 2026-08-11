@@ -167,12 +167,19 @@ func (g *clmGroupBuilder) Grant(ctx context.Context, principal *v2.Resource, ent
 		}
 	}
 
-	// Prefer a real, server-issued Href already on hand (any of this member's OTHER
-	// current groups) over one derived from the discovered CLM base URL — see
-	// clmPreferredHref's doc.
-	sampleHrefs := make([]string, len(currentGroups))
-	for i, current := range currentGroups {
-		sampleHrefs[i] = current.Href
+	// Prefer a real, server-issued Href already on hand over one derived from the
+	// discovered CLM base URL — see clmPreferredHref's doc. The target group's own
+	// profile href (parseIntoClmGroupResource still populates it for display) comes
+	// first: it's this exact group's own recorded Href, not a sibling's (one of this
+	// member's OTHER current groups) to derive from — only ever a sample, never
+	// required, so an identity-only ent.Resource (the pebble-hydrated case this fix
+	// exists for) still falls through to the other-groups/fallback path unchanged.
+	sampleHrefs := make([]string, 0, len(currentGroups)+1)
+	if href, ok := rs.GetProfileStringValue(rs.GetProfile(ent.Resource), "href"); ok {
+		sampleHrefs = append(sampleHrefs, href)
+	}
+	for _, current := range currentGroups {
+		sampleHrefs = append(sampleHrefs, current.Href)
 	}
 	groupHref, err := clmPreferredHref(groupID, sampleHrefs, func() (string, error) {
 		return g.client.GroupHref(ctx, groupID)

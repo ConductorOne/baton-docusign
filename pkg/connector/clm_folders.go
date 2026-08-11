@@ -200,18 +200,26 @@ func (f *clmFolderBuilder) Grant(ctx context.Context, principal *v2.Resource, en
 
 	switch principal.Id.ResourceType {
 	case clmGroupResourceType.Id:
-		// Prefer a real, server-issued Href already on hand (any OTHER group-security
-		// entry this folder already carries) over one derived from the discovered CLM
-		// base URL — see clmPreferredHref's doc.
-		groupSampleHrefs := make([]string, len(write.Groups))
-		for i, entry := range write.Groups {
-			groupSampleHrefs[i] = entry.Href
+		// Prefer a real, server-issued Href already on hand over one derived from the
+		// discovered CLM base URL — see clmPreferredHref's doc. The principal's own
+		// profile href (parseIntoClmGroupResource still populates it for display) comes
+		// first: it's this exact group's own recorded Href, not a sibling's to derive
+		// from, so it's the most direct sample available when the resource happens to
+		// carry one — only ever a sample, never required, so an identity-only principal
+		// (no profile at all) still falls through to the other-entries/fallback path
+		// unchanged.
+		groupSampleHrefs := make([]string, 0, len(write.Groups)+1)
+		if href, ok := rs.GetProfileStringValue(rs.GetProfile(principal), "href"); ok {
+			groupSampleHrefs = append(groupSampleHrefs, href)
+		}
+		for _, entry := range write.Groups {
+			groupSampleHrefs = append(groupSampleHrefs, entry.Href)
 		}
 		groupHref, err := clmPreferredHref(principal.Id.Resource, groupSampleHrefs, func() (string, error) {
 			return f.client.GroupHref(ctx, principal.Id.Resource)
 		})
 		if err != nil {
-			return nil, nil, err
+			return nil, getAnnos, fmt.Errorf("baton-docusign: resolving href for CLM group %s: %w", principal.Id.Resource, err)
 		}
 		if i := clmFindGroupSecurityIndex(write.Groups, groupHref); i >= 0 {
 			if slug, ok := clmSlugForAccessType(write.Groups[i].AccessType); ok && slug == ent.Slug {
@@ -233,15 +241,18 @@ func (f *clmFolderBuilder) Grant(ctx context.Context, principal *v2.Resource, en
 		}
 	case clmMemberResourceType.Id:
 		// Same rationale as the group case above.
-		userSampleHrefs := make([]string, len(write.Users))
-		for i, entry := range write.Users {
-			userSampleHrefs[i] = entry.Href
+		userSampleHrefs := make([]string, 0, len(write.Users)+1)
+		if href, ok := rs.GetProfileStringValue(rs.GetProfile(principal), "href"); ok {
+			userSampleHrefs = append(userSampleHrefs, href)
+		}
+		for _, entry := range write.Users {
+			userSampleHrefs = append(userSampleHrefs, entry.Href)
 		}
 		memberHref, err := clmPreferredHref(principal.Id.Resource, userSampleHrefs, func() (string, error) {
 			return f.client.MemberHref(ctx, principal.Id.Resource)
 		})
 		if err != nil {
-			return nil, nil, err
+			return nil, getAnnos, fmt.Errorf("baton-docusign: resolving href for CLM member %s: %w", principal.Id.Resource, err)
 		}
 		if i := clmFindUserSecurityIndex(write.Users, memberHref); i >= 0 {
 			if slug, ok := clmSlugForAccessType(write.Users[i].AccessType); ok && slug == ent.Slug {

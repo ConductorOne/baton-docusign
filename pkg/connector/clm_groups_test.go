@@ -190,9 +190,7 @@ func TestClmGroupBuilder_GrantAndRevoke_Idempotent(t *testing.T) {
 func TestClmGroupBuilder_Grant_SurvivesIdentityOnlyEntitlementResource(t *testing.T) {
 	// An identity-only Resource — exactly what V3EntitlementToV2 hands back on pebble,
 	// carrying nothing but the group's ID.
-	identityOnlyGroupResource := &v2.Resource{
-		Id: &v2.ResourceId{ResourceType: clmGroupResourceType.Id, Resource: "group-legal"},
-	}
+	identityOnlyGroupResource := clmIdentityOnlyResource(clmGroupResourceType, "group-legal")
 	ent := &v2.Entitlement{Slug: entitlementClmGroupMember, Resource: identityOnlyGroupResource}
 
 	t.Run("fallback branch: member has no other groups, derives via client.GroupHref", func(t *testing.T) {
@@ -251,6 +249,30 @@ func TestClmGroupBuilder_Grant_SurvivesIdentityOnlyEntitlementResource(t *testin
 		}
 		if !found {
 			t.Fatalf("expected carol to be granted group-legal, got %v", groups)
+		}
+
+		// MemberGroups reduces every Href to its trailing ID (matching the real API's
+		// own comparison semantics), which can't tell a sample-derived Href from a
+		// fallback-derived one — this mock's srv.GroupHref and client.GroupHref happen
+		// to build byte-identical strings either way. Asserting on the raw Href the
+		// server actually received at least pins the exact value clmPreferredHref
+		// computed, derived from carol's existing group-finance sample.
+		wantHref, err := clmHrefWithID(srv.GroupHref("group-finance"), "group-legal")
+		if err != nil {
+			t.Fatalf("clmHrefWithID (computing expected Href): %v", err)
+		}
+		// PatchMemberGroups sends the member's full current+new list (additive), so the
+		// PATCH body also carries carol's pre-existing group-finance entry alongside the
+		// new group-legal one.
+		hrefs := srv.LastPatchedMemberGroupHrefs("member-carol")
+		sawWantHref := false
+		for _, h := range hrefs {
+			if h == wantHref {
+				sawWantHref = true
+			}
+		}
+		if !sawWantHref {
+			t.Errorf("expected the PATCH request to carry Href %q, got %v", wantHref, hrefs)
 		}
 	})
 }

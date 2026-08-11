@@ -113,6 +113,8 @@ type Server struct {
 	permissionSetOrder []string
 
 	memberGroupsRequests int // count of GET .../members/{id}/groups calls, for pagination assertions
+
+	lastPatchedMemberGroupHrefs map[string][]string // memberID -> the raw Href strings the last PATCH request body carried, for tests
 }
 
 // MemberGroupsRequestCount returns how many times GET .../members/{id}/groups has been
@@ -123,6 +125,20 @@ func (s *Server) MemberGroupsRequestCount() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.memberGroupsRequests
+}
+
+// LastPatchedMemberGroupHrefs returns the raw Href strings the most recent PATCH
+// .../members/{id} request body carried for memberID — unlike MemberGroups (which
+// reduces everything to the trailing ID via idFromHref, the same as the real API's own
+// comparison semantics), this exposes the exact Href the connector sent, so a test can
+// tell a sample-derived Href from a base-URL-derived one even when the two mock helpers
+// that build them happen to produce byte-identical strings.
+func (s *Server) LastPatchedMemberGroupHrefs(memberID string) []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]string, len(s.lastPatchedMemberGroupHrefs[memberID]))
+	copy(out, s.lastPatchedMemberGroupHrefs[memberID])
+	return out
 }
 
 // URL returns the mock server's base URL — also what handleClmAccountDiscovery
@@ -180,12 +196,13 @@ func (s *Server) FolderSecurity(folderID string) client.ClmFolderSecurity {
 // RunStandalone so both construct exactly the same seeded state.
 func newState() *Server {
 	return &Server{
-		folders:        make(map[string]*client.ClmFolder),
-		groups:         make(map[string]*client.ClmGroup),
-		groupMembers:   make(map[string][]string),
-		members:        make(map[string]*client.ClmMember),
-		memberGroups:   make(map[string][]string),
-		permissionSets: make(map[string]*client.ClmPermissionSet),
+		folders:                     make(map[string]*client.ClmFolder),
+		groups:                      make(map[string]*client.ClmGroup),
+		groupMembers:                make(map[string][]string),
+		members:                     make(map[string]*client.ClmMember),
+		memberGroups:                make(map[string][]string),
+		permissionSets:              make(map[string]*client.ClmPermissionSet),
+		lastPatchedMemberGroupHrefs: make(map[string][]string),
 	}
 }
 

@@ -428,8 +428,10 @@ func (c *Client) ListGroups(ctx context.Context, options PageOptions) ([]ClmGrou
 // engine's V3EntitlementToV2 (vendor/.../dotc1z/engine/pebble/translate_v2.go)
 // deliberately hydrates an Entitlement's Resource as an identity-only stub, by design,
 // on every read — so an entitlement-side lookup can never rely on anything beyond the
-// ID surviving. Matches the same "/v2/{account}/groups/{id}" shape every other CLM
-// group request already uses (clmGetGroup) and clmtest's own Server.GroupHref.
+// ID surviving. Asserts CLM's Href shape is "/v2/{account}/groups/{id}" — no CLM request
+// in this codebase independently confirms that shape yet (clmGetGroup exists only to
+// build this one), so this is currently only verified against clmtest's own
+// Server.GroupHref, not a live tenant.
 func (c *Client) GroupHref(ctx context.Context, groupID string) (string, error) {
 	if err := c.ensureClmReady(ctx); err != nil {
 		return "", err
