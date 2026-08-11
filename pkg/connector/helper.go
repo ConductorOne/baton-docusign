@@ -12,10 +12,18 @@ import (
 // Shared profile/field map keys, reused across builders (and the AccountCreationSchema
 // field map in connector.go) to avoid repeated string literals (golangci-lint: goconst).
 const (
-	profileFieldEmail     = "email"
-	profileFieldUsername  = "username"
-	profileFieldGroupName = "group_name"
+	profileFieldEmail      = "email"
+	profileFieldUsername   = "username"
+	profileFieldGroupName  = "group_name"
+	profileFieldPermission = "permission"
+	profileFieldStatus     = "status"
 )
+
+// userStatusActive is the DocuSign UserStatus value this connector treats as "active" —
+// used to gate userBuilder.Grants' list-response fast path on the same active/non-active
+// distinction GetUserDetails' PermissionProfileID-empty check already relies on (see
+// users.go), not a new assumption.
+const userStatusActive = "Active"
 
 // parsePageToken deserializes the Baton token and returns the Bag and page number for upstream.
 func parsePageToken(i string, resourceID *v2.ResourceId) (*pagination.Bag, string, error) {

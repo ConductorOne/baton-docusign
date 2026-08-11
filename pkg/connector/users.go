@@ -74,16 +74,49 @@ func (b *userBuilder) Entitlements(_ context.Context, _ *v2.Resource, _ rs.SyncO
 }
 
 // Grants assigns permissions to users based on their DocuSign settings.
+//
+// Fast path: an Active user's permission-profile NAME was already captured on the
+// resource's profile during List() (parseIntoUserResource's profileFieldPermission
+// field) from the same GetUsers list response every sync already pages through.
+// Resolving that name to an ID via GetPermissionProfiles (one account-wide call,
+// already served from uhttp's default GET cache on every call after the first in this
+// sync — see pkg/client/clm_client.go's WithNoCache usage for this repo's opt-out
+// convention when a fresh read matters, which this doesn't need) avoids a per-user
+// GetUserDetails call for the common case — the N+1 pattern Pylon #11445 flagged as
+// contributing to DocuSign's hourly rate limit.
+//
+// Gated on status == Active for the exact same reason GetUserDetails.PermissionProfileID
+// is empty for non-active users below (that pre-existing rule, not a new assumption) —
+// so a non-active user, an unresolvable name (profile renamed/deleted since listing), or
+// a failed GetPermissionProfiles call all fall through to the always-correct per-user
+// GetUserDetails path unchanged from before this fast path existed.
 func (b *userBuilder) Grants(ctx context.Context, resource *v2.Resource, _ rs.SyncOpAttrs) ([]*v2.Grant, *rs.SyncOpResults, error) {
-	var grants []*v2.Grant
-	var annos annotations.Annotations
 	userID := resource.Id
+	profile := rs.GetProfile(resource)
+
+	if status, ok := rs.GetProfileStringValue(profile, profileFieldStatus); ok && status == userStatusActive {
+		if name, ok := rs.GetProfileStringValue(profile, profileFieldPermission); ok && name != "" {
+			if profiles, annos, err := b.client.GetPermissionProfiles(ctx); err == nil {
+				for _, p := range profiles {
+					if p.PermissionProfileName == name {
+						newGrant := grant.NewGrant(
+							&v2.Resource{Id: &v2.ResourceId{ResourceType: permissionProfilesResourceType.Id, Resource: p.PermissionProfileId}},
+							permissionProfileAssignedTag,
+							userID,
+						)
+						return []*v2.Grant{newGrant}, &rs.SyncOpResults{Annotations: annos}, nil
+					}
+				}
+			}
+		}
+	}
 
 	userDetail, annotation, err := b.client.GetUserDetails(ctx, userID.Resource)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to fetch details for %s: %w", userID.Resource, err)
 	}
 
+	var annos annotations.Annotations
 	for _, annon := range annotation {
 		annos.Append(annon)
 	}
@@ -102,9 +135,7 @@ func (b *userBuilder) Grants(ctx context.Context, resource *v2.Resource, _ rs.Sy
 	}
 
 	newGrant := grant.NewGrant(permissionProfileResource, permissionProfileAssignedTag, userID)
-	grants = append(grants, newGrant)
-
-	return grants, &rs.SyncOpResults{Annotations: annos}, nil
+	return []*v2.Grant{newGrant}, &rs.SyncOpResults{Annotations: annos}, nil
 }
 
 // CreateAccountCapabilityDetails declares support for account provisioning without a password.
@@ -226,7 +257,7 @@ func newUserBuilder(client *client.Client) *userBuilder {
 func parseIntoUserResource(user *client.User) (*v2.Resource, error) {
 	var userStatus v2.UserTrait_Status_Status
 	switch user.UserStatus {
-	case "Active":
+	case userStatusActive:
 		userStatus = v2.UserTrait_Status_STATUS_ENABLED
 	case "Disabled", "ActivationRequired", "ActivationSent":
 		userStatus = v2.UserTrait_Status_STATUS_DISABLED
@@ -237,11 +268,11 @@ func parseIntoUserResource(user *client.User) (*v2.Resource, error) {
 	}
 
 	profile := map[string]any{
-		"userName":        user.UserName,
-		profileFieldEmail: user.Email,
-		"isAdmin":         user.IsAdmin,
-		"permission":      user.Permission,
-		"status":          user.UserStatus,
+		"userName":             user.UserName,
+		profileFieldEmail:      user.Email,
+		"isAdmin":              user.IsAdmin,
+		profileFieldPermission: user.Permission,
+		profileFieldStatus:     user.UserStatus,
 	}
 
 	userTraits := []rs.UserTraitOption{
