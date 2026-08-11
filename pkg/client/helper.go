@@ -6,13 +6,79 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"time"
 
+	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
 	"github.com/conductorone/baton-sdk/pkg/annotations"
 	"github.com/conductorone/baton-sdk/pkg/ratelimit"
 	"github.com/conductorone/baton-sdk/pkg/uhttp"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 const DefaultPageSize = 100
+
+// docusignHourlyRateLimitErrorCode is the eSignature API's JSON error-body errorCode for
+// "the account's hourly API-call budget is exhausted" — confirmed against a real account
+// (Pylon #11445). DocuSign returns this as HTTP 400 today and is mid-migration to 429
+// (DocuSign's own guidance is to key off errorCode, not HTTP status, for exactly this
+// reason), so detection below checks the body field independent of resp.StatusCode.
+const docusignHourlyRateLimitErrorCode = "HOURLY_APIINVOCATION_LIMIT_EXCEEDED"
+
+// docusignRateLimitDefaultResetWindow is used when DocuSign's response carries no
+// X-RateLimit-Reset (or equivalent) header to derive a reset time from — the limit this
+// error names is hourly, so an hour is the sane default, matching the spirit of (but
+// longer than) uhttp/ratelimit's own 60s default for a headerless 429.
+const docusignRateLimitDefaultResetWindow = time.Hour
+
+// rateLimitErrorFromResponse recognizes docusignHourlyRateLimitErrorCode in errTarget (the
+// same *ErrorResponse instance uhttp.WithErrorResponse already unmarshaled the error body
+// into before returning origErr — no re-parsing needed) and, if matched, returns a
+// codes.Unavailable error carrying a RateLimitDescription. This matters because
+// uhttp.GrpcCodeFromHTTPStatus maps this error's current HTTP 400 to codes.InvalidArgument,
+// which the SDK's sync-retry loop (pkg/sync's Retryer, wired to SyncResourcesOp/
+// SyncGrantsOp) does not retry — it only waits and retries on Unavailable/DeadlineExceeded,
+// so an otherwise-recoverable rate limit was surfacing as a fatal, non-resumable sync
+// failure. Returns nil (unchanged behavior) when errTarget isn't this specific eSignature
+// error shape, or the errorCode doesn't match — including every ClmErrorResponse-based CLM
+// call, which is a distinct error envelope this func never matches.
+func rateLimitErrorFromResponse(resp *http.Response, errTarget uhttp.ErrorResponse, origErr error) error {
+	er, ok := errTarget.(*ErrorResponse)
+	if !ok || er.ErrorCode != docusignHourlyRateLimitErrorCode {
+		return nil
+	}
+
+	desc, _ := ratelimit.ExtractRateLimitData(resp.StatusCode, &resp.Header)
+	resetAt := timestamppb.New(time.Now().Add(docusignRateLimitDefaultResetWindow))
+	var limit, remaining int64
+	if desc != nil {
+		// ExtractRateLimitData always returns a non-nil ResetAt — timestamppb.New of the
+		// zero time.Time when no reset header matched, not nil — so a nil check alone
+		// would wrongly accept that zero value over the sane default above.
+		if resetAtTime := desc.GetResetAt().AsTime(); !resetAtTime.IsZero() {
+			resetAt = desc.GetResetAt()
+		}
+		limit = desc.GetLimit()
+		remaining = desc.GetRemaining()
+	}
+
+	st := status.New(codes.Unavailable, origErr.Error())
+	withDetails, detailsErr := st.WithDetails(v2.RateLimitDescription_builder{
+		Status:    v2.RateLimitDescription_STATUS_OVERLIMIT,
+		Limit:     limit,
+		Remaining: remaining,
+		ResetAt:   resetAt,
+	}.Build())
+	if detailsErr != nil {
+		// WithDetails only fails for a codes.OK status or a detail that can't marshal to
+		// an Any — neither applies here (fixed codes.Unavailable, a well-formed proto
+		// message) — but fall back to the plain Unavailable classification (still
+		// retryable) rather than losing that reclassification entirely if it somehow does.
+		return st.Err()
+	}
+	return withDetails.Err()
+}
 
 // BuildURL combines the base API URL with a formatted endpoint path.
 func buildURL(base, path string, params ...any) (*url.URL, error) {
@@ -39,6 +105,13 @@ func doRequestCommon(wrapper *uhttp.BaseHttpClient, req *http.Request, res any, 
 	opts = append(opts, uhttp.WithErrorResponse(errTarget))
 	resp, err := wrapper.Do(req, opts...)
 	if err != nil {
+		// resp is non-nil here whenever the error came from a well-formed non-2xx HTTP
+		// response (as opposed to a network/transport failure) — see wrapper.Do.
+		if resp != nil {
+			if rlErr := rateLimitErrorFromResponse(resp, errTarget, err); rlErr != nil {
+				return resp.Header, nil, rlErr
+			}
+		}
 		return nil, nil, err
 	}
 	defer resp.Body.Close()
