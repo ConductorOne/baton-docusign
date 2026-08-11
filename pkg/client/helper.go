@@ -43,32 +43,26 @@ const docusignRateLimitDefaultResetWindow = time.Hour
 // failure. Returns nil (unchanged behavior) when errTarget isn't this specific eSignature
 // error shape, or the errorCode doesn't match — including every ClmErrorResponse-based CLM
 // call, which is a distinct error envelope this func never matches.
+//
+// Deliberately does NOT read ratelimit.ExtractRateLimitData's header-derived
+// Limit/Remaining/ResetAt for this specific error: DocuSign's docs describe no dedicated
+// headers for this hourly/daily-scoped limit (detection has to go through the error body
+// at all), so any generic X-RateLimit-*/Ratelimit-* headers present on this response most
+// plausibly describe an unrelated shorter-window limit (e.g. a burst counter), not the
+// hourly one that actually produced this error. Trusting them anyway risks the SDK's
+// Retryer (vendor pkg/retry/retry.go) computing a short wait off a nonzero Remaining from
+// the wrong bucket and hammering an account that's still over its hourly budget. Always
+// uses the fixed hourly default window instead — safe by construction, if coarser.
 func rateLimitErrorFromResponse(resp *http.Response, errTarget uhttp.ErrorResponse, origErr error) error {
 	er, ok := errTarget.(*ErrorResponse)
 	if !ok || er.ErrorCode != docusignHourlyRateLimitErrorCode {
 		return nil
 	}
 
-	desc, _ := ratelimit.ExtractRateLimitData(resp.StatusCode, &resp.Header)
-	resetAt := timestamppb.New(time.Now().Add(docusignRateLimitDefaultResetWindow))
-	var limit, remaining int64
-	if desc != nil {
-		// ExtractRateLimitData always returns a non-nil ResetAt — timestamppb.New of the
-		// zero time.Time when no reset header matched, not nil — so a nil check alone
-		// would wrongly accept that zero value over the sane default above.
-		if resetAtTime := desc.GetResetAt().AsTime(); !resetAtTime.IsZero() {
-			resetAt = desc.GetResetAt()
-		}
-		limit = desc.GetLimit()
-		remaining = desc.GetRemaining()
-	}
-
 	st := status.New(codes.Unavailable, origErr.Error())
 	withDetails, detailsErr := st.WithDetails(v2.RateLimitDescription_builder{
-		Status:    v2.RateLimitDescription_STATUS_OVERLIMIT,
-		Limit:     limit,
-		Remaining: remaining,
-		ResetAt:   resetAt,
+		Status:  v2.RateLimitDescription_STATUS_OVERLIMIT,
+		ResetAt: timestamppb.New(time.Now().Add(docusignRateLimitDefaultResetWindow)),
 	}.Build())
 	if detailsErr != nil {
 		// WithDetails only fails for a codes.OK status or a detail that can't marshal to

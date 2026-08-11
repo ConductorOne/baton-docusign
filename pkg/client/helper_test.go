@@ -70,12 +70,21 @@ func TestRateLimitErrorFromResponse(t *testing.T) {
 		}
 	})
 
-	t.Run("prefers the X-Ratelimit-Reset header over the default window", func(t *testing.T) {
-		wantResetAt := time.Now().Add(5 * time.Minute).Truncate(time.Second)
+	t.Run("ignores rate-limit headers and always uses the fixed hourly window", func(t *testing.T) {
+		// DocuSign documents no dedicated headers for this hourly/daily-scoped limit —
+		// any generic X-RateLimit-*/Ratelimit-* headers present most plausibly describe
+		// an unrelated shorter-window limit (e.g. a burst counter), not the hourly one
+		// that produced this error. Trusting them would risk the SDK's Retryer computing
+		// a too-short wait off the wrong bucket's Remaining and re-hitting an account
+		// that's still over its hourly budget (a deep-code-review finding on this PR) —
+		// so a header claiming an imminent reset must NOT shorten the wait below the
+		// fixed default window.
+		soonResetAt := time.Now().Add(5 * time.Minute)
 		resp := &http.Response{
 			StatusCode: http.StatusBadRequest,
 			Header: http.Header{
-				"X-Ratelimit-Reset": []string{strconv.FormatInt(wantResetAt.Unix(), 10)},
+				"X-Ratelimit-Reset":     []string{strconv.FormatInt(soonResetAt.Unix(), 10)},
+				"X-Ratelimit-Remaining": []string{"5"},
 			},
 		}
 		errTarget := &ErrorResponse{ErrorCode: docusignHourlyRateLimitErrorCode}
@@ -94,8 +103,11 @@ func TestRateLimitErrorFromResponse(t *testing.T) {
 		if desc == nil {
 			t.Fatal("expected a RateLimitDescription in the error's status details")
 		}
-		if got, want := desc.GetResetAt().AsTime().Unix(), wantResetAt.Unix(); got != want {
-			t.Errorf("expected ResetAt derived from the header (%d), got %d", want, got)
+		if desc.GetRemaining() != 0 {
+			t.Errorf("expected Remaining to stay 0 (header-derived value ignored), got %d", desc.GetRemaining())
+		}
+		if resetAt := desc.GetResetAt().AsTime(); resetAt.Before(soonResetAt.Add(time.Minute)) {
+			t.Errorf("expected ResetAt to use the ~1h default window, not the header's near-term value: got %v", resetAt)
 		}
 	})
 

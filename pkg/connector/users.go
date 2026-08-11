@@ -10,6 +10,8 @@ import (
 	"github.com/conductorone/baton-sdk/pkg/connectorbuilder"
 	"github.com/conductorone/baton-sdk/pkg/types/grant"
 	rs "github.com/conductorone/baton-sdk/pkg/types/resource"
+	"google.golang.org/grpc/codes"
+	grpcstatus "google.golang.org/grpc/status"
 )
 
 var _ connectorbuilder.AccountManagerV2 = &userBuilder{}
@@ -89,14 +91,29 @@ func (b *userBuilder) Entitlements(_ context.Context, _ *v2.Resource, _ rs.SyncO
 // is empty for non-active users below (that pre-existing rule, not a new assumption) —
 // so a non-active user, an unresolvable name (profile renamed/deleted since listing), or
 // a failed GetPermissionProfiles call all fall through to the always-correct per-user
-// GetUserDetails path unchanged from before this fast path existed.
+// GetUserDetails path unchanged from before this fast path existed. The one exception:
+// if GetPermissionProfiles itself fails because the account is already rate-limited
+// (codes.Unavailable — see pkg/client/helper.go), GetUserDetails below would hit the
+// identical limit, so that error is propagated directly instead of also burning that
+// call — otherwise every active user would pay for two failing calls instead of one
+// while the account is already over budget, exactly the amplification this fix exists
+// to reduce.
 func (b *userBuilder) Grants(ctx context.Context, resource *v2.Resource, _ rs.SyncOpAttrs) ([]*v2.Grant, *rs.SyncOpResults, error) {
 	userID := resource.Id
 	profile := rs.GetProfile(resource)
 
-	if status, ok := rs.GetProfileStringValue(profile, profileFieldStatus); ok && status == userStatusActive {
+	var annos annotations.Annotations
+
+	if userStatus, ok := rs.GetProfileStringValue(profile, profileFieldStatus); ok && userStatus == userStatusActive {
 		if name, ok := rs.GetProfileStringValue(profile, profileFieldPermission); ok && name != "" {
-			if profiles, annos, err := b.client.GetPermissionProfiles(ctx); err == nil {
+			profiles, profileAnnos, err := b.client.GetPermissionProfiles(ctx)
+			if err != nil && grpcstatus.Code(err) == codes.Unavailable {
+				return nil, nil, err
+			}
+			if err == nil {
+				for _, a := range profileAnnos {
+					annos.Append(a)
+				}
 				for _, p := range profiles {
 					if p.PermissionProfileName == name {
 						newGrant := grant.NewGrant(
@@ -116,7 +133,6 @@ func (b *userBuilder) Grants(ctx context.Context, resource *v2.Resource, _ rs.Sy
 		return nil, nil, fmt.Errorf("failed to fetch details for %s: %w", userID.Resource, err)
 	}
 
-	var annos annotations.Annotations
 	for _, annon := range annotation {
 		annos.Append(annon)
 	}
