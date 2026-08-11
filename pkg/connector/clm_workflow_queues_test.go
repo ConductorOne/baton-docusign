@@ -196,7 +196,11 @@ func TestClmWorkflowQueueBuilder_List_DiscoversQueuesViaMemberScan(t *testing.T)
 
 // TestClmWorkflowQueueBuilder_List_ToleratesNotFoundMidScan confirms a single member
 // 404ing (deleted between ListMembers and this call) is skipped, not a sync-wide
-// failure — the member scan continues and still discovers every other member's queues.
+// failure, once at least one other member has already proven the endpoint works —
+// member-carol is scanned after member-alice (who succeeds and contributes a queue),
+// so this exercises the "isolated NotFound" branch specifically, not the "nothing has
+// succeeded yet" escalation TestClmWorkflowQueueBuilder_List_SkipsGracefullyOnFirst404
+// covers.
 func TestClmWorkflowQueueBuilder_List_ToleratesNotFoundMidScan(t *testing.T) {
 	srv, c := clmtest.NewServer(t)
 	// member-carol is a real seeded member (clmtest/seed.go) with zero queues of its
@@ -212,6 +216,32 @@ func TestClmWorkflowQueueBuilder_List_ToleratesNotFoundMidScan(t *testing.T) {
 	}
 	if len(resources) != 2 {
 		t.Fatalf("expected the other members' 2 queues to still be discovered, got %d: %+v", len(resources), resources)
+	}
+}
+
+// TestClmWorkflowQueueBuilder_List_SkipsGracefullyOnFirst404 is a regression test:
+// DocuSign's own CLM API docs (Response and Error Codes) confirm NotFound is the SAME
+// response CLM returns for "no access rights" as for "object doesn't exist" — a 403
+// never leaks whether the object exists. So a 404 on the very first member (nothing
+// discovered yet) must escalate to the account-wide-unavailability skip exactly like
+// 401/403 do, not be treated as an isolated "this one member is gone" case — otherwise
+// an account systemically lacking workflow-queues access would pay one wasted request
+// per member, every sync, before ever concluding that (CXP-704).
+func TestClmWorkflowQueueBuilder_List_SkipsGracefullyOnFirst404(t *testing.T) {
+	srv, c := clmtest.NewServer(t)
+	srv.ForceMemberWorkflowQueuesStatus("member-alice", 404)
+	b := newClmWorkflowQueueBuilder(c)
+	ctx := context.Background()
+
+	resources, res, err := b.List(ctx, nil, rs.SyncOpAttrs{Session: newFakeSessionStore()})
+	if err != nil {
+		t.Fatalf("expected List to tolerate a 404 on the first member with nothing discovered yet, got error: %v", err)
+	}
+	if len(resources) != 0 {
+		t.Errorf("expected zero resources, got %d: %+v", len(resources), resources)
+	}
+	if res == nil {
+		t.Errorf("expected a non-nil SyncOpResults, got %+v", res)
 	}
 }
 

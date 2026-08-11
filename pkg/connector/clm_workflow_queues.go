@@ -185,34 +185,42 @@ func (b *clmWorkflowQueueBuilder) discoverClmWorkflowQueueMembership(ctx context
 			memberID := clmIDFromHref(member.Href)
 			queues, queueAnnos, err := b.client.GetMemberWorkflowQueues(ctx, memberID)
 			if err != nil {
-				// Only a bare NotFound is tolerated per-member — the isolated "member
-				// deleted between ListMembers and this call" case. Unauthenticated/
-				// PermissionDenied/FailedPrecondition (the other codes
-				// isOptInFeatureUnavailableError covers) signal an account/token-wide
-				// problem, same as ListMembers' own first-page check above — tolerating
-				// those per-member would silently accept a partial membership set
-				// (missing queues, missing members) instead of skipping the whole
-				// resource type the way a systemic failure should.
-				if status.Code(err) == codes.NotFound {
-					skippedMembers++
-					if n := skippedMembers; n == 1 || n == 10 || n == 100 || n%1000 == 0 {
-						ctxzap.Extract(ctx).Warn("baton-docusign: CLM member not found while scanning workflow queues, skipping",
-							zap.String("member_id", memberID), zap.Int("total_occurrences", n), zap.Error(err))
+				if isOptInFeatureUnavailableError(err) {
+					if !succeededAtLeastOnce {
+						// Nothing has proven this endpoint works for this account yet.
+						// DocuSign's own CLM API docs (Response and Error Codes) confirm
+						// NotFound isn't unique to "this object doesn't exist" — it's the
+						// SAME response CLM returns for "this exists but you don't have
+						// access rights", specifically so a 403 never leaks whether the
+						// object exists ("If the user does not have permissions to see
+						// the object or the object does not exist, a 404 response code is
+						// returned"). So a NotFound here is just as plausible a signal
+						// that workflow queues aren't available for this whole account as
+						// PermissionDenied/Unauthenticated are — treat it the same way and
+						// escalate to skipping the whole resource type, rather than paying
+						// one wasted request per member before ever concluding that (a
+						// real concern given CXP-704's open rate-limit issue).
+						return nil, allAnnos, fmt.Errorf("%w: %w", errClmWorkflowQueuesUnavailable, err)
 					}
-					continue
-				}
-				if isOptInFeatureUnavailableError(err) && !succeededAtLeastOnce {
-					// Same reasoning as ListMembers' own memberPageToken == "" check
-					// above: gated on whether any GetMemberWorkflowQueues call has
-					// actually succeeded yet, not on len(membership) — a member can
-					// legitimately succeed with zero queues, so membership staying empty
-					// doesn't mean nothing has been confirmed working. Once at least one
-					// call has succeeded, CLM is clearly available, so a later failure
-					// here (an expiring token, a scope revoked mid-scan) is a real,
-					// isolated problem, not an unavailability signal — failing loud beats
+					if status.Code(err) == codes.NotFound {
+						// Once at least one call has already succeeded, this endpoint is
+						// clearly available for this account, so a NotFound from here on
+						// is far more likely the isolated "member deleted between
+						// ListMembers and this call" case than a systemic one — skip just
+						// this member and keep scanning.
+						skippedMembers++
+						if n := skippedMembers; n == 1 || n == 10 || n == 100 || n%1000 == 0 {
+							ctxzap.Extract(ctx).Warn("baton-docusign: CLM member not found while scanning workflow queues, skipping",
+								zap.String("member_id", memberID), zap.Int("total_occurrences", n), zap.Error(err))
+						}
+						continue
+					}
+					// A non-NotFound tolerated code (PermissionDenied/Unauthenticated/
+					// FailedPrecondition) after other members already succeeded is a
+					// real, isolated problem (an expiring token, a scope revoked
+					// mid-scan), not an unavailability signal — failing loud beats
 					// discarding every already-discovered queue as if the whole feature
 					// were unavailable.
-					return nil, allAnnos, fmt.Errorf("%w: %w", errClmWorkflowQueuesUnavailable, err)
 				}
 				return nil, allAnnos, fmt.Errorf("baton-docusign: getting workflow queues for CLM member %s: %w", memberID, err)
 			}
