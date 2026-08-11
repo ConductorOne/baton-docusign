@@ -2,7 +2,6 @@ package connector
 
 import (
 	"context"
-	"errors"
 	"fmt"
 
 	"github.com/conductorone/baton-docusign/pkg/client"
@@ -18,21 +17,32 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-// errClmWorkflowQueuesUnavailable is a sentinel discoverClmWorkflowQueueMembership wraps
-// its return error with when the account-wide-unavailability signal fires — either the
-// very first ListMembers call failing with isOptInFeatureUnavailableError, or
-// clmWorkflowQueueUnavailableThreshold consecutive per-member GetMemberWorkflowQueues
-// calls doing the same with nothing yet successfully scanned. Lets List() distinguish
-// "skip this resource type gracefully" from a real failure via errors.Is, without losing
-// the underlying error for logging (see List()'s use of it).
-var errClmWorkflowQueuesUnavailable = errors.New("baton-docusign: CLM is not available for this account or token")
-
 // clmWorkflowQueueUnavailableThreshold is how many CONSECUTIVE tolerated per-member
-// failures (with nothing yet successfully scanned) discoverClmWorkflowQueueMembership
-// requires before concluding the whole account can't use this endpoint — see the
-// escalation branch's doc for why a single failure isn't enough. An arbitrary but
-// deliberately small judgment call: no live CLM tenant to derive it from empirically.
+// failures (with nothing yet successfully scanned) List() requires, across however many
+// chunked calls it takes to see them, before concluding the whole account can't use this
+// endpoint — see the escalation branch's doc for why a single failure isn't enough. An
+// arbitrary but deliberately small judgment call: no live CLM tenant to derive it from
+// empirically.
 const clmWorkflowQueueUnavailableThreshold = 3
+
+// clmSessionKeyWorkflowQueueDiscoveryState is where List() persists its accumulating
+// member-scan state between its own successive SDK-driven calls — see List()'s doc for
+// why the scan is chunked this way instead of running to completion inside one call.
+const clmSessionKeyWorkflowQueueDiscoveryState = "clm_workflow_queue_discovery_state"
+
+// clmWorkflowQueueDiscoveryState is List()'s accumulator: the queueID->membership index
+// the scan builds up, plus the escalation-threshold counters that must span every chunk
+// of the scan, not reset per chunk (three tolerated failures on members split across two
+// separate List() calls must still escalate, exactly as three in one call would).
+// Exported fields: this round-trips through session.SetJSON/GetJSON (encoding/json can't
+// see unexported fields).
+type clmWorkflowQueueDiscoveryState struct {
+	Membership                     map[string]*clmWorkflowQueueMembershipEntry `json:"membership"`
+	SucceededAtLeastOnce           bool                                        `json:"succeeded_at_least_once"`
+	ConsecutiveUnavailableFailures int                                         `json:"consecutive_unavailable_failures"`
+	SkippedMembers                 int                                         `json:"skipped_members"`
+	SkippedQueues                  int                                         `json:"skipped_queues"`
+}
 
 var _ connectorbuilder.StaticEntitlementSyncerV2 = (*clmWorkflowQueueBuilder)(nil)
 
@@ -46,39 +56,38 @@ func clmSessionKeyQueueMembers(queueID string) string {
 	return "clm_workflow_queue_members:" + queueID
 }
 
-// clmWorkflowQueueBuilder syncs CLM WorkflowQueues — the API's own term for what the
-// CLM admin console reportedly calls "Task Groups" (the surface the customer asked
-// for in Pylon #11836). That equivalence is an unconfirmed assumption: no DocuSign
-// document states it, and confirming it needs eyes on a real CLM admin console — see
-// resource_types.go.
+// clmWorkflowQueueBuilder syncs CLM WorkflowQueues — the API's own term for what the CLM
+// admin console reportedly calls "Task Groups". That equivalence is an unconfirmed
+// assumption: no DocuSign document states it, and confirming it needs eyes on a real CLM
+// admin console — see resource_types.go.
 //
 // The CLM API has no list-all endpoint for workflow queues and no reverse lookup from a
 // queue to its members — the only documented read path is per-member (GET
 // .../members/{id}/workflowqueues). So both List() and Grants() are built around a
-// single full member scan, not the direct list-all-then-page-per-resource shape every
-// other builder in this connector uses:
+// member scan, not the direct list-all-then-page-per-resource shape every other builder
+// in this connector uses:
 //
-//   - List() (called exactly once — see below) pages through every clm_member via
-//     client.ListMembers, and for each one calls client.GetMemberWorkflowQueues. It
-//     collects the distinct queues seen (by ID) as the resources to return, and — as a
-//     side effect of the same scan — builds a queueID -> []memberID index and writes it
-//     to the SDK's session cache (attr.Session), one entry per queue.
+//   - List() chunks the scan one ListMembers page per SDK-driven call — the usual
+//     one-page-per-call shape every sibling builder in this connector uses, unlike an
+//     earlier version of this file that ran the entire member scan (every ListMembers
+//     page, plus a GetMemberWorkflowQueues call per member) inside a single call. It
+//     persists its accumulating queueID -> []memberID index and escalation-threshold
+//     counters (clmWorkflowQueueDiscoveryState) to the SDK's session cache between
+//     chunks, since a plain Go value doesn't survive across separate List() invocations.
+//     Only on the LAST member page — the queue set can't be confirmed complete before
+//     then (there's no list-all endpoint to check it against) — does it write the final
+//     per-queue membership caches Grants() reads and emit the discovered queues as
+//     resources; every earlier chunk returns zero resources plus a NextPageToken.
 //   - Grants(ctx, queueResource, attr) reads that queue's member list straight back out
 //     of the session cache instead of re-scanning every member per queue, which would
-//     turn one expensive O(members) traversal into O(queues * members) — a real
-//     concern on a connector that already has an open rate-limit bug for this same
-//     customer (CXP-704).
+//     turn one expensive O(members) traversal into O(queues * members) — a real concern
+//     on a connector that already has an open rate-limit bug for this same customer
+//     (CXP-704).
 //
-// This only works because the session cache persists for the whole sync (List() runs
-// before Grants() for every resource of a type) and is shared across resource types
-// within one sync — see cmd/baton-docusign/main.go's
-// connectorrunner.WithSessionStoreEnabled().
-//
-// List() returns every queue it finds in a single page rather than exposing Baton's own
-// pagination: the full member scan has to complete before a single queue can be safely
-// returned anyway (there's no way to know page 1 of "queues" is complete without having
-// scanned every member), so there's nothing to page over — same choice clm_role makes
-// for its own small, fully-enumerable set.
+// This only works because the session cache persists for the whole sync (across all of
+// List()'s own chunked calls, and through to when Grants() runs for every resource of
+// this type afterward) and is shared across resource types within one sync — see
+// cmd/baton-docusign/main.go's connectorrunner.WithSessionStoreEnabled().
 //
 // Read-only: the API documents work-item assign/unassign, not queue-membership
 // grant/revoke, so there's no Grant/Revoke on this builder — matching
@@ -95,33 +104,164 @@ func (b *clmWorkflowQueueBuilder) ResourceType(_ context.Context) *v2.ResourceTy
 	return clmWorkflowQueueResourceType
 }
 
+// List drains one ListMembers page per call — see clmWorkflowQueueBuilder's doc for why
+// the member scan is chunked this way, and clmWorkflowQueueDiscoveryState for what gets
+// persisted across chunks. Escalation/error-tolerance semantics for
+// GetMemberWorkflowQueues failures are unchanged from a single-call scan: a tolerated
+// code (PermissionDenied/Unauthenticated/NotFound/FailedPrecondition) before anything has
+// succeeded counts toward clmWorkflowQueueUnavailableThreshold regardless of which chunk
+// it lands in; a NotFound after something has already succeeded is an isolated skip; any
+// other tolerated code after success fails loud.
 func (b *clmWorkflowQueueBuilder) List(ctx context.Context, _ *v2.ResourceId, attr rs.SyncOpAttrs) ([]*v2.Resource, *rs.SyncOpResults, error) {
-	membership, allAnnos, err := b.discoverClmWorkflowQueueMembership(ctx)
+	bag, pageToken, err := parsePageToken(attr.PageToken.Token, &v2.ResourceId{ResourceType: clmWorkflowQueueResourceType.Id})
 	if err != nil {
-		if errors.Is(err, errClmWorkflowQueuesUnavailable) {
+		return nil, nil, err
+	}
+
+	state, _, err := session.GetJSON[clmWorkflowQueueDiscoveryState](ctx, attr.Session, clmSessionKeyWorkflowQueueDiscoveryState)
+	if err != nil {
+		return nil, nil, fmt.Errorf("baton-docusign: failed to read CLM workflow queue discovery state: %w", err)
+	}
+	if state.Membership == nil {
+		state.Membership = make(map[string]*clmWorkflowQueueMembershipEntry)
+	}
+
+	members, nextMemberPageToken, allAnnos, err := b.client.ListMembers(ctx, client.PageOptions{
+		PageSize:  attr.PageToken.Size,
+		PageToken: pageToken,
+	})
+	if err != nil {
+		if pageToken == "" && isOptInFeatureUnavailableError(err) {
 			ctxzap.Extract(ctx).Info("baton-docusign: CLM is not available for this account or token, skipping clm_workflow_queue sync", zap.Error(err))
 			return nil, &rs.SyncOpResults{Annotations: dedupeRateLimitAnnotations(allAnnos)}, nil
 		}
 		return nil, nil, err
 	}
 
-	resources := make([]*v2.Resource, 0, len(membership))
-	for queueID, entry := range membership {
-		if err := session.SetJSON(ctx, attr.Session, clmSessionKeyQueueMembers(queueID), entry.members); err != nil {
-			// The session store is opt-in end-to-end: WithSessionStoreEnabled (main.go)
-			// only tells the SDK to accept a store connection — whether one actually
-			// exists still depends on the parent process wiring a listen port, and it
-			// falls back to NoOpSessionStore (every Set call fails) whenever it doesn't.
-			// This resource type's Grants() cannot function without it, but that's not
-			// true of the rest of the sync — a hard error here would fail every other
-			// resource type too. Skip gracefully instead, same as an unavailable CLM
-			// subscription.
-			ctxzap.Extract(ctx).Warn("baton-docusign: failed to cache CLM workflow queue membership, skipping clm_workflow_queue sync",
-				zap.String("queue_id", queueID), zap.Error(err))
-			return nil, &rs.SyncOpResults{Annotations: dedupeRateLimitAnnotations(allAnnos)}, nil
+	for _, member := range members {
+		memberID := clmIDFromHref(member.Href)
+		queues, queueAnnos, err := b.client.GetMemberWorkflowQueues(ctx, memberID)
+		if err != nil {
+			if isOptInFeatureUnavailableError(err) {
+				if !state.SucceededAtLeastOnce {
+					// Nothing has proven this endpoint works for this account yet.
+					// DocuSign's own CLM API docs (Response and Error Codes) confirm
+					// NotFound isn't unique to "this object doesn't exist" — it's the
+					// SAME response CLM returns for "this exists but you don't have
+					// access rights", specifically so a 403 never leaks whether the
+					// object exists ("If the user does not have permissions to see
+					// the object or the object does not exist, a 404 response code is
+					// returned"). So a NotFound here is just as plausible a signal
+					// that workflow queues aren't available for this whole account as
+					// PermissionDenied/Unauthenticated are — treat it the same way.
+					//
+					// But escalating on a SINGLE failure reintroduces a different
+					// false-deletion race: a member that was genuinely deleted between
+					// ListMembers and this call (the case the isolated-NotFound skip
+					// below exists for) would wipe the whole resource type if it just
+					// happens to be first in scan order. A systemic failure (the
+					// endpoint disabled for this account) 404s/403s on EVERY member,
+					// while an isolated deletion race hits exactly one — so require a
+					// few consecutive failures (spanning as many chunks as it takes)
+					// before concluding "systemic", capping the wasted-request cost
+					// CXP-704 cares about without letting one unlucky ordering empty
+					// the resource type.
+					state.ConsecutiveUnavailableFailures++
+					if state.ConsecutiveUnavailableFailures >= clmWorkflowQueueUnavailableThreshold {
+						ctxzap.Extract(ctx).Info("baton-docusign: CLM is not available for this account or token, skipping clm_workflow_queue sync", zap.Error(err))
+						return nil, &rs.SyncOpResults{Annotations: dedupeRateLimitAnnotations(allAnnos)}, nil
+					}
+					// Below the threshold: same visibility as the post-success
+					// isolated-NotFound skip below — this member's queue membership
+					// (if any) is silently missing from this sync otherwise.
+					state.SkippedMembers++
+					if n := state.SkippedMembers; n == 1 || n == 10 || n == 100 || n%1000 == 0 {
+						ctxzap.Extract(ctx).Warn("baton-docusign: failed to get CLM workflow queues for member, skipping",
+							zap.String("member_id", memberID), zap.Int("total_occurrences", n), zap.Error(err))
+					}
+					continue
+				}
+				if status.Code(err) == codes.NotFound {
+					// Once at least one call has already succeeded, this endpoint is
+					// clearly available for this account, so a NotFound from here on
+					// is far more likely the isolated "member deleted between
+					// ListMembers and this call" case than a systemic one — skip just
+					// this member and keep scanning.
+					state.SkippedMembers++
+					if n := state.SkippedMembers; n == 1 || n == 10 || n == 100 || n%1000 == 0 {
+						ctxzap.Extract(ctx).Warn("baton-docusign: CLM member not found while scanning workflow queues, skipping",
+							zap.String("member_id", memberID), zap.Int("total_occurrences", n), zap.Error(err))
+					}
+					continue
+				}
+				// A non-NotFound tolerated code (PermissionDenied/Unauthenticated/
+				// FailedPrecondition) after other members already succeeded is a
+				// real, isolated problem (an expiring token, a scope revoked
+				// mid-scan), not an unavailability signal — failing loud beats
+				// discarding every already-discovered queue as if the whole feature
+				// were unavailable.
+			}
+			return nil, nil, fmt.Errorf("baton-docusign: getting workflow queues for CLM member %s: %w", memberID, err)
 		}
+		state.SucceededAtLeastOnce = true
+		allAnnos = append(allAnnos, queueAnnos...)
 
-		queueResource, err := parseIntoClmWorkflowQueueResource(&entry.queue)
+		for _, q := range queues {
+			queueID := clmIDFromHref(q.Href)
+			if queueID == "" {
+				state.SkippedQueues++
+				if n := state.SkippedQueues; n == 1 || n == 10 || n == 100 || n%1000 == 0 {
+					ctxzap.Extract(ctx).Warn("baton-docusign: CLM workflow queue has an empty Href, skipping",
+						zap.String("member_id", memberID), zap.String("queue_name", q.Name), zap.Int("total_occurrences", n))
+				}
+				continue
+			}
+			entry, ok := state.Membership[queueID]
+			if !ok {
+				entry = &clmWorkflowQueueMembershipEntry{Queue: q}
+				state.Membership[queueID] = entry
+			}
+			entry.Members = append(entry.Members, memberID)
+		}
+	}
+
+	if err := session.SetJSON(ctx, attr.Session, clmSessionKeyWorkflowQueueDiscoveryState, state); err != nil {
+		// The session store is opt-in end-to-end: WithSessionStoreEnabled (main.go)
+		// only tells the SDK to accept a store connection — whether one actually
+		// exists still depends on the parent process wiring a listen port, and it
+		// falls back to NoOpSessionStore (every Set call fails) whenever it doesn't.
+		// This resource type's Grants() cannot function without it, but that's not
+		// true of the rest of the sync — a hard error here would fail every other
+		// resource type too. Skip gracefully instead, same as an unavailable CLM
+		// subscription.
+		ctxzap.Extract(ctx).Warn("baton-docusign: failed to cache CLM workflow queue discovery progress, skipping clm_workflow_queue sync", zap.Error(err))
+		return nil, &rs.SyncOpResults{Annotations: dedupeRateLimitAnnotations(allAnnos)}, nil
+	}
+
+	if nextMemberPageToken != "" {
+		outToken, err := bag.NextToken(nextMemberPageToken)
+		if err != nil {
+			return nil, nil, err
+		}
+		return nil, &rs.SyncOpResults{Annotations: dedupeRateLimitAnnotations(allAnnos), NextPageToken: outToken}, nil
+	}
+
+	// Last member page: the queue set is only guaranteed complete now (see this
+	// builder's doc) — finalize the per-queue membership caches Grants() reads (one
+	// SetManyJSON call instead of one SetJSON call per queue) and emit every discovered
+	// queue as a resource.
+	membersByKey := make(map[string][]string, len(state.Membership))
+	for queueID, entry := range state.Membership {
+		membersByKey[clmSessionKeyQueueMembers(queueID)] = entry.Members
+	}
+	if err := session.SetManyJSON(ctx, attr.Session, membersByKey); err != nil {
+		ctxzap.Extract(ctx).Warn("baton-docusign: failed to cache CLM workflow queue membership, skipping clm_workflow_queue sync", zap.Error(err))
+		return nil, &rs.SyncOpResults{Annotations: dedupeRateLimitAnnotations(allAnnos)}, nil
+	}
+
+	resources := make([]*v2.Resource, 0, len(state.Membership))
+	for _, entry := range state.Membership {
+		queueResource, err := parseIntoClmWorkflowQueueResource(&entry.Queue)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -132,10 +272,12 @@ func (b *clmWorkflowQueueBuilder) List(ctx context.Context, _ *v2.ResourceId, at
 }
 
 // dedupeRateLimitAnnotations keeps every non-rate-limit annotation as-is but collapses
-// all RateLimitDescription entries down to the last one — discoverClmWorkflowQueueMembership
-// appends one member-page annotation set plus one per-member queue-fetch annotation set
-// per iteration, so a large account accumulates thousands of near-identical rate-limit
-// snapshots in a single List() response; only the most recent one is meaningful.
+// all RateLimitDescription entries down to the last one — List() appends one
+// GetMemberWorkflowQueues annotation set per member processed in its current chunk, so a
+// response can carry several near-identical rate-limit snapshots; only the most recent
+// one is meaningful. Chunking (one ListMembers page per call) already bounds this to one
+// page's worth of members rather than the whole account, but a page can still be in the
+// hundreds, so this stays worth doing.
 func dedupeRateLimitAnnotations(annos annotations.Annotations) annotations.Annotations {
 	var out annotations.Annotations
 	lastRateLimitIdx := -1
@@ -153,136 +295,14 @@ func dedupeRateLimitAnnotations(annos annotations.Annotations) annotations.Annot
 }
 
 // clmWorkflowQueueMembershipEntry pairs a discovered queue with the member IDs found
-// to belong to it — the two pieces of data discoverClmWorkflowQueueMembership's member
-// scan produces for every queue, kept together under one key instead of two parallel
-// maps that would otherwise always share the same key set.
+// to belong to it — the two pieces of data the member scan produces for every queue,
+// kept together under one key instead of two parallel maps that would otherwise always
+// share the same key set. Exported fields: this struct round-trips through
+// session.SetJSON/GetJSON as part of clmWorkflowQueueDiscoveryState (encoding/json
+// can't see unexported fields).
 type clmWorkflowQueueMembershipEntry struct {
-	queue   client.ClmWorkflowQueue
-	members []string
-}
-
-// discoverClmWorkflowQueueMembership is the member-scan discovery algorithm this
-// builder's whole design is built around (see the type doc above): the CLM API has no
-// list-all endpoint for workflow queues and no reverse lookup from a queue to its
-// members, so this pages through every clm_member and, for each, calls
-// client.GetMemberWorkflowQueues to learn which queues they're in. Pure API-domain
-// discovery — no v2.Resource, no session cache — kept separate from List() so this
-// algorithm is testable and readable on its own, and List() stays a plain "discover,
-// then build resources" shape like every sibling CLM builder's List().
-//
-// Returns a nil map and an error wrapping errClmWorkflowQueuesUnavailable if the very
-// first ListMembers call fails with isOptInFeatureUnavailableError, or if
-// clmWorkflowQueueUnavailableThreshold consecutive per-member GetMemberWorkflowQueues
-// calls do the same before any member has succeeded — List() checks for that sentinel
-// via errors.Is to decide whether to skip this resource type gracefully.
-func (b *clmWorkflowQueueBuilder) discoverClmWorkflowQueueMembership(ctx context.Context) (map[string]*clmWorkflowQueueMembershipEntry, annotations.Annotations, error) {
-	membership := make(map[string]*clmWorkflowQueueMembershipEntry)
-	var allAnnos annotations.Annotations
-	var skippedMembers, skippedQueues int
-	var succeededAtLeastOnce bool
-	var consecutiveUnavailableFailures int
-
-	memberPageToken := ""
-	for {
-		members, nextMemberPageToken, memberAnnos, err := b.client.ListMembers(ctx, client.PageOptions{PageToken: memberPageToken})
-		if err != nil {
-			if memberPageToken == "" && isOptInFeatureUnavailableError(err) {
-				return nil, allAnnos, fmt.Errorf("%w: %w", errClmWorkflowQueuesUnavailable, err)
-			}
-			return nil, allAnnos, err
-		}
-		allAnnos = append(allAnnos, memberAnnos...)
-
-		for _, member := range members {
-			memberID := clmIDFromHref(member.Href)
-			queues, queueAnnos, err := b.client.GetMemberWorkflowQueues(ctx, memberID)
-			if err != nil {
-				if isOptInFeatureUnavailableError(err) {
-					if !succeededAtLeastOnce {
-						// Nothing has proven this endpoint works for this account yet.
-						// DocuSign's own CLM API docs (Response and Error Codes) confirm
-						// NotFound isn't unique to "this object doesn't exist" — it's the
-						// SAME response CLM returns for "this exists but you don't have
-						// access rights", specifically so a 403 never leaks whether the
-						// object exists ("If the user does not have permissions to see
-						// the object or the object does not exist, a 404 response code is
-						// returned"). So a NotFound here is just as plausible a signal
-						// that workflow queues aren't available for this whole account as
-						// PermissionDenied/Unauthenticated are — treat it the same way.
-						//
-						// But escalating on a SINGLE failure reintroduces a different
-						// false-deletion race: a member that was genuinely deleted between
-						// ListMembers and this call (the case the isolated-NotFound skip
-						// below exists for) would wipe the whole resource type if it just
-						// happens to be first in scan order. A systemic failure (the
-						// endpoint disabled for this account) 404s/403s on EVERY member,
-						// while an isolated deletion race hits exactly one — so require a
-						// few consecutive failures before concluding "systemic", capping
-						// the wasted-request cost CXP-704 cares about without letting one
-						// unlucky ordering empty the resource type.
-						consecutiveUnavailableFailures++
-						if consecutiveUnavailableFailures >= clmWorkflowQueueUnavailableThreshold {
-							return nil, allAnnos, fmt.Errorf("%w: %w", errClmWorkflowQueuesUnavailable, err)
-						}
-						// Below the threshold: same visibility as the post-success
-						// isolated-NotFound skip below — this member's queue membership
-						// (if any) is silently missing from this sync otherwise.
-						skippedMembers++
-						if n := skippedMembers; n == 1 || n == 10 || n == 100 || n%1000 == 0 {
-							ctxzap.Extract(ctx).Warn("baton-docusign: failed to get CLM workflow queues for member, skipping",
-								zap.String("member_id", memberID), zap.Int("total_occurrences", n), zap.Error(err))
-						}
-						continue
-					}
-					if status.Code(err) == codes.NotFound {
-						// Once at least one call has already succeeded, this endpoint is
-						// clearly available for this account, so a NotFound from here on
-						// is far more likely the isolated "member deleted between
-						// ListMembers and this call" case than a systemic one — skip just
-						// this member and keep scanning.
-						skippedMembers++
-						if n := skippedMembers; n == 1 || n == 10 || n == 100 || n%1000 == 0 {
-							ctxzap.Extract(ctx).Warn("baton-docusign: CLM member not found while scanning workflow queues, skipping",
-								zap.String("member_id", memberID), zap.Int("total_occurrences", n), zap.Error(err))
-						}
-						continue
-					}
-					// A non-NotFound tolerated code (PermissionDenied/Unauthenticated/
-					// FailedPrecondition) after other members already succeeded is a
-					// real, isolated problem (an expiring token, a scope revoked
-					// mid-scan), not an unavailability signal — failing loud beats
-					// discarding every already-discovered queue as if the whole feature
-					// were unavailable.
-				}
-				return nil, allAnnos, fmt.Errorf("baton-docusign: getting workflow queues for CLM member %s: %w", memberID, err)
-			}
-			succeededAtLeastOnce = true
-			allAnnos = append(allAnnos, queueAnnos...)
-
-			for _, q := range queues {
-				queueID := clmIDFromHref(q.Href)
-				if queueID == "" {
-					skippedQueues++
-					if n := skippedQueues; n == 1 || n == 10 || n == 100 || n%1000 == 0 {
-						ctxzap.Extract(ctx).Warn("baton-docusign: CLM workflow queue has an empty Href, skipping",
-							zap.String("member_id", memberID), zap.String("queue_name", q.Name), zap.Int("total_occurrences", n))
-					}
-					continue
-				}
-				entry, ok := membership[queueID]
-				if !ok {
-					entry = &clmWorkflowQueueMembershipEntry{queue: q}
-					membership[queueID] = entry
-				}
-				entry.members = append(entry.members, memberID)
-			}
-		}
-
-		if nextMemberPageToken == "" {
-			return membership, allAnnos, nil
-		}
-		memberPageToken = nextMemberPageToken
-	}
+	Queue   client.ClmWorkflowQueue `json:"queue"`
+	Members []string                `json:"members"`
 }
 
 // Entitlements returns nil — the SDK does not call this when StaticEntitlementSyncerV2

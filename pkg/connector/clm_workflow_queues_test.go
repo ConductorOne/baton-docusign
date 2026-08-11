@@ -8,6 +8,7 @@ import (
 
 	"github.com/conductorone/baton-docusign/pkg/client/clmtest"
 	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
+	"github.com/conductorone/baton-sdk/pkg/pagination"
 	rs "github.com/conductorone/baton-sdk/pkg/types/resource"
 	"github.com/conductorone/baton-sdk/pkg/types/sessions"
 )
@@ -372,5 +373,111 @@ func TestClmWorkflowQueueBuilder_Grants_CacheMiss(t *testing.T) {
 	}
 	if len(grants) != 0 {
 		t.Errorf("expected zero grants on a cache miss, got %d: %+v", len(grants), grants)
+	}
+}
+
+// TestClmWorkflowQueueBuilder_List_ChunksAcrossPages is the core regression test for
+// this builder's chunked design (a review finding: an earlier version ran the entire
+// member scan inside one List() call, violating this connector's usual one-page-per-call
+// convention). Forcing PageSize 2 against the 6 seeded members (alice, bob, carol, dave,
+// eve, frank) produces 3 ListMembers pages, so 3 separate List() calls are required.
+// Every call but the last must return zero resources with a non-empty NextPageToken —
+// the queue set can't be confirmed complete before the member scan is — and the final
+// call must return the same 2 distinct queues (Onboarding, Escalations) the single-call
+// design already proved correct in TestClmWorkflowQueueBuilder_List_DiscoversQueuesViaMemberScan.
+func TestClmWorkflowQueueBuilder_List_ChunksAcrossPages(t *testing.T) {
+	_, c := clmtest.NewServer(t)
+	b := newClmWorkflowQueueBuilder(c)
+	ctx := context.Background()
+	attr := rs.SyncOpAttrs{Session: newFakeSessionStore()}
+
+	var resources []*v2.Resource
+	pageToken := ""
+	for i := 0; i < 10; i++ {
+		attr.PageToken = pagination.Token{Size: 2, Token: pageToken}
+		res, syncRes, err := b.List(ctx, nil, attr)
+		if err != nil {
+			t.Fatalf("List page %d: %v", i, err)
+		}
+		if syncRes.NextPageToken == "" {
+			resources = res
+			break
+		}
+		if len(res) != 0 {
+			t.Fatalf("page %d: expected zero resources before the member scan completes, got %d: %+v", i, len(res), res)
+		}
+		pageToken = syncRes.NextPageToken
+	}
+
+	if len(resources) != 2 {
+		t.Fatalf("expected 2 distinct workflow queues (Onboarding, Escalations) on the final page, got %d: %+v", len(resources), resources)
+	}
+	names := make(map[string]bool)
+	for _, r := range resources {
+		names[r.DisplayName] = true
+	}
+	if !names["Onboarding"] || !names["Escalations"] {
+		t.Errorf("expected both Onboarding and Escalations among the discovered queues, got %v", names)
+	}
+
+	// Grants() must work off the same session store exactly as the single-call design.
+	byName := make(map[string]*v2.Resource)
+	for _, r := range resources {
+		byName[r.DisplayName] = r
+	}
+	grants, _, err := b.Grants(ctx, byName["Onboarding"], attr)
+	if err != nil {
+		t.Fatalf("Grants(Onboarding): %v", err)
+	}
+	if len(grants) != 2 {
+		t.Fatalf("expected 2 members (alice, bob) in Onboarding, got %d: %+v", len(grants), grants)
+	}
+}
+
+// TestClmWorkflowQueueBuilder_List_EscalationThresholdSpansChunks is a regression test
+// for the specific risk chunking introduces: the escalation-threshold counters
+// (clmWorkflowQueueDiscoveryState) must persist and keep accumulating ACROSS separate
+// List() calls, not reset per chunk — otherwise 2 consecutive failures in one chunk
+// followed by 1 more in the next chunk would never reach clmWorkflowQueueUnavailableThreshold
+// (3), even though the same 3 consecutive failures in a single unchunked call already do
+// (per TestClmWorkflowQueueBuilder_List_SkipsGracefullyAfterConsecutiveFailures). Forces
+// alice and bob (chunk 1, PageSize 2) and carol (chunk 2) to all fail — the first chunk
+// alone only sees 2 failures (below threshold, must NOT escalate yet), and the second
+// chunk's first member pushes the running total to 3 and must escalate there.
+func TestClmWorkflowQueueBuilder_List_EscalationThresholdSpansChunks(t *testing.T) {
+	srv, c := clmtest.NewServer(t)
+	srv.ForceMemberWorkflowQueuesStatus("member-alice", 403)
+	srv.ForceMemberWorkflowQueuesStatus("member-bob", 403)
+	srv.ForceMemberWorkflowQueuesStatus("member-carol", 403)
+	b := newClmWorkflowQueueBuilder(c)
+	ctx := context.Background()
+	attr := rs.SyncOpAttrs{Session: newFakeSessionStore()}
+
+	// Chunk 1: alice, bob — 2 failures, below threshold, must continue (non-empty
+	// NextPageToken) with zero resources, not escalate yet.
+	attr.PageToken = pagination.Token{Size: 2, Token: ""}
+	resources, syncRes, err := b.List(ctx, nil, attr)
+	if err != nil {
+		t.Fatalf("chunk 1: expected 2 below-threshold failures to be tolerated, got error: %v", err)
+	}
+	if len(resources) != 0 {
+		t.Fatalf("chunk 1: expected zero resources, got %d: %+v", len(resources), resources)
+	}
+	if syncRes.NextPageToken == "" {
+		t.Fatal("chunk 1: expected a non-empty NextPageToken — the member scan isn't done and shouldn't have escalated yet")
+	}
+
+	// Chunk 2: carol is first — this is the 3rd CONSECUTIVE failure counting the two
+	// from chunk 1, so it must escalate here, before ever reaching dave.
+	attr.PageToken = pagination.Token{Size: 2, Token: syncRes.NextPageToken}
+	resources, syncRes, err = b.List(ctx, nil, attr)
+	if err != nil {
+		t.Fatalf("chunk 2: expected the threshold-crossing failure to skip gracefully, got error: %v", err)
+	}
+	if len(resources) != 0 {
+		t.Errorf("chunk 2: expected zero resources after escalating, got %d: %+v", len(resources), resources)
+	}
+	if syncRes.NextPageToken != "" {
+		t.Error("chunk 2: expected an empty NextPageToken — escalation should end the sync for this resource type, not request another chunk")
 	}
 }
