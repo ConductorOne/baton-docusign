@@ -18,6 +18,14 @@ import (
 
 var _ connectorbuilder.StaticEntitlementSyncerV2 = (*clmFolderBuilder)(nil)
 
+// The three folder-security principal kinds, as passed to logSkippedFolderSecurityEntry
+// and (via the principal_kind field) queryable in logs.
+const (
+	clmFolderPrincipalKindGroup = "group"
+	clmFolderPrincipalKindRole  = "role"
+	clmFolderPrincipalKindUser  = "user"
+)
+
 // The 5 grantable Baton entitlement slugs for CLM folder security, in ascending order
 // of access.
 const (
@@ -141,7 +149,7 @@ func (f *clmFolderBuilder) Grants(ctx context.Context, folderResource *v2.Resour
 	for _, entry := range folder.Security.Groups {
 		slug, ok := clmSlugForAccessType(entry.AccessType)
 		if !ok {
-			logSkippedFolderSecurityEntry(ctx, "group", entry.AccessType,
+			logSkippedFolderSecurityEntry(ctx, clmFolderPrincipalKindGroup, entry.AccessType,
 				zap.String("folder_id", folderResource.Id.Resource), zap.String("group_href", entry.Href))
 			continue
 		}
@@ -158,7 +166,7 @@ func (f *clmFolderBuilder) Grants(ctx context.Context, folderResource *v2.Resour
 	for _, entry := range folder.Security.Roles {
 		slug, ok := clmSlugForAccessType(entry.AccessType)
 		if !ok {
-			logSkippedFolderSecurityEntry(ctx, "role", entry.AccessType,
+			logSkippedFolderSecurityEntry(ctx, clmFolderPrincipalKindRole, entry.AccessType,
 				zap.String("folder_id", folderResource.Id.Resource), zap.String("role", entry.Item))
 			continue
 		}
@@ -177,7 +185,7 @@ func (f *clmFolderBuilder) Grants(ctx context.Context, folderResource *v2.Resour
 	for _, entry := range folder.Security.Users {
 		slug, ok := clmSlugForAccessType(entry.AccessType)
 		if !ok {
-			logSkippedFolderSecurityEntry(ctx, "user", entry.AccessType,
+			logSkippedFolderSecurityEntry(ctx, clmFolderPrincipalKindUser, entry.AccessType,
 				zap.String("folder_id", folderResource.Id.Resource), zap.String("member_href", entry.Href))
 			continue
 		}
@@ -190,22 +198,24 @@ func (f *clmFolderBuilder) Grants(ctx context.Context, folderResource *v2.Resour
 
 // logSkippedFolderSecurityEntry logs the one Debug line for a folder-security entry
 // whose AccessType didn't map to a grantable tier — shared by the Groups/Roles/Users
-// branches of Grants, which differ only in kind ("group"/"role"/"user") and the
-// caller-supplied fields identifying the entry. Custom gets its own message, since
-// unlike NoAccess/InheritFromParentFolder (clmIsBenignUnmappedAccessType) it's a real,
-// active grant this connector can't represent — fully silencing it would hide an actual
-// access-visibility gap. Both branches carry access_type so either case is findable by
-// the same structured-log query as every other skip line in this file.
+// branches of Grants, which differ only in kind ("group"/"role"/"user", carried as a
+// field rather than interpolated into the message, so both messages stay constant
+// strings — no per-call fmt.Sprintf) and the caller-supplied fields identifying the
+// entry. Custom gets its own message, since unlike NoAccess/InheritFromParentFolder
+// (clmIsBenignUnmappedAccessType) it's a real, active grant this connector can't
+// represent — fully silencing it would hide an actual access-visibility gap. Both
+// branches carry access_type so either case is findable by the same structured-log
+// query as every other skip line in this file.
 func logSkippedFolderSecurityEntry(ctx context.Context, kind, accessType string, fields ...zap.Field) {
-	fields = append(fields, zap.String("access_type", accessType))
+	fields = append(fields, zap.String("principal_kind", kind), zap.String("access_type", accessType))
 	switch {
 	case accessType == client.ClmAccessTypeCustom:
 		ctxzap.Extract(ctx).Debug(
-			fmt.Sprintf("baton-docusign: skipping CLM folder %s-security entry with an unrepresentable Custom AccessType — a real, active grant C1 won't see", kind),
+			"baton-docusign: skipping CLM folder security entry with an unrepresentable Custom AccessType — a real, active grant C1 won't see",
 			fields...)
 	case !clmIsBenignUnmappedAccessType(accessType):
 		ctxzap.Extract(ctx).Debug(
-			fmt.Sprintf("baton-docusign: skipping CLM folder %s-security entry with an unmapped AccessType", kind),
+			"baton-docusign: skipping CLM folder security entry with an unmapped AccessType",
 			fields...)
 	}
 }

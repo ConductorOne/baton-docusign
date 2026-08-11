@@ -287,19 +287,25 @@ func TestClmFolderBuilder_Grants_LogsOnlyForGenuinelyUnrecognizedAccessType(t *t
 	if len(entries) != 3 {
 		t.Fatalf("expected exactly 3 log entries (one per Groups/Roles/Users branch, for the genuinely unrecognized AccessType only), got %d: %+v", len(entries), entries)
 	}
-	// Each branch's message names its own distinguishing field alongside access_type —
-	// binding message to field (not just checking each field appears SOMEWHERE across
-	// the 3 entries) catches a copy-paste slip that swaps them between branches, e.g.
-	// the Users loop emitting group_href under its own "user-security" message.
-	wantFieldForMessage := map[string]string{
-		"baton-docusign: skipping CLM folder group-security entry with an unmapped AccessType": "group_href",
-		"baton-docusign: skipping CLM folder role-security entry with an unmapped AccessType":  "role",
-		"baton-docusign: skipping CLM folder user-security entry with an unmapped AccessType":  "member_href",
+	// The three branches share one constant message (no per-kind fmt.Sprintf — see
+	// logSkippedFolderSecurityEntry's doc) and instead distinguish themselves via a
+	// principal_kind field. Binding principal_kind to its distinguishing field (not just
+	// checking each field appears SOMEWHERE across the 3 entries) catches a copy-paste
+	// slip that swaps them between branches, e.g. the Users loop emitting group_href
+	// under principal_kind "user".
+	const wantMessage = "baton-docusign: skipping CLM folder security entry with an unmapped AccessType"
+	wantFieldForKind := map[string]string{
+		clmFolderPrincipalKindGroup: "group_href",
+		clmFolderPrincipalKindRole:  "role",
+		clmFolderPrincipalKindUser:  "member_href",
 	}
-	seenMessage := map[string]bool{}
+	seenKind := map[string]bool{}
 	for _, e := range entries {
 		if e.Level != zapcore.DebugLevel {
 			t.Errorf("expected the unmapped-AccessType log to be at Debug, got %v", e.Level)
+		}
+		if e.Message != wantMessage {
+			t.Errorf("expected message %q, got %q", wantMessage, e.Message)
 		}
 		// Pins WHICH entry logged, not just how many: an inverted clmIsBenignUnmappedAccessType
 		// check (silencing SomethingUnrecognized and logging NoAccess instead) would still
@@ -309,19 +315,20 @@ func TestClmFolderBuilder_Grants_LogsOnlyForGenuinelyUnrecognizedAccessType(t *t
 		if got := fields["access_type"]; got != "SomethingUnrecognized" {
 			t.Errorf("expected the logged entry's access_type to be %q, got %q", "SomethingUnrecognized", got)
 		}
-		wantField, ok := wantFieldForMessage[e.Message]
+		kind, _ := fields["principal_kind"].(string)
+		wantField, ok := wantFieldForKind[kind]
 		if !ok {
-			t.Errorf("unexpected log message %q", e.Message)
+			t.Errorf("unexpected principal_kind %q", kind)
 			continue
 		}
-		seenMessage[e.Message] = true
+		seenKind[kind] = true
 		if _, ok := fields[wantField]; !ok {
-			t.Errorf("expected message %q to carry the %q field, got fields %v", e.Message, wantField, fields)
+			t.Errorf("expected principal_kind %q to carry the %q field, got fields %v", kind, wantField, fields)
 		}
 	}
-	for msg := range wantFieldForMessage {
-		if !seenMessage[msg] {
-			t.Errorf("expected one log entry with message %q (the branch that never fired)", msg)
+	for kind := range wantFieldForKind {
+		if !seenKind[kind] {
+			t.Errorf("expected one log entry with principal_kind %q (the branch that never fired)", kind)
 		}
 	}
 }
