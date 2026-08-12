@@ -35,11 +35,7 @@ func (b *clmMemberBuilder) List(ctx context.Context, _ *v2.ResourceId, attr rs.S
 		PageToken: pageToken,
 	})
 	if err != nil {
-		// Requires the error to come from CLM discovery itself, not just a tolerated
-		// code — see client.IsClmDiscoveryError's doc and clm_roles.go's List() for why
-		// the code alone isn't enough to distinguish "no CLM subscription" from a
-		// same-coded failure on this resource's own ListMembers call.
-		if attr.PageToken.Token == "" && client.IsClmDiscoveryError(err) && isOptInFeatureUnavailableError(err) {
+		if attr.PageToken.Token == "" && isOptInFeatureUnavailableError(err) {
 			ctxzap.Extract(ctx).Info("baton-docusign: CLM is not available for this account or token, skipping clm_member sync", zap.Error(err))
 			return nil, &rs.SyncOpResults{}, nil
 		}
