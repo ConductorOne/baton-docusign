@@ -119,6 +119,19 @@ func (p *permissionProfilesBuilder) Revoke(ctx context.Context, grantObj *v2.Gra
 
 	defaultProfileID, ok := permissionProfileIDByName(permissionProfiles, defaultPermissionProfileName)
 	if !ok {
+		// permissionProfileIDByName also returns false when the name matches more than
+		// one profile (ambiguous, not missing) — distinguish the two here so the error
+		// doesn't send an operator looking for a missing profile that actually exists
+		// twice under the same name.
+		matches := 0
+		for _, p := range permissionProfiles {
+			if p.PermissionProfileName == defaultPermissionProfileName {
+				matches++
+			}
+		}
+		if matches > 1 {
+			return profileAnnos, fmt.Errorf("default permission profile '%s' is ambiguous: %d profiles share that name in this account", defaultPermissionProfileName, matches)
+		}
 		return profileAnnos, fmt.Errorf("default permission profile '%s' not found in account", defaultPermissionProfileName)
 	}
 
