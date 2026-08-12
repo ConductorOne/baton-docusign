@@ -76,6 +76,18 @@ func TestPermissionProfileIDByName(t *testing.T) {
 			lookup:      "Custom Profile",
 			wantMatches: 2,
 		},
+		{
+			// A same-name profile with no usable ID doesn't count toward "ambiguous" —
+			// only the one profile with a real ID matters here.
+			name: "same name, one with no usable ID, resolves to the valid one",
+			profiles: []client.PermissionProfile{
+				{PermissionProfileId: "", PermissionProfileName: "Custom Profile"},
+				{PermissionProfileId: "pp-2", PermissionProfileName: "Custom Profile"},
+			},
+			lookup:      "Custom Profile",
+			wantID:      "pp-2",
+			wantMatches: 1,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
