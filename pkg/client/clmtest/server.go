@@ -165,6 +165,11 @@ func (s *Server) SetGroupHref(id, href string) {
 	defer s.mu.Unlock()
 	if g, ok := s.groups[id]; ok {
 		g.Href = href
+		return
+	}
+	if s.t != nil {
+		//nolint:gocritic // s.t is testing.TB; ruleguard only exempts concrete *testing.T/B/F, not the interface
+		s.t.Fatalf("SetGroupHref: no seeded group %q", id)
 	}
 }
 
