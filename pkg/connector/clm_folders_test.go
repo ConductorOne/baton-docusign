@@ -766,42 +766,31 @@ func TestClmFolderBuilder_Grant_SurvivesIdentityOnlyPrincipal_SampleBranch(t *te
 	b := newClmFolderBuilder(c)
 	ctx := context.Background()
 
+	const sampleHost = "https://other.example.com"
+	altGroupLegalHref := fmt.Sprintf("%s/v2/%s/groups/group-legal", sampleHost, clmtest.AccountID)
+	srv.SetFolderGroupSecurityHref("folder-contracts", "group-legal", altGroupLegalHref)
+	altGroupFinanceHref := fmt.Sprintf("%s/v2/%s/groups/group-finance", sampleHost, clmtest.AccountID)
+	srv.SetFolderGroupSecurityHref("folder-contracts", "group-finance", altGroupFinanceHref)
+	altMemberBobHref := fmt.Sprintf("%s/v2/%s/members/%s", sampleHost, clmtest.AccountID, "member-bob")
+	srv.SetFolderUserSecurityHref("folder-contracts", "member-bob", altMemberBobHref)
+
 	folderResource, err := rs.NewResource("Contracts", clmFolderResourceType, "folder-contracts")
 	if err != nil {
 		t.Fatalf("NewResource: %v", err)
 	}
 
-	// srv.GroupHref/srv.MemberHref build the exact same shape client.GroupHref/
-	// client.MemberHref's fallback derivation would, from the same discovered base
-	// URL — so folder-contracts' seeded samples (group-legal, member-bob) can't
-	// actually distinguish "derived from a sample" from "fell back to the discovered
-	// base URL" unless a sample carries a host the fallback can't produce. Re-seeding
-	// with an alternate host makes the two branches observably different.
-	const sampleHost = "https://other.example.com"
-	groupSampleHref := fmt.Sprintf("%s/v2/%s/groups/group-legal", sampleHost, clmtest.AccountID)
-	memberSampleHref := fmt.Sprintf("%s/v2/%s/members/member-bob", sampleHost, clmtest.AccountID)
-	if _, err := c.PatchFolderSecurity(ctx, "folder-contracts", client.ClmFolderSecurityWrite{
-		Groups: []client.ClmGroupSecurityEntry{{AccessType: client.ClmAccessTypeViewEdit, Href: groupSampleHref}},
-		Users:  []client.ClmUserSecurityEntry{{AccessType: client.ClmAccessTypeView, Href: memberSampleHref}},
-	}); err != nil {
-		t.Fatalf("PatchFolderSecurity (re-seed with alternate host): %v", err)
-	}
-
 	t.Run("clm_group principal", func(t *testing.T) {
-		// group-ops is not among folder-contracts' existing entries, so clmPreferredHref
-		// must derive group-ops' Href from the group-legal sample via clmHrefWithID, not
-		// just echo a pre-existing entry.
+		// group-ops is not among folder-contracts' existing entries (group-legal,
+		// group-finance), so clmPreferredHref must derive group-ops' Href from one of
+		// those samples via clmHrefWithID, not just echo a pre-existing entry.
 		principal := clmIdentityOnlyResource(clmGroupResourceType, "group-ops")
 		ent := &v2.Entitlement{Slug: "view", Resource: folderResource}
 
 		if _, _, err := b.Grant(ctx, principal, ent); err != nil {
 			t.Fatalf("Grant with an identity-only principal: %v", err)
 		}
-		wantHref, err := clmHrefWithID(groupSampleHref, "group-ops")
-		if err != nil {
-			t.Fatalf("clmHrefWithID: %v", err)
-		}
 		groups := srv.FolderSecurity("folder-contracts").Groups
+		wantHref := fmt.Sprintf("%s/v2/%s/groups/group-ops", sampleHost, clmtest.AccountID)
 		var found *client.ClmGroupSecurityEntry
 		for i := range groups {
 			if groups[i].Href == wantHref {
@@ -818,19 +807,16 @@ func TestClmFolderBuilder_Grant_SurvivesIdentityOnlyPrincipal_SampleBranch(t *te
 	})
 
 	t.Run("clm_member principal", func(t *testing.T) {
-		// member-dave is not folder-contracts' existing member entry, so
-		// clmPreferredHref must derive member-dave's Href from the member-bob sample.
+		// member-dave is not folder-contracts' existing member entry (member-bob), so
+		// clmPreferredHref must derive member-dave's Href from that sample.
 		principal := clmIdentityOnlyResource(clmMemberResourceType, "member-dave")
 		ent := &v2.Entitlement{Slug: "view", Resource: folderResource}
 
 		if _, _, err := b.Grant(ctx, principal, ent); err != nil {
 			t.Fatalf("Grant with an identity-only principal: %v", err)
 		}
-		wantHref, err := clmHrefWithID(memberSampleHref, "member-dave")
-		if err != nil {
-			t.Fatalf("clmHrefWithID: %v", err)
-		}
 		users := srv.FolderSecurity("folder-contracts").Users
+		wantHref := fmt.Sprintf("%s/v2/%s/members/member-dave", sampleHost, clmtest.AccountID)
 		var found *client.ClmUserSecurityEntry
 		for i := range users {
 			if users[i].Href == wantHref {
