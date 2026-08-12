@@ -131,9 +131,9 @@ calls "Task Groups" — that equivalence is an unconfirmed assumption, not a doc
 fact, since no live CLM admin console was available to check it against. The CLM API has
 no list-all endpoint for workflow queues and no reverse lookup from a queue to its
 members, so this connector discovers them by scanning every `clm_member`'s own workflow
-queues and deduping — one API call per member, on top of the member sync itself. This
-adds one `GET .../members/{id}/workflowqueues` call per CLM member on every sync, on top
-of the member sync itself — meaningful request volume on large accounts. Workflow queue
+queues and deduping — one `GET .../members/{id}/workflowqueues` call per CLM member on
+every sync, on top of the member sync itself, which is meaningful request volume on
+large accounts. Workflow queue
 membership syncs for visibility only — the API supports work-item assign/unassign,
 not queue-membership grant/revoke, so it cannot be granted or revoked through this
 connector.

@@ -9,6 +9,7 @@ import (
 	"github.com/conductorone/baton-docusign/pkg/client/clmtest"
 	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
 	"github.com/conductorone/baton-sdk/pkg/pagination"
+	"github.com/conductorone/baton-sdk/pkg/session"
 	rs "github.com/conductorone/baton-sdk/pkg/types/resource"
 	"github.com/conductorone/baton-sdk/pkg/types/sessions"
 )
@@ -512,6 +513,35 @@ func TestClmWorkflowQueueBuilder_List_MergesMembershipAcrossChunks(t *testing.T)
 	}
 	if len(grants) != 2 {
 		t.Fatalf("expected both alice (chunk 1) and bob (chunk 2) merged into Onboarding, got %d: %+v", len(grants), grants)
+	}
+}
+
+// TestClmWorkflowQueueBuilder_List_ReplayedChunkDoesNotDuplicateMembership is a
+// regression test: a resumed sync can re-issue a List() call with a PageToken whose
+// chunk was already processed and merged. Re-running the first chunk (alice) must not
+// double-count alice in Onboarding's cached membership.
+func TestClmWorkflowQueueBuilder_List_ReplayedChunkDoesNotDuplicateMembership(t *testing.T) {
+	_, c := clmtest.NewServer(t)
+	b := newClmWorkflowQueueBuilder(c)
+	ctx := context.Background()
+	attr := rs.SyncOpAttrs{Session: newFakeSessionStore(), PageToken: pagination.Token{Size: 1}}
+
+	if _, _, err := b.List(ctx, nil, attr); err != nil {
+		t.Fatalf("List (first run of chunk 1): %v", err)
+	}
+	if _, _, err := b.List(ctx, nil, attr); err != nil {
+		t.Fatalf("List (replayed chunk 1): %v", err)
+	}
+
+	memberIDs, found, err := session.GetJSON[[]string](ctx, attr.Session, clmSessionKeyQueueMembers("queue-onboarding"))
+	if err != nil {
+		t.Fatalf("GetJSON: %v", err)
+	}
+	if !found {
+		t.Fatal("expected cached membership for queue-onboarding")
+	}
+	if len(memberIDs) != 1 || memberIDs[0] != "member-alice" {
+		t.Errorf("expected exactly one alice entry after the replay, got %v", memberIDs)
 	}
 }
 

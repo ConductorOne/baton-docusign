@@ -76,7 +76,9 @@ func clmSessionKeyQueueMembers(queueID string) string {
 //     (clmSessionKeyQueueMembers) rather than accumulating one all-queues blob in
 //     memory: a single growing value would both rewrite on every chunk (O(members^2)
 //     session-store traffic over a full scan) and risk crossing the session store's
-//     per-value size ceiling on a large account. A separate, small
+//     per-value size ceiling on a large account. Bounds this per queue, not per member —
+//     a queue most members belong to still rewrites its own growing list each chunk. A
+//     separate, small
 //     clmWorkflowQueueDiscoveryState blob — just the distinct queues seen so far plus
 //     the escalation-threshold counters — persists across chunks instead, since a plain
 //     Go value doesn't survive across separate List() invocations. Only on the LAST
@@ -256,8 +258,19 @@ func (b *clmWorkflowQueueBuilder) List(ctx context.Context, _ *v2.ResourceId, at
 		membersByKey := make(map[string][]string, len(chunkMembersByQueue))
 		for queueID, newMembers := range chunkMembersByQueue {
 			key := clmSessionKeyQueueMembers(queueID)
+			// Dedup: a resumed sync can re-issue an already-processed chunk.
+			seen := make(map[string]struct{}, len(existing[key])+len(newMembers))
 			merged := existing[key]
-			merged = append(merged, newMembers...)
+			for _, m := range merged {
+				seen[m] = struct{}{}
+			}
+			for _, m := range newMembers {
+				if _, ok := seen[m]; ok {
+					continue
+				}
+				seen[m] = struct{}{}
+				merged = append(merged, m)
+			}
 			membersByKey[key] = merged
 		}
 		if err := session.SetManyJSON(ctx, attr.Session, membersByKey); err != nil {
