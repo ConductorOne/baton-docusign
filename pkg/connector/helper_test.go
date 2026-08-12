@@ -164,6 +164,17 @@ func TestClmSampleHrefsFrom(t *testing.T) {
 		}
 	})
 
+	// Same reasoning as the profile-href case above, but for an entry's Href — degenerate
+	// data, not an unexpected shape, so it must be excluded the same way.
+	t.Run("excludes an empty entry href", func(t *testing.T) {
+		principal := &v2.Resource{Id: &v2.ResourceId{ResourceType: clmGroupResourceType.Id, Resource: "group-1"}}
+		got := clmSampleHrefsFrom(principal, []entry{{Href: ""}, {Href: "https://other.example.com/v2/acct-1/groups/group-2"}}, hrefOf)
+		want := []string{"https://other.example.com/v2/acct-1/groups/group-2"}
+		if len(got) != len(want) || got[0] != want[0] {
+			t.Errorf("clmSampleHrefsFrom = %v, want %v", got, want)
+		}
+	})
+
 	t.Run("no profile at all", func(t *testing.T) {
 		principal := &v2.Resource{Id: &v2.ResourceId{ResourceType: clmGroupResourceType.Id, Resource: "group-1"}}
 		got := clmSampleHrefsFrom(principal, []entry{{Href: "https://other.example.com/v2/acct-1/groups/group-2"}}, hrefOf)

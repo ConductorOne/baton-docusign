@@ -166,7 +166,12 @@ func clmSampleHrefsFrom[T any](principal *v2.Resource, entries []T, hrefOf func(
 		sampleHrefs = append(sampleHrefs, href)
 	}
 	for _, e := range entries {
-		sampleHrefs = append(sampleHrefs, hrefOf(e))
+		// Same reasoning as the profile href above: an empty entry Href would fail
+		// clmHrefWithID the same way and re-trip the unexpected-failure log on
+		// otherwise-routine degenerate data.
+		if href := hrefOf(e); href != "" {
+			sampleHrefs = append(sampleHrefs, href)
+		}
 	}
 	return sampleHrefs
 }
