@@ -111,6 +111,7 @@ const (
 	clmGetGroupMembers  = "/v2/%s/groups/%s/groupmembers"
 	clmGetMembers       = "/v2/%s/members"
 	clmGetMemberGroups  = "/v2/%s/members/%s/groups"
+	clmGetMember        = "/v2/%s/members/%s"
 	clmPatchPutMember   = "/v2/%s/members/%s"
 	clmGetPermissionSet = "/v2/%s/permissionsets"
 )
@@ -421,39 +422,29 @@ func (c *Client) ListGroups(ctx context.Context, options PageOptions) ([]ClmGrou
 	return page.Items, nextToken, anno, nil
 }
 
-// GroupHref builds a CLM group's Href from its native ID and the already-resolved CLM
-// base URL — for callers that only have a group's ResourceId, not a fully-hydrated
-// Resource to read a stashed Href from. Needed because a Resource carrying only
-// identity (no profile, no annotations) is not an edge case here: the pebble storage
-// engine's V3EntitlementToV2 (vendor/.../dotc1z/engine/pebble/translate_v2.go)
-// deliberately hydrates an Entitlement's Resource as an identity-only stub, by design,
-// on every read — so an entitlement-side lookup can never rely on anything beyond the
-// ID surviving. Asserts CLM's Href shape is "/v2/{account}/groups/{id}" — no CLM request
-// in this codebase independently confirms that shape yet (clmGetGroup exists only to
-// build this one), so this is currently only verified against clmtest's own
-// Server.GroupHref, not a live tenant.
-func (c *Client) GroupHref(ctx context.Context, groupID string) (string, error) {
+// hrefFor builds an object's Href from its native ID and the resolved CLM base URL,
+// shared by GroupHref and MemberHref, for callers that only have a ResourceId (no
+// hydrated Resource to read a Href from). Assumes the shape "/v2/{account}/{collection}/{id}";
+// unverified against a live tenant.
+func (c *Client) hrefFor(ctx context.Context, endpoint, id string) (string, error) {
 	if err := c.ensureClmReady(ctx); err != nil {
 		return "", err
 	}
-	groupURL, err := c.buildClmClientURL(clmGetGroup, groupID)
+	objURL, err := c.buildClmClientURL(endpoint, id)
 	if err != nil {
 		return "", err
 	}
-	return groupURL.String(), nil
+	return objURL.String(), nil
 }
 
-// MemberHref is GroupHref's counterpart for CLM members — see its doc for why this
-// derives the Href from the ID rather than reading it off a Resource.
+// GroupHref builds a CLM group's Href from its native ID — see hrefFor's doc.
+func (c *Client) GroupHref(ctx context.Context, groupID string) (string, error) {
+	return c.hrefFor(ctx, clmGetGroup, groupID)
+}
+
+// MemberHref builds a CLM member's Href from its native ID — see hrefFor's doc.
 func (c *Client) MemberHref(ctx context.Context, memberID string) (string, error) {
-	if err := c.ensureClmReady(ctx); err != nil {
-		return "", err
-	}
-	memberURL, err := c.buildClmClientURL(clmPatchPutMember, memberID)
-	if err != nil {
-		return "", err
-	}
-	return memberURL.String(), nil
+	return c.hrefFor(ctx, clmGetMember, memberID)
 }
 
 // GetGroupMembers lists the members of a CLM group.

@@ -110,7 +110,7 @@ func (g *clmGroupBuilder) Grants(ctx context.Context, groupResource *v2.Resource
 		PageToken: pageToken,
 	})
 	if err != nil {
-		return nil, nil, fmt.Errorf("getting members for CLM group %s: %w", groupResource.Id.Resource, err)
+		return nil, nil, fmt.Errorf("baton-docusign: getting members for CLM group %s: %w", groupResource.Id.Resource, err)
 	}
 
 	grants := make([]*v2.Grant, 0, len(members))
@@ -157,7 +157,7 @@ func (g *clmGroupBuilder) Grant(ctx context.Context, principal *v2.Resource, ent
 	// a real sample Href from currentGroups if one exists, else client.GroupHref.
 	currentGroups, annos, err := g.client.GetMemberGroups(ctx, memberID)
 	if err != nil {
-		return nil, annos, fmt.Errorf("getting current groups for CLM member %s: %w", memberID, err)
+		return nil, annos, fmt.Errorf("baton-docusign: getting current groups for CLM member %s: %w", memberID, err)
 	}
 
 	for _, current := range currentGroups {
@@ -174,14 +174,8 @@ func (g *clmGroupBuilder) Grant(ctx context.Context, principal *v2.Resource, ent
 	// member's OTHER current groups) to derive from — only ever a sample, never
 	// required, so an identity-only ent.Resource (the pebble-hydrated case this fix
 	// exists for) still falls through to the other-groups/fallback path unchanged.
-	sampleHrefs := make([]string, 0, len(currentGroups)+1)
-	if href, ok := rs.GetProfileStringValue(rs.GetProfile(ent.Resource), "href"); ok {
-		sampleHrefs = append(sampleHrefs, href)
-	}
-	for _, current := range currentGroups {
-		sampleHrefs = append(sampleHrefs, current.Href)
-	}
-	groupHref, err := clmPreferredHref(groupID, sampleHrefs, func() (string, error) {
+	sampleHrefs := clmSampleHrefsFrom(ent.Resource, currentGroups, func(g client.ClmGroup) string { return g.Href })
+	groupHref, err := clmPreferredHref(ctx, groupID, sampleHrefs, func() (string, error) {
 		return g.client.GroupHref(ctx, groupID)
 	})
 	if err != nil {
@@ -193,7 +187,7 @@ func (g *clmGroupBuilder) Grant(ctx context.Context, principal *v2.Resource, ent
 	newGroups = append(newGroups, client.ClmGroup{Href: groupHref})
 	patchAnnos, err := g.client.PatchMemberGroups(ctx, memberID, newGroups)
 	if err != nil {
-		return nil, patchAnnos, fmt.Errorf("granting CLM group membership: %w", err)
+		return nil, patchAnnos, fmt.Errorf("baton-docusign: granting CLM group membership: %w", err)
 	}
 
 	return nil, patchAnnos, nil
@@ -209,7 +203,7 @@ func (g *clmGroupBuilder) Revoke(ctx context.Context, grantObj *v2.Grant) (annot
 
 	currentGroups, annos, err := g.client.GetMemberGroups(ctx, memberID)
 	if err != nil {
-		return annos, fmt.Errorf("getting current groups for CLM member %s: %w", memberID, err)
+		return annos, fmt.Errorf("baton-docusign: getting current groups for CLM member %s: %w", memberID, err)
 	}
 
 	remainingGroups := make([]client.ClmGroup, 0, len(currentGroups))
@@ -228,7 +222,7 @@ func (g *clmGroupBuilder) Revoke(ctx context.Context, grantObj *v2.Grant) (annot
 
 	putAnnos, err := g.client.PutMemberGroups(ctx, memberID, remainingGroups)
 	if err != nil {
-		return putAnnos, fmt.Errorf("revoking CLM group membership: %w", err)
+		return putAnnos, fmt.Errorf("baton-docusign: revoking CLM group membership: %w", err)
 	}
 
 	return putAnnos, nil
