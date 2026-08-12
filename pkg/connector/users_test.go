@@ -245,8 +245,10 @@ func TestUserBuilder_Grants_FallsBackOnServiceUnavailable(t *testing.T) {
 
 // TestUserBuilder_Grants_FastPath_PrefersDirectProfileIDOverName covers the
 // PermissionProfileID-on-the-list-response path: when present, it must skip
-// GetPermissionProfiles entirely (no profiles fixture is provided — a call would 404 and
-// fail this test) and use the ID directly.
+// GetPermissionProfiles entirely and use the ID directly. If it fell through instead,
+// GetPermissionProfiles would succeed with an empty list (no profiles fixture is
+// provided), fail to resolve "DocuSign Admin" by name, and fall through again to
+// GetUserDetails — which 404s (no userDetails fixture either) and fails this test.
 func TestUserBuilder_Grants_FastPath_PrefersDirectProfileIDOverName(t *testing.T) {
 	c := newUsersTestClient(t, nil, nil, permissionProfilesOK)
 	b := newUserBuilder(c)

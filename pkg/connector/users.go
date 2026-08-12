@@ -131,6 +131,13 @@ func (b *userBuilder) Grants(ctx context.Context, resource *v2.Resource, _ rs.Sy
 //     (one account-wide call, already served from uhttp's default GET cache on every call
 //     after the first in this sync — see pkg/client/clm_client.go's WithNoCache usage for
 //     this repo's opt-out convention when a fresh read matters, which this doesn't need).
+//     This path's call-amplification win depends entirely on that cache being enabled and
+//     large enough to hold the response for the rest of the sync: an operator running with
+//     BATON_DISABLE_HTTP_CACHE=true, BATON_HTTP_CACHE_BACKEND=noop, or a small enough
+//     BATON_HTTP_CACHE_TTL/size budget gets one GetPermissionProfiles call per active user
+//     instead — the same 1:1 amplification as the GetUserDetails path this fast path exists
+//     to avoid, just against a different endpoint. Silent, not incorrect: Grants still
+//     resolves correctly either way.
 //
 // handled=false means "no decision, fall back to Grants' original GetUserDetails path
 // unchanged" — covers a non-active user, a missing profile field, an unresolvable name

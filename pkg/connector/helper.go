@@ -13,9 +13,9 @@ import (
 // Shared profile/field map keys, reused across builders (and the AccountCreationSchema
 // field map in connector.go) to avoid repeated string literals (golangci-lint: goconst).
 const (
-	profileFieldEmail      = "email"
-	profileFieldUsername   = "username"
-	profileFieldGroupName  = "group_name"
+	profileFieldEmail        = "email"
+	profileFieldUsername     = "username"
+	profileFieldGroupName    = "group_name"
 	profileFieldPermission   = "permission"
 	profileFieldStatus       = "status"
 	profileFieldPermissionID = "permission_profile_id"
@@ -113,18 +113,30 @@ func isOptInFeatureUnavailableError(err error) bool {
 }
 
 // permissionProfileIDByName returns the ID of the permission profile named name, and
-// whether one was found — shared by userBuilder.Grants' list-response fast path and
-// permissionProfilesBuilder.Revoke's default-profile lookup, which independently
+// whether exactly one was found — shared by userBuilder.Grants' list-response fast path
+// and permissionProfilesBuilder.Revoke's default-profile lookup, which independently
 // duplicated this same linear scan before this helper existed. Requires a non-empty ID,
 // matching Revoke's original inline check (`if defaultProfileID == ""`) that a name match
 // with no usable ID counts as not found, not as an empty-string result.
+//
+// DocuSign does not guarantee PermissionProfileName is unique per account, so two
+// profiles sharing a name is treated the same as zero matches (not found) rather than
+// picking the first: both callers have a safe fallback for "not found" (Grants' caller
+// falls back to the per-user GetUserDetails path; Revoke's caller surfaces a clear
+// error), whereas silently guessing wrong here would grant or revoke the wrong profile.
 func permissionProfileIDByName(profiles []client.PermissionProfile, name string) (string, bool) {
+	id := ""
+	matches := 0
 	for _, p := range profiles {
 		if p.PermissionProfileName == name && p.PermissionProfileId != "" {
-			return p.PermissionProfileId, true
+			id = p.PermissionProfileId
+			matches++
 		}
 	}
-	return "", false
+	if matches != 1 {
+		return "", false
+	}
+	return id, true
 }
 
 // clmIDFromHref extracts the trailing path segment from a CLM object's Href — CLM's
