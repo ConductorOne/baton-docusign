@@ -83,11 +83,10 @@ func newClmMemberBuilder(c *client.Client) *clmMemberBuilder {
 	}
 }
 
-// parseIntoClmMemberResource maps a client.ClmMember to a Baton v2.Resource. The Href
-// is kept in the profile for display only — Grant/Revoke derive it directly from the
-// member's ID via client.MemberHref instead of reading it off the resource, since
-// neither a top-level profile nor an annotation is guaranteed to survive to where it's
-// needed (see client.GroupHref's doc, MemberHref's counterpart, for why).
+// parseIntoClmMemberResource maps a client.ClmMember to a Baton v2.Resource. The Href is
+// kept in the profile both for display and as the preferred sample href for Grant;
+// Grant falls back to client.MemberHref when it's absent, since neither a profile nor
+// an annotation is guaranteed to survive to where it's needed.
 func parseIntoClmMemberResource(member *client.ClmMember) (*v2.Resource, error) {
 	profile := map[string]any{
 		profileFieldEmail:    member.Email,

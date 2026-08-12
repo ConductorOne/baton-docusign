@@ -236,10 +236,9 @@ func newClmGroupBuilder(c *client.Client) *clmGroupBuilder {
 }
 
 // parseIntoClmGroupResource maps a client.ClmGroup to a Baton v2.Resource. The Href is
-// kept in the profile for display only — Grant/Revoke derive it directly from the
-// group's ID via client.GroupHref instead of reading it off the resource, since neither
-// a top-level profile nor an annotation is guaranteed to survive to where it's needed
-// (see client.GroupHref's doc for why).
+// kept in the profile both for display and as the preferred sample href for Grant;
+// Grant falls back to client.GroupHref when it's absent, since neither a profile nor an
+// annotation is guaranteed to survive to where it's needed.
 func parseIntoClmGroupResource(group *client.ClmGroup) (*v2.Resource, error) {
 	profile := map[string]any{
 		"name":      group.Name,

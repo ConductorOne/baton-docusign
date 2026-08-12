@@ -178,14 +178,17 @@ func (s *Server) SetFolderGroupSecurityHref(folderID, groupID, href string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	folder, ok := s.folders[folderID]
-	if !ok {
-		return
-	}
-	for i := range folder.Security.Groups.Items {
-		if idFromHref(folder.Security.Groups.Items[i].Href) == groupID {
-			folder.Security.Groups.Items[i].Href = href
-			return
+	if ok {
+		for i := range folder.Security.Groups.Items {
+			if idFromHref(folder.Security.Groups.Items[i].Href) == groupID {
+				folder.Security.Groups.Items[i].Href = href
+				return
+			}
 		}
+	}
+	if s.t != nil {
+		//nolint:gocritic // s.t is testing.TB; ruleguard only exempts concrete *testing.T/B/F, not the interface
+		s.t.Fatalf("SetFolderGroupSecurityHref: no group %q security entry on folder %q", groupID, folderID)
 	}
 }
 
@@ -193,14 +196,17 @@ func (s *Server) SetFolderUserSecurityHref(folderID, memberID, href string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	folder, ok := s.folders[folderID]
-	if !ok {
-		return
-	}
-	for i := range folder.Security.Users.Items {
-		if idFromHref(folder.Security.Users.Items[i].Href) == memberID {
-			folder.Security.Users.Items[i].Href = href
-			return
+	if ok {
+		for i := range folder.Security.Users.Items {
+			if idFromHref(folder.Security.Users.Items[i].Href) == memberID {
+				folder.Security.Users.Items[i].Href = href
+				return
+			}
 		}
+	}
+	if s.t != nil {
+		//nolint:gocritic // s.t is testing.TB; ruleguard only exempts concrete *testing.T/B/F, not the interface
+		s.t.Fatalf("SetFolderUserSecurityHref: no member %q security entry on folder %q", memberID, folderID)
 	}
 }
 

@@ -531,6 +531,8 @@ func TestClmFolderBuilder_Grant_SurvivesIdentityOnlyPrincipal_SampleBranch(t *te
 	const sampleHost = "https://other.example.com"
 	altGroupLegalHref := fmt.Sprintf("%s/v2/%s/groups/group-legal", sampleHost, clmtest.AccountID)
 	srv.SetFolderGroupSecurityHref("folder-contracts", "group-legal", altGroupLegalHref)
+	altGroupFinanceHref := fmt.Sprintf("%s/v2/%s/groups/group-finance", sampleHost, clmtest.AccountID)
+	srv.SetFolderGroupSecurityHref("folder-contracts", "group-finance", altGroupFinanceHref)
 	altMemberBobHref := fmt.Sprintf("%s/v2/%s/members/%s", sampleHost, clmtest.AccountID, "member-bob")
 	srv.SetFolderUserSecurityHref("folder-contracts", "member-bob", altMemberBobHref)
 
