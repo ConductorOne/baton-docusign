@@ -36,55 +36,52 @@ func TestIsOptInFeatureUnavailableError(t *testing.T) {
 
 func TestPermissionProfileIDByName(t *testing.T) {
 	tests := []struct {
-		name     string
-		profiles []client.PermissionProfile
-		lookup   string
-		wantID   string
-		wantOK   bool
+		name        string
+		profiles    []client.PermissionProfile
+		lookup      string
+		wantID      string
+		wantMatches int
 	}{
 		{
 			name: "single match",
 			profiles: []client.PermissionProfile{
 				{PermissionProfileId: "pp-1", PermissionProfileName: "DocuSign Admin"},
 			},
-			lookup: "DocuSign Admin",
-			wantID: "pp-1",
-			wantOK: true,
+			lookup:      "DocuSign Admin",
+			wantID:      "pp-1",
+			wantMatches: 1,
 		},
 		{
 			name: "no match",
 			profiles: []client.PermissionProfile{
 				{PermissionProfileId: "pp-1", PermissionProfileName: "DocuSign Admin"},
 			},
-			lookup: "Nonexistent",
-			wantOK: false,
+			lookup:      "Nonexistent",
+			wantMatches: 0,
 		},
 		{
-			name: "match with no usable ID counts as not found",
+			name: "match with no usable ID doesn't count",
 			profiles: []client.PermissionProfile{
 				{PermissionProfileId: "", PermissionProfileName: "DocuSign Admin"},
 			},
-			lookup: "DocuSign Admin",
-			wantOK: false,
+			lookup:      "DocuSign Admin",
+			wantMatches: 0,
 		},
 		{
-			// DocuSign does not guarantee PermissionProfileName is unique per account —
-			// picking the first match here would risk granting/revoking the wrong
-			// profile, so an ambiguous name must be treated as not found.
-			name: "ambiguous name is treated as not found, not the first match",
+			name: "ambiguous name reports the match count, not the first match",
 			profiles: []client.PermissionProfile{
 				{PermissionProfileId: "pp-1", PermissionProfileName: "Custom Profile"},
 				{PermissionProfileId: "pp-2", PermissionProfileName: "Custom Profile"},
 			},
-			lookup: "Custom Profile",
-			wantOK: false,
+			lookup:      "Custom Profile",
+			wantMatches: 2,
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			gotID, gotOK := permissionProfileIDByName(tt.profiles, tt.lookup)
-			if gotOK != tt.wantOK || (gotOK && gotID != tt.wantID) {
-				t.Errorf("permissionProfileIDByName(%v, %q) = (%q, %v), want (%q, %v)", tt.profiles, tt.lookup, gotID, gotOK, tt.wantID, tt.wantOK)
+			gotID, gotMatches := permissionProfileIDByName(tt.profiles, tt.lookup)
+			if gotMatches != tt.wantMatches || (gotMatches == 1 && gotID != tt.wantID) {
+				t.Errorf("permissionProfileIDByName(%v, %q) = (%q, %d), want (%q, %d)", tt.profiles, tt.lookup, gotID, gotMatches, tt.wantID, tt.wantMatches)
 			}
 		})
 	}

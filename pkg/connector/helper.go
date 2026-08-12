@@ -112,19 +112,11 @@ func isOptInFeatureUnavailableError(err error) bool {
 	}
 }
 
-// permissionProfileIDByName returns the ID of the permission profile named name, and
-// whether exactly one was found — shared by userBuilder.Grants' list-response fast path
-// and permissionProfilesBuilder.Revoke's default-profile lookup, which independently
-// duplicated this same linear scan before this helper existed. Requires a non-empty ID,
-// matching Revoke's original inline check (`if defaultProfileID == ""`) that a name match
-// with no usable ID counts as not found, not as an empty-string result.
-//
-// DocuSign does not guarantee PermissionProfileName is unique per account, so two
-// profiles sharing a name is treated the same as zero matches (not found) rather than
-// picking the first: both callers have a safe fallback for "not found" (Grants' caller
-// falls back to the per-user GetUserDetails path; Revoke's caller surfaces a clear
-// error), whereas silently guessing wrong here would grant or revoke the wrong profile.
-func permissionProfileIDByName(profiles []client.PermissionProfile, name string) (string, bool) {
+// permissionProfileIDByName returns the ID of the profile named name (requiring a
+// non-empty ID) and how many matched, so callers can tell "not found" (0) from
+// "ambiguous" (2+) — names aren't guaranteed unique per account — without a second scan
+// of their own. id is only meaningful when matches == 1.
+func permissionProfileIDByName(profiles []client.PermissionProfile, name string) (string, int) {
 	id := ""
 	matches := 0
 	for _, p := range profiles {
@@ -133,10 +125,7 @@ func permissionProfileIDByName(profiles []client.PermissionProfile, name string)
 			matches++
 		}
 	}
-	if matches != 1 {
-		return "", false
-	}
-	return id, true
+	return id, matches
 }
 
 // clmIDFromHref extracts the trailing path segment from a CLM object's Href — CLM's

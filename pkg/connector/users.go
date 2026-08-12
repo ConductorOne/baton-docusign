@@ -193,8 +193,8 @@ func (b *userBuilder) tryFastPathGrant(ctx context.Context, resource *v2.Resourc
 		return nil, nil, nil, false
 	}
 
-	id, ok := permissionProfileIDByName(profiles, name)
-	if !ok {
+	id, matches := permissionProfileIDByName(profiles, name)
+	if matches != 1 {
 		return nil, nil, nil, false
 	}
 	newGrant := grant.NewGrant(
