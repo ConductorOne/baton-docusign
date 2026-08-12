@@ -132,8 +132,8 @@ fact, since no live CLM admin console was available to check it against. The CLM
 no list-all endpoint for workflow queues and no reverse lookup from a queue to its
 members, so this connector discovers them by scanning every `clm_member`'s own workflow
 queues and deduping — one API call per member, on top of the member sync itself. This
-adds meaningful request volume on large accounts; see the open rate-limit issue tracked
-as CXP-704 before enabling this on an account already seeing rate-limit errors. Workflow
+adds meaningful request volume on large accounts; consider this before enabling it on an
+account already seeing rate-limit errors. Workflow
 queue membership syncs for visibility only — the API supports work-item assign/unassign,
 not queue-membership grant/revoke, so it cannot be granted or revoked through this
 connector.
