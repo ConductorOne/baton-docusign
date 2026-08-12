@@ -5,6 +5,8 @@ import (
 	"errors"
 	"testing"
 
+	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
+	rs "github.com/conductorone/baton-sdk/pkg/types/resource"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -124,6 +126,50 @@ func TestClmPreferredHref(t *testing.T) {
 		}
 		if !fallbackCalled {
 			t.Error("expected the fallback to be called when every sample href fails to parse")
+		}
+	})
+}
+
+func TestClmSampleHrefsFrom(t *testing.T) {
+	type entry struct{ Href string }
+	hrefOf := func(e entry) string { return e.Href }
+
+	t.Run("includes a non-empty profile href first", func(t *testing.T) {
+		principal, err := rs.NewResource("g", clmGroupResourceType, "group-1", rs.WithResourceProfile(map[string]any{"href": "https://real.example.com/v2/acct-1/groups/group-1"}))
+		if err != nil {
+			t.Fatalf("NewResource: %v", err)
+		}
+		got := clmSampleHrefsFrom(principal, []entry{{Href: "https://other.example.com/v2/acct-1/groups/group-2"}}, hrefOf)
+		want := []string{"https://real.example.com/v2/acct-1/groups/group-1", "https://other.example.com/v2/acct-1/groups/group-2"}
+		if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+			t.Errorf("clmSampleHrefsFrom = %v, want %v", got, want)
+		}
+	})
+
+	// Regression test: parseIntoClm*Resource always writes the "href" profile key, even
+	// when the underlying CLM object has no Href yet, so GetProfileStringValue reports
+	// ok == true for an empty string. Appending it anyway would make an
+	// identity-only-of-real-samples principal look identical to one with a genuinely
+	// malformed sample, tripping clmPreferredHref's unexpected-failure log on what is
+	// actually the routine no-sample case.
+	t.Run("excludes an empty profile href", func(t *testing.T) {
+		principal, err := rs.NewResource("g", clmGroupResourceType, "group-1", rs.WithResourceProfile(map[string]any{"href": ""}))
+		if err != nil {
+			t.Fatalf("NewResource: %v", err)
+		}
+		got := clmSampleHrefsFrom(principal, []entry{{Href: "https://other.example.com/v2/acct-1/groups/group-2"}}, hrefOf)
+		want := []string{"https://other.example.com/v2/acct-1/groups/group-2"}
+		if len(got) != len(want) || got[0] != want[0] {
+			t.Errorf("clmSampleHrefsFrom = %v, want %v", got, want)
+		}
+	})
+
+	t.Run("no profile at all", func(t *testing.T) {
+		principal := &v2.Resource{Id: &v2.ResourceId{ResourceType: clmGroupResourceType.Id, Resource: "group-1"}}
+		got := clmSampleHrefsFrom(principal, []entry{{Href: "https://other.example.com/v2/acct-1/groups/group-2"}}, hrefOf)
+		want := []string{"https://other.example.com/v2/acct-1/groups/group-2"}
+		if len(got) != len(want) || got[0] != want[0] {
+			t.Errorf("clmSampleHrefsFrom = %v, want %v", got, want)
 		}
 	})
 }

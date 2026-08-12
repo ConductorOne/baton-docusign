@@ -241,9 +241,9 @@ func newClmGroupBuilder(c *client.Client) *clmGroupBuilder {
 // annotation is guaranteed to survive to where it's needed.
 func parseIntoClmGroupResource(group *client.ClmGroup) (*v2.Resource, error) {
 	profile := map[string]any{
-		"name":      group.Name,
-		"groupType": group.GroupType,
-		"href":      group.Href,
+		"name":           group.Name,
+		"groupType":      group.GroupType,
+		profileFieldHref: group.Href,
 	}
 
 	return rs.NewGroupResource(

@@ -22,6 +22,7 @@ const (
 	profileFieldEmail     = "email"
 	profileFieldUsername  = "username"
 	profileFieldGroupName = "group_name"
+	profileFieldHref      = "href"
 )
 
 // parsePageToken deserializes the Baton token and returns the Bag and page number for upstream.
@@ -131,8 +132,9 @@ func clmHrefWithID(sampleHref, newID string) (string, error) {
 // with no other security entries yet) — the expected, routine case (empty sampleHrefs
 // never reaches clmHrefWithID at all). If sampleHrefs is non-empty but every sample
 // fails to parse, that's the unexpected case: it means CLM returned a Href shape this
-// codebase's assumptions don't cover, so it's logged before falling back, rather than
-// silently masking exactly the wrong-host risk this function exists to avoid.
+// codebase's assumptions don't cover, so it's logged at Debug before falling back — not
+// visible by default, but distinguishable from the routine case for anyone who does
+// raise verbosity, rather than discarded with no trace at all.
 func clmPreferredHref(ctx context.Context, id string, sampleHrefs []string, deriveFallback func() (string, error)) (string, error) {
 	var lastErr error
 	for _, sample := range sampleHrefs {
@@ -155,7 +157,12 @@ func clmPreferredHref(ctx context.Context, id string, sampleHrefs []string, deri
 // through to the entries/fallback path unchanged), followed by every entry's Href.
 func clmSampleHrefsFrom[T any](principal *v2.Resource, entries []T, hrefOf func(T) string) []string {
 	sampleHrefs := make([]string, 0, len(entries)+1)
-	if href, ok := rs.GetProfileStringValue(rs.GetProfile(principal), "href"); ok {
+	// GetProfileStringValue returns ok == true for a present-but-empty "href" key
+	// (every parseIntoClm*Resource always writes it), so this must also reject "" —
+	// otherwise an absent-sample account looks identical to an unexpected-shape one:
+	// the empty string always fails clmHrefWithID, tripping clmPreferredHref's
+	// unexpected-failure log on what is actually the routine no-sample case.
+	if href, ok := rs.GetProfileStringValue(rs.GetProfile(principal), profileFieldHref); ok && href != "" {
 		sampleHrefs = append(sampleHrefs, href)
 	}
 	for _, e := range entries {

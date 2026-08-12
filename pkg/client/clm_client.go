@@ -106,14 +106,21 @@ const (
 	clmSearchFolders    = "/v2/%s/folders/search"
 	clmGetFolder        = "/v2/%s/folders/%s"
 	clmPatchFolder      = "/v2/%s/folders/%s"
-	clmGetGroup         = "/v2/%s/groups/%s"
 	clmGetGroups        = "/v2/%s/groups"
 	clmGetGroupMembers  = "/v2/%s/groups/%s/groupmembers"
 	clmGetMembers       = "/v2/%s/members"
 	clmGetMemberGroups  = "/v2/%s/members/%s/groups"
-	clmGetMember        = "/v2/%s/members/%s"
 	clmPatchPutMember   = "/v2/%s/members/%s"
 	clmGetPermissionSet = "/v2/%s/permissionsets"
+
+	// clmGroupPath and clmMemberPath are path *shapes*, not endpoints this connector
+	// calls — hrefFor builds a Href string locally from these, never issuing an HTTP
+	// request, so neither corresponds to an entry in this file's "API Endpoints Used"
+	// doc. clmMemberPath is deliberately not clmPatchPutMember despite the identical
+	// shape: naming it after a real PATCH/PUT endpoint would be just as misleading in
+	// the other direction.
+	clmGroupPath  = "/v2/%s/groups/%s"
+	clmMemberPath = "/v2/%s/members/%s"
 )
 
 // ensureClmInitialized resolves the CLM Object API base URL, separately from
@@ -425,12 +432,12 @@ func (c *Client) ListGroups(ctx context.Context, options PageOptions) ([]ClmGrou
 // hrefFor builds an object's Href from its native ID and the resolved CLM base URL,
 // shared by GroupHref and MemberHref, for callers that only have a ResourceId (no
 // hydrated Resource to read a Href from). Assumes the shape "/v2/{account}/{collection}/{id}";
-// unverified against a live tenant.
-func (c *Client) hrefFor(ctx context.Context, endpoint, id string) (string, error) {
+// unverified against a live tenant. Builds the string locally — never issues a request.
+func (c *Client) hrefFor(ctx context.Context, pathShape, id string) (string, error) {
 	if err := c.ensureClmReady(ctx); err != nil {
 		return "", err
 	}
-	objURL, err := c.buildClmClientURL(endpoint, id)
+	objURL, err := c.buildClmClientURL(pathShape, id)
 	if err != nil {
 		return "", err
 	}
@@ -439,12 +446,12 @@ func (c *Client) hrefFor(ctx context.Context, endpoint, id string) (string, erro
 
 // GroupHref builds a CLM group's Href from its native ID — see hrefFor's doc.
 func (c *Client) GroupHref(ctx context.Context, groupID string) (string, error) {
-	return c.hrefFor(ctx, clmGetGroup, groupID)
+	return c.hrefFor(ctx, clmGroupPath, groupID)
 }
 
 // MemberHref builds a CLM member's Href from its native ID — see hrefFor's doc.
 func (c *Client) MemberHref(ctx context.Context, memberID string) (string, error) {
-	return c.hrefFor(ctx, clmGetMember, memberID)
+	return c.hrefFor(ctx, clmMemberPath, memberID)
 }
 
 // GetGroupMembers lists the members of a CLM group.

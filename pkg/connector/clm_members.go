@@ -94,7 +94,7 @@ func parseIntoClmMemberResource(member *client.ClmMember) (*v2.Resource, error) 
 		"role":               member.Role,
 		"exemptFromUserSync": member.ExemptFromUserSync,
 		"portalOnly":         member.PortalOnly,
-		"href":               member.Href,
+		profileFieldHref:     member.Href,
 	}
 
 	displayName := member.UserName
