@@ -667,3 +667,34 @@ func TestClmWorkflowQueueBuilder_List_ReplayedRollbackByMoreThanOneChunk(t *test
 		t.Errorf("rolled-back replay: expected to resume from the frontier %q, got %q", frontier, syncRes.NextPageToken)
 	}
 }
+
+// TestClmWorkflowQueueBuilder_List_ReplayOfSinglePageScanIsDetected is a regression
+// test: a scan that completes in a single page has NextExpectedInputToken == "" both
+// before the first call and after the scan finishes, so token comparison alone can't
+// tell a replay of that one chunk from a genuine first call. Without ScanComplete, a
+// replay here would re-process member-alice's tolerated failure AFTER
+// SucceededAtLeastOnce is already true, hitting the "fails loud" branch instead of the
+// first-pass escalation path — turning a harmless replay into a hard sync failure.
+func TestClmWorkflowQueueBuilder_List_ReplayOfSinglePageScanIsDetected(t *testing.T) {
+	srv, c := clmtest.NewServer(t)
+	srv.ForceMemberWorkflowQueuesStatus("member-alice", 403)
+	b := newClmWorkflowQueueBuilder(c)
+	ctx := context.Background()
+	attr := rs.SyncOpAttrs{Session: newFakeSessionStore()}
+
+	_, syncRes, err := b.List(ctx, nil, attr)
+	if err != nil {
+		t.Fatalf("first call: %v", err)
+	}
+	if syncRes.NextPageToken != "" {
+		t.Fatal("first call: expected the scan to complete in a single page")
+	}
+
+	resources, _, err := b.List(ctx, nil, attr)
+	if err != nil {
+		t.Fatalf("replay of the single-page scan: %v", err)
+	}
+	if len(resources) != 2 {
+		t.Errorf("replay: expected the same 2 queues as the first call, got %d: %+v", len(resources), resources)
+	}
+}

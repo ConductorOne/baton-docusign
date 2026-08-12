@@ -49,6 +49,10 @@ type clmWorkflowQueueDiscoveryState struct {
 	// is a replay: List() resumes from this frontier instead of re-running an
 	// already-applied chunk and double-counting the escalation counters above.
 	NextExpectedInputToken string `json:"next_expected_input_token"`
+	// ScanComplete distinguishes "the scan finished" from "nothing processed yet" — both
+	// otherwise look identical (NextExpectedInputToken == ""). Without it, a replay of a
+	// scan that completed in a single page wouldn't be detected as a replay at all.
+	ScanComplete bool `json:"scan_complete"`
 }
 
 var _ connectorbuilder.StaticEntitlementSyncerV2 = (*clmWorkflowQueueBuilder)(nil)
@@ -142,7 +146,7 @@ func (b *clmWorkflowQueueBuilder) List(ctx context.Context, _ *v2.ResourceId, at
 		ctxzap.Extract(ctx).Debug("baton-docusign: failed to read CLM workflow queue discovery state, skipping clm_workflow_queue sync", zap.Error(err))
 		return nil, &rs.SyncOpResults{}, nil
 	}
-	if found && pageToken != state.NextExpectedInputToken {
+	if found && (state.ScanComplete || pageToken != state.NextExpectedInputToken) {
 		return b.replayChunk(bag, state)
 	}
 	if state.Queues == nil {
@@ -289,6 +293,7 @@ func (b *clmWorkflowQueueBuilder) List(ctx context.Context, _ *v2.ResourceId, at
 	}
 
 	state.NextExpectedInputToken = nextMemberPageToken
+	state.ScanComplete = nextMemberPageToken == ""
 	if err := session.SetJSON(ctx, attr.Session, clmSessionKeyWorkflowQueueDiscoveryState, state); err != nil {
 		// The session store is opt-in end-to-end: WithSessionStoreEnabled (main.go)
 		// only tells the SDK to accept a store connection — whether one actually
@@ -325,10 +330,11 @@ func (b *clmWorkflowQueueBuilder) List(ctx context.Context, _ *v2.ResourceId, at
 	return resources, &rs.SyncOpResults{Annotations: dedupeRateLimitAnnotations(allAnnos)}, nil
 }
 
-// replayChunk handles a resumed sync re-issuing a page this state already applied (see
-// LastAppliedInputToken's doc). The per-queue membership merge is dedup-safe against
-// this, but the escalation counters aren't, so this re-fetches just the next-page token
-// instead of re-running the per-member scan and its counter updates.
+// replayChunk handles a resumed sync arriving with an input token that isn't the one
+// this state expects next (see NextExpectedInputToken's doc). The per-queue membership
+// merge is dedup-safe against a replay, but the escalation counters aren't, so this
+// resumes from the persisted frontier instead of re-running the per-member scan and its
+// counter updates.
 func (b *clmWorkflowQueueBuilder) replayChunk(bag *pagination.Bag, state clmWorkflowQueueDiscoveryState) ([]*v2.Resource, *rs.SyncOpResults, error) {
 	if state.NextExpectedInputToken != "" {
 		outToken, err := bag.NextToken(state.NextExpectedInputToken)
