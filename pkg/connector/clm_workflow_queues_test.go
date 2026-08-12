@@ -625,3 +625,45 @@ func TestClmWorkflowQueueBuilder_List_ReplayedChunkDoesNotDoubleCountFailures(t 
 		t.Fatal("replayed chunk 1: expected a non-empty NextPageToken — must not have escalated from double-counted failures")
 	}
 }
+
+// TestClmWorkflowQueueBuilder_List_ReplayedRollbackByMoreThanOneChunk is a regression
+// test: a resume can roll back more than one chunk, replaying an input token that isn't
+// the immediately preceding one. Replaying chunk 1's token after chunk 2 already applied
+// must resume from the current frontier (chunk 2's own NextPageToken), not re-run either
+// chunk and double-count their failures.
+func TestClmWorkflowQueueBuilder_List_ReplayedRollbackByMoreThanOneChunk(t *testing.T) {
+	srv, c := clmtest.NewServer(t)
+	srv.ForceMemberWorkflowQueuesStatus("member-alice", 403)
+	srv.ForceMemberWorkflowQueuesStatus("member-bob", 403)
+	b := newClmWorkflowQueueBuilder(c)
+	ctx := context.Background()
+	attr := rs.SyncOpAttrs{Session: newFakeSessionStore(), PageToken: pagination.Token{Size: 1, Token: ""}}
+
+	_, syncRes, err := b.List(ctx, nil, attr) // chunk 1: alice fails (count=1)
+	if err != nil {
+		t.Fatalf("chunk 1: %v", err)
+	}
+	attr.PageToken.Token = syncRes.NextPageToken
+
+	_, syncRes, err = b.List(ctx, nil, attr) // chunk 2: bob fails (count=2)
+	if err != nil {
+		t.Fatalf("chunk 2: %v", err)
+	}
+	if syncRes.NextPageToken == "" {
+		t.Fatal("chunk 2: expected a non-empty NextPageToken — 2 failures is below the threshold")
+	}
+	frontier := syncRes.NextPageToken
+
+	// Replay chunk 1's original token — two chunks stale, not just one.
+	attr.PageToken.Token = ""
+	resources, syncRes, err := b.List(ctx, nil, attr)
+	if err != nil {
+		t.Fatalf("rolled-back replay: %v", err)
+	}
+	if len(resources) != 0 {
+		t.Errorf("rolled-back replay: expected zero resources, got %d: %+v", len(resources), resources)
+	}
+	if syncRes.NextPageToken != frontier {
+		t.Errorf("rolled-back replay: expected to resume from the frontier %q, got %q", frontier, syncRes.NextPageToken)
+	}
+}
