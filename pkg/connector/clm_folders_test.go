@@ -63,22 +63,19 @@ func TestClmAccessTypeForSlug_RoundTrips(t *testing.T) {
 
 // --- Integration tests against the clmtest mock server ---
 
-func TestClmFolderBuilder_List_SkipsGracefullyWhenClmUnavailable(t *testing.T) {
+func TestClmFolderBuilder_List_FailsWhenClmUnavailable(t *testing.T) {
 	// See clm_members_test.go's identical test for the full rationale.
 	s, _ := clmtest.NewServer(t)
 	badClient := s.NewClientWithToken("wrong-token")
 	b := newClmFolderBuilder(badClient)
 	ctx := context.Background()
 
-	resources, res, err := b.List(ctx, nil, rs.SyncOpAttrs{PageToken: pagination.Token{Size: 10}})
-	if err != nil {
-		t.Fatalf("expected List to tolerate an unavailable CLM account and skip gracefully, got error: %v", err)
+	resources, _, err := b.List(ctx, nil, rs.SyncOpAttrs{PageToken: pagination.Token{Size: 10}})
+	if err == nil {
+		t.Fatal("expected List to fail when CLM is unavailable, got nil error")
 	}
 	if len(resources) != 0 {
-		t.Errorf("expected zero resources when CLM is unavailable, got %d", len(resources))
-	}
-	if res == nil || res.NextPageToken != "" {
-		t.Errorf("expected an empty (non-paginating) result, got %+v", res)
+		t.Errorf("expected zero resources on a hard failure, got %d", len(resources))
 	}
 }
 

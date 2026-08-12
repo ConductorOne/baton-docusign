@@ -101,9 +101,9 @@ Copy the `code` parameter value and paste it when prompted. Save the refresh tok
 
 DocuSign CLM (Contract Lifecycle Management) is a separate DocuSign product from
 eSignature, with its own API and a separate production subscription. CLM members, roles,
-groups, folders, folder security, and permission sets sync alongside the standard
-eSignature resources, with no config flag to enable — accounts that don't have CLM simply
-sync no CLM resources.
+groups, folders, folder security, and permission sets are opt-in: they don't sync by
+default, and a customer must explicitly enable each CLM resource type in C1's sync
+configuration.
 
 Requirements:
 
@@ -115,11 +115,15 @@ Requirements:
   also be granted the CLM API scopes on ConductorOne's platform side before any CLM data
   will sync. Contact ConductorOne if no CLM data appears in this mode.
 
-The 5 CLM resource types are always registered and visible to C1 — this avoids a C1 sync
-engine treating CLM resources as deleted if they stop appearing (see
-[CHANGE_TYPES.md](CHANGE_TYPES.md) if you're touching this). Without the CLM OAuth scopes
-(or without a CLM subscription on the account), each CLM resource type's sync is skipped
-gracefully rather than erroring the whole sync.
+The 5 CLM resource types are always registered and visible to C1, but each carries
+`OptInRequired` — C1 excludes them from a customer's sync by default, and they only run
+once a customer explicitly opts in (see [CHANGE_TYPES.md](CHANGE_TYPES.md) if you're
+touching this). C1's opt-in toggle does not validate the underlying DocuSign account
+first, so a customer can enable CLM sync without actually having the subscription or
+scopes above. If that happens, the sync fails loudly rather than silently succeeding
+with zero CLM resources — an account that opted in but can't reach CLM is treated as a
+misconfiguration to fix (disable the resource type, or activate the CLM feature), not an
+expected state to tolerate.
 
 CLM permission sets sync for visibility only — DocuSign's CLM API has no endpoint to
 assign or unassign a permission set, so they cannot be granted or revoked through this

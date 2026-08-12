@@ -7,7 +7,6 @@ import (
 	"github.com/conductorone/baton-docusign/pkg/client"
 	"github.com/conductorone/baton-docusign/pkg/client/clmtest"
 	rs "github.com/conductorone/baton-sdk/pkg/types/resource"
-	"google.golang.org/grpc/status"
 )
 
 func TestClmRoleBuilder_List(t *testing.T) {
@@ -35,78 +34,23 @@ func TestClmRoleBuilder_List(t *testing.T) {
 	}
 }
 
-func TestClmRoleBuilder_List_SkipsGracefullyWhenClmUnavailable(t *testing.T) {
-	// See clm_members_test.go's identical test for the full rationale. Before List()
-	// gated on EnsureClmReady, clm_roles.go made no API call at all, so this case
-	// couldn't happen — the 5 fixed roles synced unconditionally even without CLM access.
+// TestClmRoleBuilder_List_FailsWhenClmUnavailable is a deliberate design choice, not an
+// oversight: clm_role is OptInRequired (resource_types.go), so List() only ever runs
+// once a customer has explicitly enabled it in their sync config, and C1's opt-in toggle
+// has no upstream check against DocuSign — a customer can enable it without actually
+// having a CLM subscription. When EnsureClmReady then fails, that's a real
+// misconfiguration (wrong resource enabled, or the feature needs activating), not an
+// expected/transient state, so it must fail the sync loudly rather than silently
+// succeed with zero roles indefinitely.
+func TestClmRoleBuilder_List_FailsWhenClmUnavailable(t *testing.T) {
 	s, _ := clmtest.NewServer(t)
 	badClient := s.NewClientWithToken("wrong-token")
 	b := newClmRoleBuilder(badClient)
 	ctx := context.Background()
 
-	resources, res, err := b.List(ctx, nil, rs.SyncOpAttrs{})
-	if err != nil {
-		t.Fatalf("expected List to tolerate an unavailable CLM account and skip gracefully, got error: %v", err)
-	}
-	if len(resources) != 0 {
-		t.Errorf("expected zero resources when CLM is unavailable, got %d", len(resources))
-	}
-	if res == nil {
-		t.Errorf("expected a non-nil SyncOpResults, got %+v", res)
-	}
-}
-
-// TestClmRoleBuilder_List_FailsLoudlyOnTransientDiscoveryFailure is a regression test:
-// ensureClmInitialized wraps EVERY discovery-call failure as a clmDiscoveryError,
-// including transient infrastructure failures (5xx, rate limits), not just the 4 codes
-// isOptInFeatureUnavailableError tolerates. Gating solely on
-// client.IsClmDiscoveryError(err) — without also requiring
-// isOptInFeatureUnavailableError(err) — would make clm_role silently skip on a 503 that
-// every other CLM builder correctly treats as a loud failure.
-func TestClmRoleBuilder_List_FailsLoudlyOnTransientDiscoveryFailure(t *testing.T) {
-	s, c := clmtest.NewServer(t)
-	s.ForceClmDiscoveryStatus(503)
-	b := newClmRoleBuilder(c)
-	ctx := context.Background()
-
 	resources, _, err := b.List(ctx, nil, rs.SyncOpAttrs{})
 	if err == nil {
-		t.Fatal("expected a transient discovery failure (503) to fail loudly, got nil error")
-	}
-	if len(resources) != 0 {
-		t.Errorf("expected zero resources on a hard failure, got %d", len(resources))
-	}
-}
-
-// TestClmRoleBuilder_List_FailsLoudlyOnNonDiscoveryTolerableError is a regression test
-// for the OTHER half of List()'s "requires both conditions" gate: a tolerated code
-// (Unauthenticated here) that comes from eSignature's own ensureInitialized, not CLM
-// account discovery, must still fail loud. Without the client.IsClmDiscoveryError(err)
-// conjunct, this would be silently mistaken for "no CLM subscription" — the case
-// clm_roles.go's own doc comment names first. Deleting that conjunct alone would leave
-// TestClmRoleBuilder_List_SkipsGracefullyWhenClmUnavailable and
-// TestClmRoleBuilder_List_FailsLoudlyOnTransientDiscoveryFailure both green, since
-// neither exercises a tolerated code from this specific source.
-func TestClmRoleBuilder_List_FailsLoudlyOnNonDiscoveryTolerableError(t *testing.T) {
-	s, c := clmtest.NewServer(t)
-	s.ForceUserInfoStatus(401)
-	b := newClmRoleBuilder(c)
-	ctx := context.Background()
-
-	resources, _, err := b.List(ctx, nil, rs.SyncOpAttrs{})
-	if err == nil {
-		t.Fatal("expected a tolerated code from a non-discovery source to fail loudly, got nil error")
-	}
-	// Pins the two preconditions that make this a regression test for the
-	// IsClmDiscoveryError conjunct rather than for "any error at all": the error must
-	// carry a code isOptInFeatureUnavailableError tolerates, and must not be
-	// discovery-sourced. Otherwise a change to the userinfo failure's code mapping
-	// would leave this test green while no longer exercising the gate.
-	if !isOptInFeatureUnavailableError(err) {
-		t.Fatalf("test setup: expected a tolerated code so this test exercises the discovery-source conjunct, got %v: %v", status.Code(err), err)
-	}
-	if client.IsClmDiscoveryError(err) {
-		t.Fatalf("test setup: expected a non-discovery-sourced error, got: %v", err)
+		t.Fatal("expected List to fail when CLM is unavailable, got nil error")
 	}
 	if len(resources) != 0 {
 		t.Errorf("expected zero resources on a hard failure, got %d", len(resources))

@@ -6,16 +6,13 @@ import (
 	"github.com/conductorone/baton-docusign/pkg/client"
 	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
 	rs "github.com/conductorone/baton-sdk/pkg/types/resource"
-	"github.com/grpc-ecosystem/go-grpc-middleware/logging/zap/ctxzap"
-	"go.uber.org/zap"
 )
 
 // clmRoleBuilder syncs the 5 fixed CLM account-level roles (client.ClmRoles). The role
 // set itself isn't backed by an API call — see resource_types.go for why this resource
 // type exists — but List() still checks CLM availability via EnsureClmReady before
 // emitting it, the same discovery check every other CLM builder's real API call runs
-// internally; otherwise these 5 roles would sync unconditionally even on an account
-// with no CLM subscription, unlike every other CLM resource type.
+// internally.
 type clmRoleBuilder struct {
 	resourceType *v2.ResourceType
 	client       *client.Client
@@ -29,46 +26,15 @@ func (b *clmRoleBuilder) ResourceType(_ context.Context) *v2.ResourceType {
 // account. No pagination needed — the set is small and hardcoded, not fetched from the
 // API — so the availability check always runs (there's no first-page-only gate to
 // apply, unlike the paginated CLM builders).
+//
+// clm_role is OptInRequired (resource_types.go), so this List() only ever runs once a
+// customer has explicitly enabled it in their sync config — the C1 platform's toggle for
+// that has no upstream validation against DocuSign, so a customer can opt in without
+// actually having a CLM subscription. When that happens, EnsureClmReady failing here is
+// a real misconfiguration, not a transient/expected condition: fail loudly so it's
+// visible, rather than silently syncing zero roles indefinitely.
 func (b *clmRoleBuilder) List(ctx context.Context, _ *v2.ResourceId, _ rs.SyncOpAttrs) ([]*v2.Resource, *rs.SyncOpResults, error) {
 	if err := b.client.EnsureClmReady(ctx); err != nil {
-		// Requires BOTH conditions, narrower than every other CLM builder's tolerance
-		// (isOptInFeatureUnavailableError alone):
-		//
-		//   - client.IsClmDiscoveryError(err): EnsureClmReady is the ONLY CLM call
-		//     clm_role's List() ever makes, so an error here that ISN'T from CLM account
-		//     discovery itself can only be eSignature's own ensureInitialized failing (a
-		//     broken/expired token) — a problem that already breaks every other resource
-		//     type too, CLM or not, and should fail this sync loudly rather than be
-		//     silently mistaken for a plain non-CLM account.
-		//   - isOptInFeatureUnavailableError(err): ensureClmInitialized wraps EVERY
-		//     doRequestCommon failure as a clmDiscoveryError, including transient
-		//     infrastructure failures (5xx, rate limits, transport errors —
-		//     codes.Unavailable and friends). IsClmDiscoveryError alone would tolerate
-		//     those too, which every other CLM builder deliberately does NOT (see that
-		//     function's doc) — a discovery-sourced 503 should fail loud, not be
-		//     mistaken for "no CLM subscription".
-		//
-		// Residual, accepted risk: the SDK's sync engine runs different resource types'
-		// List() concurrently (see vendor's pkg/sync/parallel_syncer.go), so two CLM
-		// builders' near-simultaneous discovery calls could in principle still disagree if
-		// CLM discovery itself answers inconsistently within one sync — e.g. clm_role sees
-		// a tolerated discovery failure and skips while clm_folder's later call succeeds
-		// and emits grants to clm_role/<name> principals this sync never produced. Not
-		// solved with a connector-side retry here: ductone/c1's own connector-error
-		// classification (isNonRetryableCode) already treats isOptInFeatureUnavailableError's
-		// codes as stable/permanent for a sync's lifetime, specifically because the token
-		// doesn't change mid-sync — so retrying would fight that platform convention, and
-		// there's no live CLM tenant to validate a bespoke cross-builder consistency
-		// mechanism against instead.
-		//
-		// This gate only helps when DocuSign rejects CLM at discovery. If some accounts
-		// are instead rejected only on a later per-resource data call (unconfirmed either
-		// way), clm_role still emits its 5 roles while the other CLM builders skip —
-		// clm_role has no data call of its own to check that case with.
-		if client.IsClmDiscoveryError(err) && isOptInFeatureUnavailableError(err) {
-			ctxzap.Extract(ctx).Info("baton-docusign: CLM is not available for this account or token, skipping clm_role sync", zap.Error(err))
-			return nil, &rs.SyncOpResults{}, nil
-		}
 		return nil, nil, err
 	}
 
