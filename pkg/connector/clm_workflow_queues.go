@@ -8,6 +8,7 @@ import (
 	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
 	"github.com/conductorone/baton-sdk/pkg/annotations"
 	"github.com/conductorone/baton-sdk/pkg/connectorbuilder"
+	"github.com/conductorone/baton-sdk/pkg/pagination"
 	"github.com/conductorone/baton-sdk/pkg/session"
 	"github.com/conductorone/baton-sdk/pkg/types/grant"
 	rs "github.com/conductorone/baton-sdk/pkg/types/resource"
@@ -43,6 +44,10 @@ type clmWorkflowQueueDiscoveryState struct {
 	ConsecutiveUnavailableFailures int                                `json:"consecutive_unavailable_failures"`
 	SkippedMembers                 int                                `json:"skipped_members"`
 	SkippedQueues                  int                                `json:"skipped_queues"`
+	// LastAppliedInputToken is the ListMembers page token this state last fully applied
+	// — lets a replayed chunk (a resumed sync re-issuing an already-applied call) short-
+	// circuit before double-counting the escalation counters above. See List()'s doc.
+	LastAppliedInputToken string `json:"last_applied_input_token"`
 }
 
 var _ connectorbuilder.StaticEntitlementSyncerV2 = (*clmWorkflowQueueBuilder)(nil)
@@ -124,7 +129,7 @@ func (b *clmWorkflowQueueBuilder) List(ctx context.Context, _ *v2.ResourceId, at
 		return nil, nil, err
 	}
 
-	state, _, err := session.GetJSON[clmWorkflowQueueDiscoveryState](ctx, attr.Session, clmSessionKeyWorkflowQueueDiscoveryState)
+	state, found, err := session.GetJSON[clmWorkflowQueueDiscoveryState](ctx, attr.Session, clmSessionKeyWorkflowQueueDiscoveryState)
 	if err != nil {
 		// The session store is opt-in end-to-end: WithSessionStoreEnabled (main.go) only
 		// tells the SDK to accept a store connection — whether one actually exists still
@@ -135,6 +140,9 @@ func (b *clmWorkflowQueueBuilder) List(ctx context.Context, _ *v2.ResourceId, at
 		// Skip gracefully instead, same as an unavailable CLM subscription.
 		ctxzap.Extract(ctx).Debug("baton-docusign: failed to read CLM workflow queue discovery state, skipping clm_workflow_queue sync", zap.Error(err))
 		return nil, &rs.SyncOpResults{}, nil
+	}
+	if found && pageToken == state.LastAppliedInputToken {
+		return b.replayChunk(ctx, bag, pageToken, attr, state)
 	}
 	if state.Queues == nil {
 		state.Queues = make(map[string]client.ClmWorkflowQueue)
@@ -279,6 +287,7 @@ func (b *clmWorkflowQueueBuilder) List(ctx context.Context, _ *v2.ResourceId, at
 		}
 	}
 
+	state.LastAppliedInputToken = pageToken
 	if err := session.SetJSON(ctx, attr.Session, clmSessionKeyWorkflowQueueDiscoveryState, state); err != nil {
 		// The session store is opt-in end-to-end: WithSessionStoreEnabled (main.go)
 		// only tells the SDK to accept a store connection — whether one actually
@@ -312,6 +321,38 @@ func (b *clmWorkflowQueueBuilder) List(ctx context.Context, _ *v2.ResourceId, at
 		resources = append(resources, queueResource)
 	}
 
+	return resources, &rs.SyncOpResults{Annotations: dedupeRateLimitAnnotations(allAnnos)}, nil
+}
+
+// replayChunk handles a resumed sync re-issuing a page this state already applied (see
+// LastAppliedInputToken's doc). The per-queue membership merge is dedup-safe against
+// this, but the escalation counters aren't, so this re-fetches just the next-page token
+// instead of re-running the per-member scan and its counter updates.
+func (b *clmWorkflowQueueBuilder) replayChunk(
+	ctx context.Context, bag *pagination.Bag, pageToken string, attr rs.SyncOpAttrs, state clmWorkflowQueueDiscoveryState,
+) ([]*v2.Resource, *rs.SyncOpResults, error) {
+	_, nextMemberPageToken, allAnnos, err := b.client.ListMembers(ctx, client.PageOptions{
+		PageSize:  attr.PageToken.Size,
+		PageToken: pageToken,
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	if nextMemberPageToken != "" {
+		outToken, err := bag.NextToken(nextMemberPageToken)
+		if err != nil {
+			return nil, nil, err
+		}
+		return nil, &rs.SyncOpResults{Annotations: dedupeRateLimitAnnotations(allAnnos), NextPageToken: outToken}, nil
+	}
+	resources := make([]*v2.Resource, 0, len(state.Queues))
+	for _, q := range state.Queues {
+		queueResource, err := parseIntoClmWorkflowQueueResource(&q)
+		if err != nil {
+			return nil, nil, err
+		}
+		resources = append(resources, queueResource)
+	}
 	return resources, &rs.SyncOpResults{Annotations: dedupeRateLimitAnnotations(allAnnos)}, nil
 }
 

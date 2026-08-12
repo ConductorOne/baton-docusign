@@ -592,3 +592,36 @@ func TestClmWorkflowQueueBuilder_List_EscalationThresholdSpansChunks(t *testing.
 		t.Error("chunk 2: expected an empty NextPageToken — escalation should end the sync for this resource type, not request another chunk")
 	}
 }
+
+// TestClmWorkflowQueueBuilder_List_ReplayedChunkDoesNotDoubleCountFailures is a
+// regression test: a resumed sync can re-issue a List() call with the same PageToken as
+// a chunk already applied. Replaying a below-threshold chunk must not double-count its
+// failures toward ConsecutiveUnavailableFailures and falsely escalate.
+func TestClmWorkflowQueueBuilder_List_ReplayedChunkDoesNotDoubleCountFailures(t *testing.T) {
+	srv, c := clmtest.NewServer(t)
+	srv.ForceMemberWorkflowQueuesStatus("member-alice", 403)
+	srv.ForceMemberWorkflowQueuesStatus("member-bob", 403)
+	b := newClmWorkflowQueueBuilder(c)
+	ctx := context.Background()
+	attr := rs.SyncOpAttrs{Session: newFakeSessionStore(), PageToken: pagination.Token{Size: 2, Token: ""}}
+
+	_, syncRes, err := b.List(ctx, nil, attr)
+	if err != nil {
+		t.Fatalf("chunk 1: %v", err)
+	}
+	if syncRes.NextPageToken == "" {
+		t.Fatal("chunk 1: expected a non-empty NextPageToken — 2 failures is below the threshold")
+	}
+
+	// Replay chunk 1 with the exact same input token.
+	resources, syncRes, err := b.List(ctx, nil, attr)
+	if err != nil {
+		t.Fatalf("replayed chunk 1: %v", err)
+	}
+	if len(resources) != 0 {
+		t.Errorf("replayed chunk 1: expected zero resources, got %d: %+v", len(resources), resources)
+	}
+	if syncRes.NextPageToken == "" {
+		t.Fatal("replayed chunk 1: expected a non-empty NextPageToken — must not have escalated from double-counted failures")
+	}
+}
