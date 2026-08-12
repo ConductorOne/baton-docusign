@@ -1,12 +1,17 @@
 package connector
 
 import (
+	"context"
 	"fmt"
 	"net/url"
 	"strings"
 
+	"github.com/conductorone/baton-docusign/pkg/client"
 	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
 	"github.com/conductorone/baton-sdk/pkg/pagination"
+	rs "github.com/conductorone/baton-sdk/pkg/types/resource"
+	"github.com/grpc-ecosystem/go-grpc-middleware/logging/zap/ctxzap"
+	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -55,14 +60,9 @@ func parsePageToken(i string, resourceID *v2.ResourceId) (*pagination.Bag, strin
 //   - PermissionDenied/Unauthenticated: the account/token lacks the CLM subscription
 //     or OAuth scope — the expected case for most eSignature-only accounts.
 //   - NotFound: the discovery endpoint 404s for an account that was never provisioned
-//     in the legacy SpringCM system CLM discovery still runs through. Confirmed via
-//     DocuSign's own CLM API docs (Response and Error Codes) that 404 isn't unique to
-//     "this object doesn't exist" across the whole CLM Object API — it's the same
-//     response CLM returns for "this exists but you don't have access rights",
-//     specifically so a 403 never leaks whether the object exists ("If the user does
-//     not have permissions to see the object or the object does not exist, a 404
-//     response code is returned"). So a 404 is just as plausible a "no access" signal
-//     as PermissionDenied/Unauthenticated are, not only a genuinely-missing account.
+//     in the legacy SpringCM system. CLM's Object API returns 404 both for "doesn't
+//     exist" and "exists but no access", so treat it as a plausible no-access signal,
+//     not proof the account lacks CLM.
 //   - FailedPrecondition: ensureClmInitialized wraps its "response didn't contain a
 //     recognized base-URL field" error with this code specifically — a non-CLM
 //     account's discovery response plausibly has a different shape entirely (no CLM
@@ -84,35 +84,27 @@ func isOptInFeatureUnavailableError(err error) bool {
 	}
 }
 
-// clmIDFromHref extracts the trailing path segment from a CLM object's Href — CLM's
-// Object API schemas expose a Href field ("Uri where the object can be retrieved") but
-// no separate opaque Id field, so this is the closest thing to a native ID CLM exposes.
+// clmIDFromHref extracts the trailing path segment from a CLM object's Href — see
+// client.IDFromHref's doc. pkg/client/clmtest reimplements the same logic locally to
+// avoid depending on pkg/connector, so both packages call the one shared definition in
+// pkg/client instead of maintaining two copies.
 func clmIDFromHref(href string) string {
-	href = strings.TrimSuffix(href, "/")
-	if idx := strings.LastIndex(href, "/"); idx != -1 {
-		return href[idx+1:]
-	}
-	return href
+	return client.IDFromHref(href)
 }
 
-// clmHrefWithID rebuilds sampleHref with its trailing ID segment replaced by newID —
-// used to derive a sibling object's Href from a known-real one, instead of guessing at
-// the host from the discovered CLM base URL, whenever a real sample happens to be
-// available. See clmPreferredHref for why this matters specifically for writes.
-//
-// Reuses sampleHref's entire path, not just scheme+host, on the assumption that
-// same-collection Hrefs share the same path shape and only the trailing ID segment
-// differs. As documented in clm_models.go (not observed against a live tenant):
-// ClmGroupSecurityEntry.Href and ClmUserSecurityEntry.Href each carry the full
-// Group/Member object's own native Href (not some folder-scoped nested path), and
-// ClmGroupPage's doc states a member's-current-groups response (GetMemberGroups) shares
-// the identical ClmGroup/Href shape as the top-level groups-list endpoint.
-//
-// This function has no way to enforce it, but every clmPreferredHref call site in this
-// codebase only ever draws samples from one single collection at a time (e.g.
-// groupSampleHrefs from write.Groups alone) — mixing sample sources across collections
-// is the caller's contract, not something clmHrefWithID/clmPreferredHref check.
+// clmHrefWithID rebuilds sampleHref with its trailing ID segment replaced by newID.
+// Assumes same-collection Hrefs share path shape (only the ID differs) — not verified
+// against a live tenant. Callers must only pass samples from a single collection; newID
+// must be non-empty (see the check below for why).
 func clmHrefWithID(sampleHref, newID string) (string, error) {
+	if newID == "" {
+		// Without this check, an empty newID passes every shape check below (sampleHref
+		// still has a valid path) and silently returns a trailing-slash href with no ID
+		// segment at all — a malformed href that goes on to be sent as-is inside a
+		// PatchFolderSecurity/PatchMemberGroups request body, surfacing (if at all) as an
+		// opaque remote validation failure with no link back to "the ID was empty."
+		return "", fmt.Errorf("baton-docusign: cannot derive a sibling href from %q — newID is empty", sampleHref)
+	}
 	trimmed := strings.TrimSuffix(sampleHref, "/")
 	idx := strings.LastIndex(trimmed, "/")
 	if idx == -1 {
@@ -120,8 +112,8 @@ func clmHrefWithID(sampleHref, newID string) (string, error) {
 	}
 	// A bare scheme+host like "https://clm.example.com" also contains a "/" (the one
 	// separating scheme from host), so the LastIndex check above alone accepts it —
-	// producing a garbage "https://<newID>" href with no real path. Require an actual
-	// path segment before the trailing one being replaced.
+	// producing a garbage "https://<newID>" href with no real path. Reject a sample with
+	// no path at all; a single-segment path like "https://host/group-old" is accepted.
 	if u, err := url.Parse(trimmed); err != nil || u.Path == "" || u.Path == "/" {
 		return "", fmt.Errorf("baton-docusign: cannot derive a sibling href from %q — no path segment found", sampleHref)
 	}
@@ -136,12 +128,38 @@ func clmHrefWithID(sampleHref, newID string) (string, error) {
 // inconsistently; a read-side comparison doesn't have this risk, since clmIDFromHref
 // only ever looks at the trailing ID. Falls back to deriveFallback when no real sample
 // href is available (e.g. a member with no other group memberships yet, or a folder
-// with no other security entries yet).
-func clmPreferredHref(id string, sampleHrefs []string, deriveFallback func() (string, error)) (string, error) {
+// with no other security entries yet) — the expected, routine case (empty sampleHrefs
+// never reaches clmHrefWithID at all). If sampleHrefs is non-empty but every sample
+// fails to parse, that's the unexpected case: it means CLM returned a Href shape this
+// codebase's assumptions don't cover, so it's logged before falling back, rather than
+// silently masking exactly the wrong-host risk this function exists to avoid.
+func clmPreferredHref(ctx context.Context, id string, sampleHrefs []string, deriveFallback func() (string, error)) (string, error) {
+	var lastErr error
 	for _, sample := range sampleHrefs {
-		if derived, err := clmHrefWithID(sample, id); err == nil {
+		derived, err := clmHrefWithID(sample, id)
+		if err == nil {
 			return derived, nil
 		}
+		lastErr = err
+	}
+	if lastErr != nil {
+		ctxzap.Extract(ctx).Debug("baton-docusign: every sample href failed to derive a sibling href, falling back to a base-URL-derived href",
+			zap.Int("sample_count", len(sampleHrefs)), zap.Error(lastErr))
 	}
 	return deriveFallback()
+}
+
+// clmSampleHrefsFrom builds the sampleHrefs slice clmPreferredHref expects: principal's
+// own profile href first (the most direct sample when the resource happens to carry
+// one — only ever a sample, never required, so an identity-only principal still falls
+// through to the entries/fallback path unchanged), followed by every entry's Href.
+func clmSampleHrefsFrom[T any](principal *v2.Resource, entries []T, hrefOf func(T) string) []string {
+	sampleHrefs := make([]string, 0, len(entries)+1)
+	if href, ok := rs.GetProfileStringValue(rs.GetProfile(principal), "href"); ok {
+		sampleHrefs = append(sampleHrefs, href)
+	}
+	for _, e := range entries {
+		sampleHrefs = append(sampleHrefs, hrefOf(e))
+	}
+	return sampleHrefs
 }

@@ -4,20 +4,13 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
-	"strings"
 
 	"github.com/conductorone/baton-docusign/pkg/client"
 )
 
-// idFromHref extracts the trailing path segment of a Href — mirrors
-// pkg/connector/helper.go's clmIDFromHref, reimplemented locally so this test package
-// has no dependency on the connector package.
+// idFromHref extracts the trailing path segment of a Href — see client.IDFromHref's doc.
 func idFromHref(href string) string {
-	href = strings.TrimSuffix(href, "/")
-	if idx := strings.LastIndex(href, "/"); idx != -1 {
-		return href[idx+1:]
-	}
-	return href
+	return client.IDFromHref(href)
 }
 
 // Doc URL: https://developers.docusign.com/docs/clm-api/reference/objects/folders/ (Search).

@@ -1,6 +1,7 @@
 package connector
 
 import (
+	"context"
 	"errors"
 	"testing"
 
@@ -52,9 +53,17 @@ func TestClmHrefWithID(t *testing.T) {
 	if _, err := clmHrefWithID("https://clm.example.com", "x"); err == nil {
 		t.Error("expected an error for a sample href with no path segment (bare scheme+host)")
 	}
+
+	// An empty newID would otherwise pass every shape check on sampleHref and silently
+	// return a trailing-slash href with no ID segment at all (e.g.
+	// ".../groups/") — a malformed href with nothing pointing back at "the ID was empty".
+	if _, err := clmHrefWithID("https://clm.example.com/v2/acct-1/groups/group-old", ""); err == nil {
+		t.Error("expected an error for an empty newID")
+	}
 }
 
 func TestClmPreferredHref(t *testing.T) {
+	ctx := context.Background()
 	fallbackCalled := false
 	fallback := func() (string, error) {
 		fallbackCalled = true
@@ -63,7 +72,7 @@ func TestClmPreferredHref(t *testing.T) {
 
 	t.Run("prefers a real sample href over the fallback", func(t *testing.T) {
 		fallbackCalled = false
-		got, err := clmPreferredHref("group-target", []string{"https://real.example.com/v2/acct-1/groups/group-other"}, fallback)
+		got, err := clmPreferredHref(ctx, "group-target", []string{"https://real.example.com/v2/acct-1/groups/group-other"}, fallback)
 		if err != nil {
 			t.Fatalf("clmPreferredHref: %v", err)
 		}
@@ -77,7 +86,7 @@ func TestClmPreferredHref(t *testing.T) {
 
 	t.Run("skips empty sample hrefs", func(t *testing.T) {
 		fallbackCalled = false
-		got, err := clmPreferredHref("group-target", []string{"", "https://real.example.com/v2/acct-1/groups/group-other"}, fallback)
+		got, err := clmPreferredHref(ctx, "group-target", []string{"", "https://real.example.com/v2/acct-1/groups/group-other"}, fallback)
 		if err != nil {
 			t.Fatalf("clmPreferredHref: %v", err)
 		}
@@ -88,7 +97,7 @@ func TestClmPreferredHref(t *testing.T) {
 
 	t.Run("falls back when no sample href is available", func(t *testing.T) {
 		fallbackCalled = false
-		got, err := clmPreferredHref("group-target", nil, fallback)
+		got, err := clmPreferredHref(ctx, "group-target", nil, fallback)
 		if err != nil {
 			t.Fatalf("clmPreferredHref: %v", err)
 		}
@@ -97,6 +106,24 @@ func TestClmPreferredHref(t *testing.T) {
 		}
 		if !fallbackCalled {
 			t.Error("expected the fallback to be called when no sample hrefs are available")
+		}
+	})
+
+	// Regression test: sampleHrefs is non-empty but every sample is malformed in an
+	// unexpected way (not the routine "no sample yet" case) — must still fall back
+	// safely rather than erroring, even though this case is now logged (see
+	// clmPreferredHref's doc).
+	t.Run("falls back when every sample href fails to parse", func(t *testing.T) {
+		fallbackCalled = false
+		got, err := clmPreferredHref(ctx, "group-target", []string{"no-path-separator", "https://clm.example.com"}, fallback)
+		if err != nil {
+			t.Fatalf("clmPreferredHref: %v", err)
+		}
+		if want := "https://derived.example.com/v2/acct-1/groups/group-target"; got != want {
+			t.Errorf("clmPreferredHref = %q, want %q", got, want)
+		}
+		if !fallbackCalled {
+			t.Error("expected the fallback to be called when every sample href fails to parse")
 		}
 	})
 }
