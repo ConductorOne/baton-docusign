@@ -168,6 +168,42 @@ func (s *Server) SetGroupHref(id, href string) {
 	}
 }
 
+// SetFolderGroupSecurityHref and SetFolderUserSecurityHref override the Href of an
+// existing group/user security entry on a seeded folder (matched by ID via idFromHref),
+// letting a test make it observably different from what client.GroupHref/MemberHref's
+// fallback would produce for a different, derived ID — the same lever SetGroupHref gives
+// GetMemberGroups-based tests, needed here because folder security entries carry no
+// separate ID field of their own.
+func (s *Server) SetFolderGroupSecurityHref(folderID, groupID, href string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	folder, ok := s.folders[folderID]
+	if !ok {
+		return
+	}
+	for i := range folder.Security.Groups.Items {
+		if idFromHref(folder.Security.Groups.Items[i].Href) == groupID {
+			folder.Security.Groups.Items[i].Href = href
+			return
+		}
+	}
+}
+
+func (s *Server) SetFolderUserSecurityHref(folderID, memberID, href string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	folder, ok := s.folders[folderID]
+	if !ok {
+		return
+	}
+	for i := range folder.Security.Users.Items {
+		if idFromHref(folder.Security.Users.Items[i].Href) == memberID {
+			folder.Security.Users.Items[i].Href = href
+			return
+		}
+	}
+}
+
 func (s *Server) MemberHref(id string) string {
 	return fmt.Sprintf("%s/v2/%s/members/%s", s.baseURL, AccountID, id)
 }

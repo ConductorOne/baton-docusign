@@ -2,6 +2,7 @@ package connector
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/conductorone/baton-docusign/pkg/client"
@@ -422,32 +423,17 @@ func TestClmFolderBuilder_GrantAndRevoke_ToleratesBareIDOnRead(t *testing.T) {
 	}
 }
 
-// clmIdentityOnlyResource builds a Resource carrying nothing but its Id — the worst
-// case any code path in this connector can hand Grant/Revoke a principal in: it's what
-// the SDK's local file-mode provisioner effectively reduces a principal to once you
-// strip the fields no longer relied on (see the previous commit), and it's exactly what
-// the pebble storage engine's V3EntitlementToV2 (vendor/.../dotc1z/engine/pebble/
-// translate_v2.go) hydrates an Entitlement's own Resource as on every read, by design,
-// regardless of provisioning path. clmMemberHrefFromResource/clmGroupHrefFromResource no
-// longer exist — Grant prefers a real, server-issued sample Href already on hand via
-// clmPreferredHref, falling back to client.GroupHref/client.MemberHref only when none is
-// available; Revoke needs nothing beyond Id, since clmFindGroupSecurityIndex/
-// clmFindUserSecurityIndex compare by clmIDFromHref.
+// clmIdentityOnlyResource builds a Resource with nothing but Id — the shape pebble's
+// V3EntitlementToV2 hands Grant/Revoke on every read.
 func clmIdentityOnlyResource(resourceType *v2.ResourceType, resourceID string) *v2.Resource {
 	return &v2.Resource{
 		Id: &v2.ResourceId{ResourceType: resourceType.Id, Resource: resourceID},
 	}
 }
 
-// TestClmFolderBuilder_GrantAndRevoke_SurvivesIdentityOnlyPrincipal is a regression test
-// for the bug originally fixed by carrying the CLM href on the resource (first via
-// ExternalId, then an annotation) and, after the pebble-engine gap the annotation
-// approach missed, fixed properly by deriving the Href from the ID instead. Every other
-// Grant/Revoke test in this file passes the fully-populated resource
-// parseIntoClm*Resource returns — so it would pass whether or not either fix actually
-// worked. This test instead passes an identity-only principal — see
-// clmIdentityOnlyResource — to confirm the Href is still derivable with nothing else on
-// the resource to fall back to.
+// TestClmFolderBuilder_GrantAndRevoke_SurvivesIdentityOnlyPrincipal is a regression
+// test: passes an identity-only principal (unlike every other test in this file, which
+// uses a fully-populated resource) to confirm Href is still derivable.
 func TestClmFolderBuilder_GrantAndRevoke_SurvivesIdentityOnlyPrincipal(t *testing.T) {
 	srv, c := clmtest.NewServer(t)
 	b := newClmFolderBuilder(c)
@@ -533,11 +519,20 @@ func TestClmFolderBuilder_GrantAndRevoke_SurvivesIdentityOnlyPrincipal(t *testin
 // riskier sample branch (deriving a written Href from an existing folder-security
 // entry) never runs. folder-contracts is already seeded with real group/user security
 // entries (clmtest/seed.go), so granting a DIFFERENT group/member there exercises the
-// sample branch and lets this assert the derived Href end to end.
+// sample branch. Both existing samples are moved onto an alternate host first —
+// otherwise the sample-derived Href and the fallback-derived one (both built from the
+// same base URL and ID shape) would be byte-identical, and this test would pass whether
+// or not the sample branch actually ran.
 func TestClmFolderBuilder_Grant_SurvivesIdentityOnlyPrincipal_SampleBranch(t *testing.T) {
 	srv, c := clmtest.NewServer(t)
 	b := newClmFolderBuilder(c)
 	ctx := context.Background()
+
+	const sampleHost = "https://other.example.com"
+	altGroupLegalHref := fmt.Sprintf("%s/v2/%s/groups/group-legal", sampleHost, clmtest.AccountID)
+	srv.SetFolderGroupSecurityHref("folder-contracts", "group-legal", altGroupLegalHref)
+	altMemberBobHref := fmt.Sprintf("%s/v2/%s/members/%s", sampleHost, clmtest.AccountID, "member-bob")
+	srv.SetFolderUserSecurityHref("folder-contracts", "member-bob", altMemberBobHref)
 
 	folderResource, err := rs.NewResource("Contracts", clmFolderResourceType, "folder-contracts")
 	if err != nil {
@@ -555,14 +550,15 @@ func TestClmFolderBuilder_Grant_SurvivesIdentityOnlyPrincipal_SampleBranch(t *te
 			t.Fatalf("Grant with an identity-only principal: %v", err)
 		}
 		groups := srv.FolderSecurity("folder-contracts").Groups.Items
+		wantHref := fmt.Sprintf("%s/v2/%s/groups/group-ops", sampleHost, clmtest.AccountID)
 		var found *client.ClmGroupSecurityEntry
 		for i := range groups {
-			if groups[i].Href == srv.GroupHref("group-ops") {
+			if groups[i].Href == wantHref {
 				found = &groups[i]
 			}
 		}
 		if found == nil {
-			t.Fatalf("expected a group-ops entry with the sample-derived Href, got %+v", groups)
+			t.Fatalf("expected a group-ops entry with the sample-derived Href %q, got %+v", wantHref, groups)
 		}
 		if found.AccessType != client.ClmAccessTypeView {
 			t.Errorf("expected View AccessType, got %q", found.AccessType)
@@ -579,14 +575,15 @@ func TestClmFolderBuilder_Grant_SurvivesIdentityOnlyPrincipal_SampleBranch(t *te
 			t.Fatalf("Grant with an identity-only principal: %v", err)
 		}
 		users := srv.FolderSecurity("folder-contracts").Users.Items
+		wantHref := fmt.Sprintf("%s/v2/%s/members/member-dave", sampleHost, clmtest.AccountID)
 		var found *client.ClmUserSecurityEntry
 		for i := range users {
-			if users[i].Href == srv.MemberHref("member-dave") {
+			if users[i].Href == wantHref {
 				found = &users[i]
 			}
 		}
 		if found == nil {
-			t.Fatalf("expected a member-dave entry with the sample-derived Href, got %+v", users)
+			t.Fatalf("expected a member-dave entry with the sample-derived Href %q, got %+v", wantHref, users)
 		}
 		if found.AccessType != client.ClmAccessTypeView {
 			t.Errorf("expected View AccessType, got %q", found.AccessType)
