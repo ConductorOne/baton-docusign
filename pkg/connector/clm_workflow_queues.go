@@ -43,6 +43,7 @@ type clmWorkflowQueueDiscoveryState struct {
 	SucceededAtLeastOnce           bool                               `json:"succeeded_at_least_once"`
 	ConsecutiveUnavailableFailures int                                `json:"consecutive_unavailable_failures"`
 	SkippedMembers                 int                                `json:"skipped_members"`
+	SkippedMembersNoID             int                                `json:"skipped_members_no_id"`
 	SkippedQueues                  int                                `json:"skipped_queues"`
 	// NextExpectedInputToken is the ListMembers page token the next call should arrive
 	// with. Any other incoming token (a resumed sync rolling back one or more chunks)
@@ -175,11 +176,14 @@ func (b *clmWorkflowQueueBuilder) List(ctx context.Context, _ *v2.ResourceId, at
 			// which 404s and — on the pre-success path — counts toward
 			// clmWorkflowQueueUnavailableThreshold, so a handful of malformed members
 			// early in scan order could hard-fail the sync and misreport it as "CLM
-			// unavailable" instead of "found members with no usable ID."
-			state.SkippedMembers++
-			if n := state.SkippedMembers; n == 1 || n == 10 || n == 100 || n%1000 == 0 {
+			// unavailable" instead of "found members with no usable ID." Own counter,
+			// not the shared SkippedMembers below: sampling on a shared counter would
+			// let this failure class go unlogged entirely if enough of the other kind
+			// happened first.
+			state.SkippedMembersNoID++
+			if n := state.SkippedMembersNoID; n == 1 || n == 10 || n == 100 || n%1000 == 0 {
 				ctxzap.Extract(ctx).Warn("baton-docusign: CLM member has an empty Href, skipping",
-					zap.String("member_email", member.Email), zap.Int("total_occurrences", n))
+					zap.String("member_username", member.UserName), zap.Int("total_occurrences", n))
 			}
 			continue
 		}

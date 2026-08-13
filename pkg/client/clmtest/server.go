@@ -177,6 +177,18 @@ func (s *Server) AddBulkWorkflowQueueMember(memberID string, queueCount int) {
 	s.memberWorkflowQueues[memberID] = queueIDs
 }
 
+// AddMemberWithoutHref seeds a member with an empty Href — clmIDFromHref then reports an
+// empty ID for it, exercising List()'s empty-memberID guard (a malformed record CLM's
+// own API could plausibly return; this connector's endpoint shapes are
+// documented-but-unexercised against a live tenant) without the scan ever reaching
+// GetMemberWorkflowQueues for this member. Call after NewServer returns.
+func (s *Server) AddMemberWithoutHref(memberID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.members[memberID] = &client.ClmMember{Email: memberID + "@example.com", UserName: memberID}
+	s.memberOrder = append(s.memberOrder, memberID)
+}
+
 // URL returns the mock server's base URL — also what handleClmAccountDiscovery
 // returns as the CLM API base URL.
 func (s *Server) URL() string { return s.baseURL }

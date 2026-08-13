@@ -236,6 +236,30 @@ func TestClmWorkflowQueueBuilder_List_DiscoversQueuesViaMemberScan(t *testing.T)
 	}
 }
 
+// TestClmWorkflowQueueBuilder_List_SkipsMemberWithEmptyHref confirms the empty-memberID
+// guard: a malformed member with no Href must not reach GetMemberWorkflowQueues at all
+// (which would 404 and, on the pre-success path, count toward
+// clmWorkflowQueueUnavailableThreshold), must not disturb discovery of the other
+// members' real queues, and must not touch the escalation counter — it's a data-quality
+// skip, not an unavailability signal.
+func TestClmWorkflowQueueBuilder_List_SkipsMemberWithEmptyHref(t *testing.T) {
+	srv, c := clmtest.NewServer(t)
+	srv.AddMemberWithoutHref("member-no-href")
+	b := newClmWorkflowQueueBuilder(c)
+	ctx := context.Background()
+
+	resources, _, err := b.List(ctx, nil, rs.SyncOpAttrs{Session: newFakeSessionStore()})
+	if err != nil {
+		t.Fatalf("expected a member with an empty Href to be skipped, got error: %v", err)
+	}
+	if len(resources) != 2 {
+		t.Fatalf("expected the other members' 2 queues to still be discovered, got %d: %+v", len(resources), resources)
+	}
+	if got := srv.MemberWorkflowQueuesRequestCount(); got != 6 {
+		t.Errorf("expected exactly 6 GetMemberWorkflowQueues calls (the 6 real seeded members, not the malformed one), got %d", got)
+	}
+}
+
 // TestClmWorkflowQueueBuilder_List_ToleratesNotFoundMidScan confirms a single member
 // 404ing (deleted between ListMembers and this call) is skipped, not a sync-wide
 // failure, once at least one other member has already proven the endpoint works —
