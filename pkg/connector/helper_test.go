@@ -71,6 +71,18 @@ func TestClmHrefWithID(t *testing.T) {
 	if _, err := clmHrefWithID("https://clm.example.com/v2/acct-1/groups/", "group-new"); err == nil {
 		t.Error("expected an error for a sample href with a trailing slash (no ID segment)")
 	}
+
+	// Regression test: a "/" inside a query string must not be mistaken for the real
+	// path separator. Splitting on the raw string instead of the parsed URL's Path used
+	// to corrupt the query (".../group-old?filter=a/b" became ".../group-old?filter=a/"
+	// + newID) instead of replacing the actual ID segment.
+	got, err = clmHrefWithID("https://clm.example.com/v2/acct-1/groups/group-old?filter=a/b", "group-new")
+	if err != nil {
+		t.Fatalf("clmHrefWithID: %v", err)
+	}
+	if want := "https://clm.example.com/v2/acct-1/groups/group-new?filter=a/b"; got != want {
+		t.Errorf("clmHrefWithID = %q, want %q", got, want)
+	}
 }
 
 func TestClmPreferredHref(t *testing.T) {

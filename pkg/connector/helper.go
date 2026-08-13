@@ -105,27 +105,33 @@ func clmHrefWithID(sampleHref, newID string) (string, error) {
 		// opaque remote validation failure with no link back to "the ID was empty."
 		return "", status.Errorf(codes.InvalidArgument, "baton-docusign: cannot derive a sibling href from %q — newID is empty", sampleHref)
 	}
-	// A sample already ending in "/" has no ID segment to replace — the same degenerate
+	// Split on the parsed URL's Path, not the raw string: a "/" inside a query string or
+	// fragment (e.g. ".../groups/g1?filter=a/b") would otherwise win over the real path
+	// separator, corrupting the query instead of replacing the ID segment. A bare
+	// scheme+host like "https://clm.example.com" parses with an empty Path, so this also
+	// covers that case — no real path at all to derive from.
+	u, err := url.Parse(sampleHref)
+	if err != nil || u.Path == "" {
+		return "", status.Errorf(codes.InvalidArgument, "baton-docusign: cannot derive a sibling href from %q — no path segment found", sampleHref)
+	}
+	// A Path already ending in "/" has no ID segment to replace — the same degenerate
 	// shape the empty-newID check above guards against on the output side. Trimming it
 	// instead of rejecting it would silently drop the real collection segment: e.g.
 	// ".../groups/" trims to ".../groups", and the LastIndex split below would then
 	// wrongly treat "groups" as the ID to replace, producing ".../<newID>" with the
 	// actual collection segment gone.
-	if strings.HasSuffix(sampleHref, "/") {
+	if u.Path == "/" || strings.HasSuffix(u.Path, "/") {
 		return "", status.Errorf(codes.InvalidArgument, "baton-docusign: cannot derive a sibling href from %q — sample has no ID segment (trailing slash)", sampleHref)
 	}
-	idx := strings.LastIndex(sampleHref, "/")
+	idx := strings.LastIndex(u.Path, "/")
 	if idx == -1 {
+		// A relative, scheme-less sample (e.g. "no-path-separator") parses as an opaque
+		// Path with no leading "/" at all — url.Parse doesn't error on it, so this catches
+		// what the raw-string check used to.
 		return "", status.Errorf(codes.InvalidArgument, "baton-docusign: cannot derive a sibling href from %q — no path separator found", sampleHref)
 	}
-	// A bare scheme+host like "https://clm.example.com" also contains a "/" (the one
-	// separating scheme from host), so the LastIndex check above alone accepts it —
-	// producing a garbage "https://<newID>" href with no real path. Reject a sample with
-	// no path at all; a single-segment path like "https://host/group-old" is accepted.
-	if u, err := url.Parse(sampleHref); err != nil || u.Path == "" || u.Path == "/" {
-		return "", status.Errorf(codes.InvalidArgument, "baton-docusign: cannot derive a sibling href from %q — no path segment found", sampleHref)
-	}
-	return sampleHref[:idx+1] + newID, nil
+	u.Path = u.Path[:idx+1] + newID
+	return u.String(), nil
 }
 
 // clmPreferredHref resolves the href to send in a WRITE targeting id: it prefers
