@@ -136,6 +136,15 @@ func clmHrefWithID(sampleHref, newID string) (string, error) {
 // visible by default, but distinguishable from the routine case for anyone who does
 // raise verbosity, rather than discarded with no trace at all.
 func clmPreferredHref(ctx context.Context, id string, sampleHrefs []string, deriveFallback func() (string, error)) (string, error) {
+	if id == "" {
+		// clmHrefWithID rejects an empty id on the sample path, but deriveFallback (a
+		// caller-supplied closure, typically client.GroupHref/MemberHref built from this
+		// same id) has no such guard — an empty id would sail through it and produce the
+		// same malformed trailing-slash href this function exists to prevent. Reject here
+		// once, before either path runs, rather than relying on every deriveFallback
+		// closure to check it independently.
+		return "", fmt.Errorf("baton-docusign: cannot resolve a CLM href — id is empty")
+	}
 	var lastErr error
 	for _, sample := range sampleHrefs {
 		derived, err := clmHrefWithID(sample, id)

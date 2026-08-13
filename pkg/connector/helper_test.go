@@ -97,6 +97,21 @@ func TestClmPreferredHref(t *testing.T) {
 		}
 	})
 
+	// Regression test: id == "" used to sail through to deriveFallback (e.g.
+	// client.GroupHref(ctx, "")) whenever no sample href was available, producing a
+	// malformed trailing-slash href — the exact failure mode clmHrefWithID's own
+	// empty-newID check exists to catch on the sample path, but that check never ran
+	// here since an empty id with no samples skips clmHrefWithID entirely.
+	t.Run("rejects an empty id before trying either path", func(t *testing.T) {
+		fallbackCalled = false
+		if _, err := clmPreferredHref(ctx, "", nil, fallback); err == nil {
+			t.Error("expected an error for an empty id, got nil")
+		}
+		if fallbackCalled {
+			t.Error("expected the fallback NOT to be called for an empty id")
+		}
+	})
+
 	t.Run("falls back when no sample href is available", func(t *testing.T) {
 		fallbackCalled = false
 		got, err := clmPreferredHref(ctx, "group-target", nil, fallback)

@@ -151,10 +151,11 @@ func (g *clmGroupBuilder) Grant(ctx context.Context, principal *v2.Resource, ent
 	memberID := principal.Id.Resource
 	groupID := ent.Resource.Id.Resource
 
-	// Don't read the group's Href off ent.Resource: the pebble storage engine hydrates
-	// an entitlement's Resource as an identity-only stub (no profile, no annotations).
-	// The groupHref this Grant actually writes below is resolved via clmPreferredHref —
-	// a real sample Href from currentGroups if one exists, else client.GroupHref.
+	// Don't require the group's Href off ent.Resource: the pebble storage engine hydrates
+	// an entitlement's Resource as an identity-only stub (no profile, no annotations), so
+	// it isn't always available. The groupHref this Grant actually writes below is
+	// resolved via clmPreferredHref, preferring (in order): ent.Resource's own profile
+	// Href if present, then a real sample Href from currentGroups, else client.GroupHref.
 	currentGroups, annos, err := g.client.GetMemberGroups(ctx, memberID)
 	if err != nil {
 		return nil, annos, fmt.Errorf("baton-docusign: getting current groups for CLM member %s: %w", memberID, err)
