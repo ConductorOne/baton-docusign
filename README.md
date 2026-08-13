@@ -120,7 +120,15 @@ The 6 CLM resource types are always registered and visible to C1 — this avoids
 engine treating CLM resources as deleted if they stop appearing (see
 [CHANGE_TYPES.md](CHANGE_TYPES.md) if you're touching this). Without the CLM OAuth scopes
 (or without a CLM subscription on the account), each CLM resource type's sync is skipped
-gracefully rather than erroring the whole sync.
+gracefully rather than erroring the whole sync — **except `clm_workflow_queue`**, which
+fails the sync loudly instead (see below): it's `OptInRequired`, and C1's opt-in toggle
+for it doesn't validate the underlying DocuSign account first, so an account that opted
+in but can't reach CLM is a misconfiguration to surface, not a state to tolerate
+silently. `OptInRequired` is a platform-side-only gate — running this connector
+directly (self-hosted/CLI, not through C1) attempts `clm_workflow_queue` unconditionally,
+so an eSignature-only account run this way needs
+`--sync-resource-types`/`BATON_SYNC_RESOURCE_TYPES` to exclude it explicitly (see
+`.github/workflows/ci.yaml` for a working example).
 
 CLM permission sets sync for visibility only — DocuSign's CLM API has no endpoint to
 assign or unassign a permission set, so they cannot be granted or revoked through this

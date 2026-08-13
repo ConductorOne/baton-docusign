@@ -126,8 +126,9 @@ func (b *clmWorkflowQueueBuilder) ResourceType(_ context.Context) *v2.ResourceTy
 // GetMemberWorkflowQueues failures are unchanged from a single-call scan: a tolerated
 // code (PermissionDenied/Unauthenticated/NotFound/FailedPrecondition) before anything has
 // succeeded counts toward clmWorkflowQueueUnavailableThreshold regardless of which chunk
-// it lands in; a NotFound after something has already succeeded is an isolated skip; any
-// other tolerated code after success fails loud.
+// it lands in, and fails the sync loudly once reached; a NotFound after something has
+// already succeeded is an isolated skip (an ordinary mid-scan deletion race, unrelated to
+// whether this account can use CLM); any other tolerated code after success fails loud.
 func (b *clmWorkflowQueueBuilder) List(ctx context.Context, _ *v2.ResourceId, attr rs.SyncOpAttrs) ([]*v2.Resource, *rs.SyncOpResults, error) {
 	bag, pageToken, err := parsePageToken(attr.PageToken.Token, &v2.ResourceId{ResourceType: clmWorkflowQueueResourceType.Id})
 	if err != nil {
@@ -158,10 +159,6 @@ func (b *clmWorkflowQueueBuilder) List(ctx context.Context, _ *v2.ResourceId, at
 		PageToken: pageToken,
 	})
 	if err != nil {
-		if pageToken == "" && isOptInFeatureUnavailableError(err) {
-			ctxzap.Extract(ctx).Info("baton-docusign: CLM is not available for this account or token, skipping clm_workflow_queue sync", zap.Error(err))
-			return nil, &rs.SyncOpResults{Annotations: dedupeRateLimitAnnotations(allAnnos)}, nil
-		}
 		return nil, nil, err
 	}
 
@@ -197,11 +194,15 @@ func (b *clmWorkflowQueueBuilder) List(ctx context.Context, _ *v2.ResourceId, at
 					// few consecutive failures (spanning as many chunks as it takes)
 					// before concluding "systemic", capping wasted requests against an
 					// already rate-limited endpoint without letting one unlucky
-					// ordering empty the resource type.
+					// ordering fail the sync. Once concluded, fail loud rather than
+					// skip gracefully: clm_workflow_queue is OptInRequired, and C1's
+					// opt-in toggle doesn't check the account can actually use it first
+					// — an account that opted in but can't reach this endpoint is a
+					// misconfiguration to surface, not a state to tolerate silently.
 					state.ConsecutiveUnavailableFailures++
 					if state.ConsecutiveUnavailableFailures >= clmWorkflowQueueUnavailableThreshold {
-						ctxzap.Extract(ctx).Info("baton-docusign: CLM is not available for this account or token, skipping clm_workflow_queue sync", zap.Error(err))
-						return nil, &rs.SyncOpResults{Annotations: dedupeRateLimitAnnotations(allAnnos)}, nil
+						return nil, nil, fmt.Errorf("baton-docusign: CLM workflow queues unavailable after %d consecutive member failures: %w",
+							state.ConsecutiveUnavailableFailures, err)
 					}
 					// Below the threshold: same visibility as the post-success
 					// isolated-NotFound skip below — this member's queue membership

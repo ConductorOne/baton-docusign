@@ -171,21 +171,21 @@ func TestClmWorkflowQueueBuilder_List_SkipsGracefullyOnSessionStoreReadFailure(t
 	}
 }
 
-func TestClmWorkflowQueueBuilder_List_SkipsGracefullyWhenClmUnavailable(t *testing.T) {
+func TestClmWorkflowQueueBuilder_List_FailsWhenClmUnavailable(t *testing.T) {
+	// clm_workflow_queue is OptInRequired, and C1's opt-in toggle doesn't check the
+	// account can actually use it first — see clm_roles.go's identical rationale. List()
+	// must fail loudly here rather than silently succeed with zero resources.
 	s, _ := clmtest.NewServer(t)
 	badClient := s.NewClientWithToken("wrong-token")
 	b := newClmWorkflowQueueBuilder(badClient)
 	ctx := context.Background()
 
-	resources, res, err := b.List(ctx, nil, rs.SyncOpAttrs{Session: newFakeSessionStore()})
-	if err != nil {
-		t.Fatalf("expected List to tolerate an unavailable CLM account and skip gracefully, got error: %v", err)
+	resources, _, err := b.List(ctx, nil, rs.SyncOpAttrs{Session: newFakeSessionStore()})
+	if err == nil {
+		t.Fatal("expected List to fail when CLM is unavailable, got nil error")
 	}
 	if len(resources) != 0 {
-		t.Errorf("expected zero resources when CLM is unavailable, got %d", len(resources))
-	}
-	if res == nil {
-		t.Errorf("expected a non-nil SyncOpResults, got %+v", res)
+		t.Errorf("expected zero resources on a hard failure, got %d", len(resources))
 	}
 }
 
@@ -283,13 +283,15 @@ func TestClmWorkflowQueueBuilder_List_ToleratesBelowThresholdFailures(t *testing
 	}
 }
 
-// TestClmWorkflowQueueBuilder_List_SkipsGracefullyAfterConsecutiveFailures confirms
-// the account-wide-unavailability escalation still fires once
+// TestClmWorkflowQueueBuilder_List_FailsAfterConsecutiveFailures confirms the
+// account-wide-unavailability escalation still fires once
 // clmWorkflowQueueUnavailableThreshold consecutive members fail with nothing
 // discovered yet — member-alice, member-bob, and member-carol are first in scan order
 // (clmtest/seed.go's memberOrder), so forcing all three to fail reaches the threshold
-// before any of them can succeed.
-func TestClmWorkflowQueueBuilder_List_SkipsGracefullyAfterConsecutiveFailures(t *testing.T) {
+// before any of them can succeed. Once reached, List() fails loud (see
+// TestClmWorkflowQueueBuilder_List_FailsWhenClmUnavailable's rationale) rather than
+// tolerating it.
+func TestClmWorkflowQueueBuilder_List_FailsAfterConsecutiveFailures(t *testing.T) {
 	srv, c := clmtest.NewServer(t)
 	srv.ForceMemberWorkflowQueuesStatus("member-alice", 403)
 	srv.ForceMemberWorkflowQueuesStatus("member-bob", 403)
@@ -297,15 +299,12 @@ func TestClmWorkflowQueueBuilder_List_SkipsGracefullyAfterConsecutiveFailures(t 
 	b := newClmWorkflowQueueBuilder(c)
 	ctx := context.Background()
 
-	resources, res, err := b.List(ctx, nil, rs.SyncOpAttrs{Session: newFakeSessionStore()})
-	if err != nil {
-		t.Fatalf("expected List to tolerate %d consecutive failures with nothing discovered yet, got error: %v", clmWorkflowQueueUnavailableThreshold, err)
+	resources, _, err := b.List(ctx, nil, rs.SyncOpAttrs{Session: newFakeSessionStore()})
+	if err == nil {
+		t.Fatalf("expected List to fail after %d consecutive failures with nothing discovered yet, got nil error", clmWorkflowQueueUnavailableThreshold)
 	}
 	if len(resources) != 0 {
-		t.Errorf("expected zero resources, got %d: %+v", len(resources), resources)
-	}
-	if res == nil {
-		t.Errorf("expected a non-nil SyncOpResults, got %+v", res)
+		t.Errorf("expected zero resources on a hard failure, got %d: %+v", len(resources), resources)
 	}
 }
 
@@ -579,17 +578,15 @@ func TestClmWorkflowQueueBuilder_List_EscalationThresholdSpansChunks(t *testing.
 	}
 
 	// Chunk 2: carol is first — this is the 3rd CONSECUTIVE failure counting the two
-	// from chunk 1, so it must escalate here, before ever reaching dave.
+	// from chunk 1, so it must escalate here, before ever reaching dave — and now fails
+	// loud rather than skipping gracefully.
 	attr.PageToken = pagination.Token{Size: 2, Token: syncRes.NextPageToken}
-	resources, syncRes, err = b.List(ctx, nil, attr)
-	if err != nil {
-		t.Fatalf("chunk 2: expected the threshold-crossing failure to skip gracefully, got error: %v", err)
+	resources, _, err = b.List(ctx, nil, attr)
+	if err == nil {
+		t.Fatal("chunk 2: expected the threshold-crossing failure to fail loud, got nil error")
 	}
 	if len(resources) != 0 {
-		t.Errorf("chunk 2: expected zero resources after escalating, got %d: %+v", len(resources), resources)
-	}
-	if syncRes.NextPageToken != "" {
-		t.Error("chunk 2: expected an empty NextPageToken — escalation should end the sync for this resource type, not request another chunk")
+		t.Errorf("chunk 2: expected zero resources on a hard failure, got %d: %+v", len(resources), resources)
 	}
 }
 

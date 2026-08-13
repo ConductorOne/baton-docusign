@@ -16,6 +16,12 @@ jobs:
       BATON_REFRESH_TOKEN: ${{ secrets.REFRESHTOKEN }}
       BATON_DEMO: "true"
       BATON_INCLUDE_SIGNING_GROUPS: "true"
+      # This CI account has no CLM subscription, and this job runs the connector
+      # directly with no resource-type filter otherwise. clm_workflow_queue now fails
+      # the whole sync rather than skipping gracefully when CLM isn't available (see
+      # pkg/connector/clm_workflow_queues.go's List()) — exclude the CLM types here
+      # explicitly to test the ones this job cares about.
+      BATON_SYNC_RESOURCE_TYPES: user,group,permission_profile,signing_group
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -45,6 +51,12 @@ jobs:
       BATON_REFRESH_TOKEN: ${{ secrets.REFRESHTOKEN }}
       BATON_DEMO: "true"
       BATON_INCLUDE_SIGNING_GROUPS: "true"
+      # This CI account has no CLM subscription, and this job runs the connector
+      # directly with no resource-type filter otherwise. clm_workflow_queue now fails
+      # the whole sync rather than skipping gracefully when CLM isn't available (see
+      # pkg/connector/clm_workflow_queues.go's List()) — exclude the CLM types here
+      # explicitly to test the ones this job cares about.
+      BATON_SYNC_RESOURCE_TYPES: user,group,permission_profile,signing_group
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -74,6 +86,12 @@ jobs:
       BATON_REFRESH_TOKEN: ${{ secrets.REFRESHTOKEN }}
       BATON_DEMO: "true"
       BATON_INCLUDE_SIGNING_GROUPS: "true"
+      # This CI account has no CLM subscription, and this job runs the connector
+      # directly with no resource-type filter otherwise. clm_workflow_queue now fails
+      # the whole sync rather than skipping gracefully when CLM isn't available (see
+      # pkg/connector/clm_workflow_queues.go's List()) — exclude the CLM types here
+      # explicitly to test the ones this job cares about.
+      BATON_SYNC_RESOURCE_TYPES: user,group,permission_profile,signing_group
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
