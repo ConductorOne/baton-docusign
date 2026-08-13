@@ -114,11 +114,11 @@ const (
 	clmGetPermissionSet = "/v2/%s/permissionsets"
 
 	// clmGroupPath and clmMemberPath are path *shapes*, not endpoints this connector
-	// calls — hrefFor builds a Href string locally from these, never issuing an HTTP
-	// request, so neither corresponds to an entry in this file's "API Endpoints Used"
-	// doc. clmMemberPath is deliberately not clmPatchPutMember despite the identical
-	// shape: naming it after a real PATCH/PUT endpoint would be just as misleading in
-	// the other direction.
+	// calls — hrefFor builds a Href string locally from these, issuing no request beyond
+	// the one-time CLM base-URL discovery ensureClmReady may trigger, so neither
+	// corresponds to an entry in this file's "API Endpoints Used" doc. clmMemberPath is
+	// deliberately not clmPatchPutMember despite the identical shape: naming it after a
+	// real PATCH/PUT endpoint would be just as misleading in the other direction.
 	clmGroupPath  = "/v2/%s/groups/%s"
 	clmMemberPath = "/v2/%s/members/%s"
 )
@@ -432,7 +432,8 @@ func (c *Client) ListGroups(ctx context.Context, options PageOptions) ([]ClmGrou
 // hrefFor builds an object's Href from its native ID and the resolved CLM base URL,
 // shared by GroupHref and MemberHref, for callers that only have a ResourceId (no
 // hydrated Resource to read a Href from). Assumes the shape "/v2/{account}/{collection}/{id}";
-// unverified against a live tenant. Builds the string locally — never issues a request.
+// unverified against a live tenant. Builds the string locally — issues no request beyond
+// the one-time CLM base-URL discovery ensureClmReady may trigger.
 func (c *Client) hrefFor(ctx context.Context, pathShape, id string) (string, error) {
 	if err := c.ensureClmReady(ctx); err != nil {
 		return "", err

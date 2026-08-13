@@ -318,6 +318,15 @@ func (f *clmFolderBuilder) Revoke(ctx context.Context, grantObj *v2.Grant) (anno
 	folderID := grantObj.Entitlement.Resource.Id.Resource
 	principal := grantObj.Principal
 
+	// Guards all three branches below in one place: clmFindGroupSecurityIndex and
+	// clmFindUserSecurityIndex reduce an empty ID to "" via clmIDFromHref, which would
+	// match any security entry whose Href is empty or ends in a trailing slash; the role
+	// branch compares principal.Id.Resource to Item by exact string, so an empty ID would
+	// just as wrongly match an entry with an empty Item.
+	if principal.Id.Resource == "" {
+		return nil, fmt.Errorf("baton-docusign: revoking CLM folder security: principal missing native ID")
+	}
+
 	folder, getAnnos, err := f.client.GetFolderFresh(ctx, folderID, "Security")
 	if err != nil {
 		return getAnnos, fmt.Errorf("baton-docusign: getting security for CLM folder %s: %w", folderID, err)
