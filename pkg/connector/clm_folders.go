@@ -192,6 +192,14 @@ func (f *clmFolderBuilder) Grant(ctx context.Context, principal *v2.Resource, en
 	}
 	folderID := ent.Resource.Id.Resource
 
+	// Same guard as Revoke, and for the same reason: the group/member branches below are
+	// only incidentally covered by clmPreferredHref's own empty-id check, but the role
+	// branch compares principal.Id.Resource to Item by exact string with nothing else
+	// upstream to reject an empty value — this catches all three uniformly.
+	if principal.Id.Resource == "" {
+		return nil, nil, fmt.Errorf("baton-docusign: granting CLM folder security: principal missing native ID")
+	}
+
 	folder, getAnnos, err := f.client.GetFolderFresh(ctx, folderID, "Security")
 	if err != nil {
 		return nil, getAnnos, fmt.Errorf("baton-docusign: getting security for CLM folder %s: %w", folderID, err)
@@ -322,7 +330,8 @@ func (f *clmFolderBuilder) Revoke(ctx context.Context, grantObj *v2.Grant) (anno
 	// clmFindUserSecurityIndex reduce an empty ID to "" via clmIDFromHref, which would
 	// match any security entry whose Href is empty or ends in a trailing slash; the role
 	// branch compares principal.Id.Resource to Item by exact string, so an empty ID would
-	// just as wrongly match an entry with an empty Item.
+	// just as wrongly match an entry with an empty Item. Grant carries the identical
+	// guard for the identical reason — keep the two in sync.
 	if principal.Id.Resource == "" {
 		return nil, fmt.Errorf("baton-docusign: revoking CLM folder security: principal missing native ID")
 	}

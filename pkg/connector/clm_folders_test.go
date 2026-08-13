@@ -512,6 +512,40 @@ func TestClmFolderBuilder_GrantAndRevoke_SurvivesIdentityOnlyPrincipal(t *testin
 	})
 }
 
+// TestClmFolderBuilder_GrantAndRevoke_RejectEmptyPrincipalID is a regression test for
+// both bot-flagged findings on this file: an empty principal.Id.Resource must be
+// rejected before Grant or Revoke touch write.Groups/Roles/Users, for all three
+// principal kinds — the role branch has no other guard (roleName is compared/written
+// directly), and the group/member branches' own guard (inside clmPreferredHref, or
+// clmIDFromHref's reduction of "" to "") must not be bypassed by this earlier check
+// firing instead of it.
+func TestClmFolderBuilder_GrantAndRevoke_RejectEmptyPrincipalID(t *testing.T) {
+	_, c := clmtest.NewServer(t)
+	b := newClmFolderBuilder(c)
+	ctx := context.Background()
+
+	folderResource, err := rs.NewResource("Templates", clmFolderResourceType, "folder-templates")
+	if err != nil {
+		t.Fatalf("NewResource: %v", err)
+	}
+	ent := &v2.Entitlement{Slug: "view", Resource: folderResource}
+
+	for _, resourceType := range []*v2.ResourceType{clmGroupResourceType, clmRoleResourceType, clmMemberResourceType} {
+		t.Run(resourceType.Id, func(t *testing.T) {
+			principal := clmIdentityOnlyResource(resourceType, "")
+
+			if _, _, err := b.Grant(ctx, principal, ent); err == nil {
+				t.Error("expected Grant to reject an empty principal ID, got nil error")
+			}
+
+			grantObj := &v2.Grant{Principal: principal, Entitlement: ent}
+			if _, err := b.Revoke(ctx, grantObj); err == nil {
+				t.Error("expected Revoke to reject an empty principal ID, got nil error")
+			}
+		})
+	}
+}
+
 // TestClmFolderBuilder_Grant_SurvivesIdentityOnlyPrincipal_SampleBranch covers the
 // clmPreferredHref branch TestClmFolderBuilder_GrantAndRevoke_SurvivesIdentityOnlyPrincipal
 // doesn't: folder-templates always starts with no security entries, so every Grant
