@@ -12,6 +12,8 @@ import (
 	rs "github.com/conductorone/baton-sdk/pkg/types/resource"
 	"github.com/grpc-ecosystem/go-grpc-middleware/logging/zap/ctxzap"
 	"go.uber.org/zap"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 var _ connectorbuilder.StaticEntitlementSyncerV2 = (*clmGroupBuilder)(nil)
@@ -156,7 +158,7 @@ func (g *clmGroupBuilder) Grant(ctx context.Context, principal *v2.Resource, ent
 	// "already a member" check before clmPreferredHref's own empty-id guard ever runs) —
 	// same class of bug as clm_folders.go's Grant/Revoke, guarded the same way.
 	if memberID == "" || groupID == "" {
-		return nil, nil, fmt.Errorf("baton-docusign: granting CLM group membership: member or group missing native ID")
+		return nil, nil, status.Errorf(codes.InvalidArgument, "baton-docusign: granting CLM group membership: member or group missing native ID")
 	}
 
 	// Don't require the group's Href off ent.Resource: the pebble storage engine hydrates
@@ -215,7 +217,7 @@ func (g *clmGroupBuilder) Revoke(ctx context.Context, grantObj *v2.Grant) (annot
 	// from remainingGroups — and PutMemberGroups is a full-replace, so that unrelated
 	// membership would actually be removed from the real account.
 	if memberID == "" || groupID == "" {
-		return nil, fmt.Errorf("baton-docusign: revoking CLM group membership: member or group missing native ID")
+		return nil, status.Errorf(codes.InvalidArgument, "baton-docusign: revoking CLM group membership: member or group missing native ID")
 	}
 
 	currentGroups, annos, err := g.client.GetMemberGroups(ctx, memberID)

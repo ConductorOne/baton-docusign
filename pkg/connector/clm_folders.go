@@ -12,6 +12,8 @@ import (
 	rs "github.com/conductorone/baton-sdk/pkg/types/resource"
 	"github.com/grpc-ecosystem/go-grpc-middleware/logging/zap/ctxzap"
 	"go.uber.org/zap"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 var _ connectorbuilder.StaticEntitlementSyncerV2 = (*clmFolderBuilder)(nil)
@@ -197,7 +199,7 @@ func (f *clmFolderBuilder) Grant(ctx context.Context, principal *v2.Resource, en
 	// branch compares principal.Id.Resource to Item by exact string with nothing else
 	// upstream to reject an empty value — this catches all three uniformly.
 	if principal.Id.Resource == "" {
-		return nil, nil, fmt.Errorf("baton-docusign: granting CLM folder security: principal missing native ID")
+		return nil, nil, status.Errorf(codes.InvalidArgument, "baton-docusign: granting CLM folder security: principal missing native ID")
 	}
 	// folderID has the same theoretical gap: parseIntoClmFolderResource derives it via
 	// clmIDFromHref(folder.Href) with no non-empty check, so an empty Href would produce
@@ -205,7 +207,7 @@ func (f *clmFolderBuilder) Grant(ctx context.Context, principal *v2.Resource, en
 	// collection-root path (buildClmClientURL's "/v2/%s/folders/%s" with an empty last
 	// segment) instead of failing clearly client-side.
 	if folderID == "" {
-		return nil, nil, fmt.Errorf("baton-docusign: granting CLM folder security: folder missing native ID")
+		return nil, nil, status.Errorf(codes.InvalidArgument, "baton-docusign: granting CLM folder security: folder missing native ID")
 	}
 
 	folder, getAnnos, err := f.client.GetFolderFresh(ctx, folderID, "Security")
@@ -341,12 +343,12 @@ func (f *clmFolderBuilder) Revoke(ctx context.Context, grantObj *v2.Grant) (anno
 	// just as wrongly match an entry with an empty Item. Grant carries the identical
 	// guard for the identical reason — keep the two in sync.
 	if principal.Id.Resource == "" {
-		return nil, fmt.Errorf("baton-docusign: revoking CLM folder security: principal missing native ID")
+		return nil, status.Errorf(codes.InvalidArgument, "baton-docusign: revoking CLM folder security: principal missing native ID")
 	}
 	// Same reasoning as Grant's identical guard: an empty folderID would hit the CLM
 	// API's folders collection root instead of failing clearly client-side.
 	if folderID == "" {
-		return nil, fmt.Errorf("baton-docusign: revoking CLM folder security: folder missing native ID")
+		return nil, status.Errorf(codes.InvalidArgument, "baton-docusign: revoking CLM folder security: folder missing native ID")
 	}
 
 	folder, getAnnos, err := f.client.GetFolderFresh(ctx, folderID, "Security")

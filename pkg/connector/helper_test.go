@@ -62,6 +62,15 @@ func TestClmHrefWithID(t *testing.T) {
 	if _, err := clmHrefWithID("https://clm.example.com/v2/acct-1/groups/group-old", ""); err == nil {
 		t.Error("expected an error for an empty newID")
 	}
+
+	// A sample already ending in "/" (e.g. a collection root, or some other degenerate
+	// shape) must be rejected outright rather than trimmed: trimming would make
+	// ".../groups/" indistinguishable from ".../groups" (a href whose ID happens to be
+	// "groups"), so the ID-replacement below would wrongly drop the real collection
+	// segment and produce ".../<newID>" instead of ".../groups/<newID>".
+	if _, err := clmHrefWithID("https://clm.example.com/v2/acct-1/groups/", "group-new"); err == nil {
+		t.Error("expected an error for a sample href with a trailing slash (no ID segment)")
+	}
 }
 
 func TestClmPreferredHref(t *testing.T) {

@@ -2,7 +2,6 @@ package connector
 
 import (
 	"context"
-	"fmt"
 	"net/url"
 	"strings"
 
@@ -104,21 +103,29 @@ func clmHrefWithID(sampleHref, newID string) (string, error) {
 		// segment at all — a malformed href that goes on to be sent as-is inside a
 		// PatchFolderSecurity/PatchMemberGroups request body, surfacing (if at all) as an
 		// opaque remote validation failure with no link back to "the ID was empty."
-		return "", fmt.Errorf("baton-docusign: cannot derive a sibling href from %q — newID is empty", sampleHref)
+		return "", status.Errorf(codes.InvalidArgument, "baton-docusign: cannot derive a sibling href from %q — newID is empty", sampleHref)
 	}
-	trimmed := strings.TrimSuffix(sampleHref, "/")
-	idx := strings.LastIndex(trimmed, "/")
+	// A sample already ending in "/" has no ID segment to replace — the same degenerate
+	// shape the empty-newID check above guards against on the output side. Trimming it
+	// instead of rejecting it would silently drop the real collection segment: e.g.
+	// ".../groups/" trims to ".../groups", and the LastIndex split below would then
+	// wrongly treat "groups" as the ID to replace, producing ".../<newID>" with the
+	// actual collection segment gone.
+	if strings.HasSuffix(sampleHref, "/") {
+		return "", status.Errorf(codes.InvalidArgument, "baton-docusign: cannot derive a sibling href from %q — sample has no ID segment (trailing slash)", sampleHref)
+	}
+	idx := strings.LastIndex(sampleHref, "/")
 	if idx == -1 {
-		return "", fmt.Errorf("baton-docusign: cannot derive a sibling href from %q — no path separator found", sampleHref)
+		return "", status.Errorf(codes.InvalidArgument, "baton-docusign: cannot derive a sibling href from %q — no path separator found", sampleHref)
 	}
 	// A bare scheme+host like "https://clm.example.com" also contains a "/" (the one
 	// separating scheme from host), so the LastIndex check above alone accepts it —
 	// producing a garbage "https://<newID>" href with no real path. Reject a sample with
 	// no path at all; a single-segment path like "https://host/group-old" is accepted.
-	if u, err := url.Parse(trimmed); err != nil || u.Path == "" || u.Path == "/" {
-		return "", fmt.Errorf("baton-docusign: cannot derive a sibling href from %q — no path segment found", sampleHref)
+	if u, err := url.Parse(sampleHref); err != nil || u.Path == "" || u.Path == "/" {
+		return "", status.Errorf(codes.InvalidArgument, "baton-docusign: cannot derive a sibling href from %q — no path segment found", sampleHref)
 	}
-	return trimmed[:idx+1] + newID, nil
+	return sampleHref[:idx+1] + newID, nil
 }
 
 // clmPreferredHref resolves the href to send in a WRITE targeting id: it prefers
@@ -143,7 +150,7 @@ func clmPreferredHref(ctx context.Context, id string, sampleHrefs []string, deri
 		// same malformed trailing-slash href this function exists to prevent. Reject here
 		// once, before either path runs, rather than relying on every deriveFallback
 		// closure to check it independently.
-		return "", fmt.Errorf("baton-docusign: cannot resolve a CLM href — id is empty")
+		return "", status.Errorf(codes.InvalidArgument, "baton-docusign: cannot resolve a CLM href — id is empty")
 	}
 	var lastErr error
 	for _, sample := range sampleHrefs {
