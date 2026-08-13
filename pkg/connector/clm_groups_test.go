@@ -177,6 +177,48 @@ func TestClmGroupBuilder_GrantAndRevoke_Idempotent(t *testing.T) {
 	}
 }
 
+// TestClmGroupBuilder_GrantAndRevoke_RejectEmptyID is a regression test mirroring
+// TestClmFolderBuilder_GrantAndRevoke_RejectEmptyPrincipalID: clmIDFromHref reduces an
+// empty Href to "", so an empty memberID or groupID must be rejected before Grant/Revoke
+// reach the currentGroups matching loop — otherwise an empty groupID could match a
+// currentGroups entry with an empty Href, causing Grant to falsely report
+// GrantAlreadyExists (bypassing clmPreferredHref's own empty-id check) or Revoke to
+// silently drop that unrelated membership via PutMemberGroups' full-replace semantics.
+func TestClmGroupBuilder_GrantAndRevoke_RejectEmptyID(t *testing.T) {
+	_, c := clmtest.NewServer(t)
+	b := newClmGroupBuilder(c)
+	ctx := context.Background()
+
+	validMember := clmIdentityOnlyResource(clmMemberResourceType, "member-carol")
+	validGroup := clmIdentityOnlyResource(clmGroupResourceType, "group-legal")
+	emptyMember := clmIdentityOnlyResource(clmMemberResourceType, "")
+	emptyGroup := clmIdentityOnlyResource(clmGroupResourceType, "")
+
+	cases := []struct {
+		name      string
+		principal *v2.Resource
+		groupRes  *v2.Resource
+	}{
+		{"empty member ID", emptyMember, validGroup},
+		{"empty group ID", validMember, emptyGroup},
+		{"both empty", emptyMember, emptyGroup},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ent := &v2.Entitlement{Slug: entitlementClmGroupMember, Resource: tc.groupRes}
+
+			if _, _, err := b.Grant(ctx, tc.principal, ent); err == nil {
+				t.Error("expected Grant to reject an empty member or group ID, got nil error")
+			}
+
+			grantObj := &v2.Grant{Principal: tc.principal, Entitlement: ent}
+			if _, err := b.Revoke(ctx, grantObj); err == nil {
+				t.Error("expected Revoke to reject an empty member or group ID, got nil error")
+			}
+		})
+	}
+}
+
 // TestClmGroupBuilder_Grant_SurvivesIdentityOnlyEntitlementResource is a regression test:
 // passes an identity-only entitlement Resource (pebble's V3EntitlementToV2 shape — no
 // profile, no annotations, nothing but Id) to confirm Grant resolves the groupHref to

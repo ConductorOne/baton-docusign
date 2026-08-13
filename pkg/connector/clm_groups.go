@@ -151,6 +151,14 @@ func (g *clmGroupBuilder) Grant(ctx context.Context, principal *v2.Resource, ent
 	memberID := principal.Id.Resource
 	groupID := ent.Resource.Id.Resource
 
+	// clmIDFromHref reduces an empty Href to "" too, so an empty groupID or memberID
+	// would falsely match a degenerate currentGroups entry below (empty groupID hits the
+	// "already a member" check before clmPreferredHref's own empty-id guard ever runs) —
+	// same class of bug as clm_folders.go's Grant/Revoke, guarded the same way.
+	if memberID == "" || groupID == "" {
+		return nil, nil, fmt.Errorf("baton-docusign: granting CLM group membership: member or group missing native ID")
+	}
+
 	// Don't require the group's Href off ent.Resource: the pebble storage engine hydrates
 	// an entitlement's Resource as an identity-only stub (no profile, no annotations), so
 	// it isn't always available. The groupHref this Grant actually writes below is
@@ -201,6 +209,14 @@ func (g *clmGroupBuilder) Grant(ctx context.Context, principal *v2.Resource, ent
 func (g *clmGroupBuilder) Revoke(ctx context.Context, grantObj *v2.Grant) (annotations.Annotations, error) {
 	memberID := grantObj.Principal.Id.Resource
 	groupID := grantObj.Entitlement.Resource.Id.Resource
+
+	// Same guard as Grant, and for the same reason: an empty groupID would falsely match
+	// a currentGroups entry with an empty Href (clmIDFromHref("") == ""), excluding it
+	// from remainingGroups — and PutMemberGroups is a full-replace, so that unrelated
+	// membership would actually be removed from the real account.
+	if memberID == "" || groupID == "" {
+		return nil, fmt.Errorf("baton-docusign: revoking CLM group membership: member or group missing native ID")
+	}
 
 	currentGroups, annos, err := g.client.GetMemberGroups(ctx, memberID)
 	if err != nil {
