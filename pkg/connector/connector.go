@@ -24,6 +24,9 @@ type Connector struct {
 	// at all (see ResourceSyncers). Unlike the CLM types, which are always registered,
 	// this means ListResourceTypes() advertises a different set depending on the flag.
 	includeSigningGroups bool
+	// skipPermissionProfileResourceType reports whether permission_profile is
+	// excluded from the sync filter.
+	skipPermissionProfileResourceType bool
 }
 
 // Configure handles the OAuth2 authorization flow to obtain a refresh token.
@@ -66,7 +69,7 @@ func Configure(ctx context.Context, docusignCfg *cfg.Docusign, includeClm bool) 
 
 func (d *Connector) ResourceSyncers(_ context.Context) []connectorbuilder.ResourceSyncerV2 {
 	syncers := []connectorbuilder.ResourceSyncerV2{
-		newUserBuilder(d.client),
+		newUserBuilder(d.client, d.skipPermissionProfileResourceType),
 		newGroupBuilder(d.client),
 		newPermissionProfilesBuilder(d.client),
 		newClmMemberBuilder(d.client),
@@ -134,6 +137,7 @@ func (d *Connector) Validate(_ context.Context) (annotations.Annotations, error)
 func NewWithRefreshToken(
 	ctx context.Context, isDemo bool, clientId, clientSecret, redirectURI, refreshToken, accountId string,
 	includeSigningGroups, includeClm bool, clmBaseURLOverride, baseURLOverride string,
+	skipPermissionProfileResourceType bool,
 ) (*Connector, error) {
 	l := ctxzap.Extract(ctx)
 
@@ -147,15 +151,17 @@ func NewWithRefreshToken(
 	}
 
 	return &Connector{
-		client:               docusignClient,
-		includeSigningGroups: includeSigningGroups,
+		client:                            docusignClient,
+		includeSigningGroups:              includeSigningGroups,
+		skipPermissionProfileResourceType: skipPermissionProfileResourceType,
 	}, nil
 }
 
-func NewWithClient(client *client.Client, includeSigningGroups bool) (*Connector, error) {
+func NewWithClient(client *client.Client, includeSigningGroups bool, skipPermissionProfileResourceType bool) (*Connector, error) {
 	return &Connector{
-		client:               client,
-		includeSigningGroups: includeSigningGroups,
+		client:                            client,
+		includeSigningGroups:              includeSigningGroups,
+		skipPermissionProfileResourceType: skipPermissionProfileResourceType,
 	}, nil
 }
 
@@ -165,12 +171,14 @@ func NewWithClient(client *client.Client, includeSigningGroups bool) (*Connector
 func NewWithTokenSource(
 	ctx context.Context, isDemo bool, tokenSource oauth2.TokenSource, accountId string,
 	includeSigningGroups bool, clmBaseURLOverride string,
+	skipPermissionProfileResourceType bool,
 ) (*Connector, error) {
 	docusignClient := client.NewClient(ctx, isDemo, tokenSource, accountId, clmBaseURLOverride)
 
 	return &Connector{
-		client:               docusignClient,
-		includeSigningGroups: includeSigningGroups,
+		client:                            docusignClient,
+		includeSigningGroups:              includeSigningGroups,
+		skipPermissionProfileResourceType: skipPermissionProfileResourceType,
 	}, nil
 }
 
@@ -191,10 +199,14 @@ func New(ctx context.Context, docusignCfg *cfg.Docusign, opts *cli.ConnectorOpts
 	// client ID is provided (GUI demo group selection).
 	isDemo := docusignCfg.Demo || opts.SelectedAuthMethod == "demo"
 
+	// nil opts means no filter, so nothing is skipped.
+	skipPermissionProfileResourceType := opts != nil && !opts.WillSyncResourceType(PermissionProfileResourceTypeID)
+
 	if opts.TokenSource != nil {
 		cbWithTokenSource, err := NewWithTokenSource(
 			ctx, isDemo, opts.TokenSource, docusignCfg.AccountId,
 			docusignCfg.IncludeSigningGroups, docusignCfg.ClmBaseUrl,
+			skipPermissionProfileResourceType,
 		)
 		if err != nil {
 			l.Error("error creating connector with token source", zap.Error(err))
@@ -227,6 +239,7 @@ func New(ctx context.Context, docusignCfg *cfg.Docusign, opts *cli.ConnectorOpts
 			includeClm,
 			docusignCfg.ClmBaseUrl,
 			docusignCfg.BaseUrl,
+			skipPermissionProfileResourceType,
 		)
 		if err != nil {
 			l.Error("error creating connector", zap.Error(err))
