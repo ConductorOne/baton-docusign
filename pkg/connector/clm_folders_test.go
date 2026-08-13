@@ -546,6 +546,31 @@ func TestClmFolderBuilder_GrantAndRevoke_RejectEmptyPrincipalID(t *testing.T) {
 	}
 }
 
+// TestClmFolderBuilder_GrantAndRevoke_RejectEmptyFolderID is a regression test for the
+// same class of bug as the principal-ID guard above, applied to the folder itself:
+// parseIntoClmFolderResource derives a clm_folder's ID via clmIDFromHref(folder.Href)
+// with no non-empty check, so an empty folderID must be rejected before it reaches
+// GetFolderFresh/PatchFolderSecurity — otherwise it would build a URL hitting the
+// folders collection root instead of failing clearly client-side.
+func TestClmFolderBuilder_GrantAndRevoke_RejectEmptyFolderID(t *testing.T) {
+	_, c := clmtest.NewServer(t)
+	b := newClmFolderBuilder(c)
+	ctx := context.Background()
+
+	principal := clmIdentityOnlyResource(clmMemberResourceType, "member-dave")
+	emptyFolder := clmIdentityOnlyResource(clmFolderResourceType, "")
+	ent := &v2.Entitlement{Slug: "view", Resource: emptyFolder}
+
+	if _, _, err := b.Grant(ctx, principal, ent); err == nil {
+		t.Error("expected Grant to reject an empty folder ID, got nil error")
+	}
+
+	grantObj := &v2.Grant{Principal: principal, Entitlement: ent}
+	if _, err := b.Revoke(ctx, grantObj); err == nil {
+		t.Error("expected Revoke to reject an empty folder ID, got nil error")
+	}
+}
+
 // TestClmFolderBuilder_Grant_SurvivesIdentityOnlyPrincipal_SampleBranch covers the
 // clmPreferredHref branch TestClmFolderBuilder_GrantAndRevoke_SurvivesIdentityOnlyPrincipal
 // doesn't: folder-templates always starts with no security entries, so every Grant

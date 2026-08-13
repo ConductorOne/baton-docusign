@@ -199,6 +199,14 @@ func (f *clmFolderBuilder) Grant(ctx context.Context, principal *v2.Resource, en
 	if principal.Id.Resource == "" {
 		return nil, nil, fmt.Errorf("baton-docusign: granting CLM folder security: principal missing native ID")
 	}
+	// folderID has the same theoretical gap: parseIntoClmFolderResource derives it via
+	// clmIDFromHref(folder.Href) with no non-empty check, so an empty Href would produce
+	// a folder resource with an empty ID. An empty folderID here would hit the
+	// collection-root path (buildClmClientURL's "/v2/%s/folders/%s" with an empty last
+	// segment) instead of failing clearly client-side.
+	if folderID == "" {
+		return nil, nil, fmt.Errorf("baton-docusign: granting CLM folder security: folder missing native ID")
+	}
 
 	folder, getAnnos, err := f.client.GetFolderFresh(ctx, folderID, "Security")
 	if err != nil {
@@ -334,6 +342,11 @@ func (f *clmFolderBuilder) Revoke(ctx context.Context, grantObj *v2.Grant) (anno
 	// guard for the identical reason — keep the two in sync.
 	if principal.Id.Resource == "" {
 		return nil, fmt.Errorf("baton-docusign: revoking CLM folder security: principal missing native ID")
+	}
+	// Same reasoning as Grant's identical guard: an empty folderID would hit the CLM
+	// API's folders collection root instead of failing clearly client-side.
+	if folderID == "" {
+		return nil, fmt.Errorf("baton-docusign: revoking CLM folder security: folder missing native ID")
 	}
 
 	folder, getAnnos, err := f.client.GetFolderFresh(ctx, folderID, "Security")
