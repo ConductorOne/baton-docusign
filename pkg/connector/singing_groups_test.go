@@ -16,27 +16,22 @@ import (
 	"golang.org/x/oauth2"
 )
 
-// rewriteTransport redirects every outgoing request to the given target host — this
-// package has no shared eSignature mock server (unlike pkg/client/clmtest for CLM), so
-// this small helper is duplicated locally rather than exported from pkg/client's own
-// unexported test-only copy.
-type rewriteTransport struct {
-	target *url.URL
-	base   http.RoundTripper
-}
+// rewriteTransport is already declared in users_test.go (same package) — reused here
+// rather than duplicated.
 
-func (t *rewriteTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	req = req.Clone(req.Context())
-	req.URL.Scheme = t.target.Scheme
-	req.URL.Host = t.target.Host
-	return t.base.RoundTrip(req)
-}
+// testSigningGroupID and testSigningGroupName are the one signing group
+// newSigningGroupsTestClient's mock seeds in its /signing_groups response.
+const (
+	testSigningGroupID   = "sg-1"
+	testSigningGroupName = "Test Signing Group"
+)
 
-// newSigningGroupsTestClient builds a *client.Client wired to a mock server that only
-// serves /oauth/userinfo. signingGroupBuilder.List()'s only failure path that matters
-// here is ensureInitialized (called by GetSigningGroups before it ever reaches the
-// signing-groups endpoint), so a full eSignature REST API mock isn't needed to exercise
-// it — matching how the CLM builders' equivalent tests fail at CLM account discovery.
+// newSigningGroupsTestClient builds a *client.Client wired to a mock server serving
+// /oauth/userinfo plus a minimal /signing_groups response (one seeded group).
+// signingGroupBuilder.List()'s only failure path that matters here is ensureInitialized
+// (called by GetSigningGroups before it ever reaches the signing-groups endpoint), so a
+// full eSignature REST API mock isn't needed to exercise it — matching how the CLM
+// builders' equivalent tests fail at CLM account discovery.
 func newSigningGroupsTestClient(t *testing.T, userInfoStatus int) *client.Client {
 	t.Helper()
 	var mockServer *httptest.Server
@@ -57,12 +52,16 @@ func newSigningGroupsTestClient(t *testing.T, userInfoStatus int) *client.Client
 			return
 		}
 		if strings.HasSuffix(r.URL.Path, "/signing_groups") {
-			// An empty {} body round-trips through SigningGroupResponse as zero
-			// signing groups and no next page (getNextToken's EndPosition+1 <
-			// TotalSetSize is 0+1 < 0, false) — enough to exercise the happy path
-			// without a full pagination fixture.
+			// One seeded group is enough to exercise both the happy path and
+			// parseIntoSigningGroupResource, without a full pagination fixture (no next
+			// page: the zero-valued embedded Page makes getNextToken's
+			// EndPosition+1 < TotalSetSize read 0+1 < 0, false).
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte("{}"))
+			_ = json.NewEncoder(w).Encode(client.SigningGroupResponse{
+				SigningGroups: []client.SigningGroup{
+					{SigningGroupId: testSigningGroupID, GroupName: testSigningGroupName},
+				},
+			})
 			return
 		}
 		http.NotFound(w, r)
@@ -102,7 +101,8 @@ func TestSigningGroupBuilder_List_FailsWhenUnavailable(t *testing.T) {
 
 // TestSigningGroupBuilder_List_Succeeds is a sanity check for
 // newSigningGroupsTestClient itself: confirms the happy path (account discovery
-// succeeds) reaches List()'s normal return, distinguishing a correctly-wired mock from
+// succeeds) reaches List()'s normal return and correctly parses the one seeded signing
+// group via parseIntoSigningGroupResource, distinguishing a correctly-wired mock from
 // the fail-loud test above passing only because everything errors regardless.
 func TestSigningGroupBuilder_List_Succeeds(t *testing.T) {
 	c := newSigningGroupsTestClient(t, http.StatusOK)
@@ -116,7 +116,13 @@ func TestSigningGroupBuilder_List_Succeeds(t *testing.T) {
 	if res == nil {
 		t.Fatal("expected a non-nil SyncOpResults")
 	}
-	if len(resources) != 0 {
-		t.Errorf("expected zero signing groups from this bare mock (no signing-groups endpoint served), got %d: %+v", len(resources), resources)
+	if len(resources) != 1 {
+		t.Fatalf("expected the one seeded signing group, got %d: %+v", len(resources), resources)
+	}
+	if got := resources[0].Id.Resource; got != testSigningGroupID {
+		t.Errorf("expected resource ID %q, got %q", testSigningGroupID, got)
+	}
+	if got := resources[0].DisplayName; got != testSigningGroupName {
+		t.Errorf("expected display name %q, got %q", testSigningGroupName, got)
 	}
 }

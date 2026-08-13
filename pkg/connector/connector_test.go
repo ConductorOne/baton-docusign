@@ -12,8 +12,9 @@ import (
 // registering conditionally would make ListResourceTypes() advertise fewer types than a
 // prior sync did, and C1 can then bucket every previously-synced resource and grant of a
 // vanished type as deleted. Gating happens via &v2.OptInRequired{} (resource_types.go)
-// and each opt-in builder's List() tolerating an unavailable-feature error (helper.go),
-// not by omitting the builder.
+// alone, not by omitting the builder — List() now fails loudly rather than tolerating an
+// unavailable-feature error when a customer opts in without a reachable CLM subscription
+// (see clm_roles.go's doc comment).
 var alwaysRegisteredTypeIDs = []string{
 	"user",
 	"group",

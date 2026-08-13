@@ -45,7 +45,7 @@
 
    **Important Note about CLM:**
 
-   - CLM (Contract Lifecycle Management) is a separate, separately-licensed DocuSign product with its own API. There is no config flag to enable it: CLM resources sync whenever the account and credential can reach the CLM API, and accounts without CLM sync no CLM resources.
+   - CLM (Contract Lifecycle Management) is a separate, separately-licensed DocuSign product with its own API. The 5 CLM resource types carry `OptInRequired` and don't sync until a customer explicitly enables them in C1's sync configuration; C1's opt-in toggle doesn't validate the underlying subscription/scopes first, so an account that opts in but can't reach CLM fails the sync loudly rather than silently syncing zero CLM resources.
    - Requires a DocuSign CLM production subscription.
    - When using ConductorOne's managed OAuth app (the default cloud-hosted authentication method), CLM also requires that managed app to be granted the CLM API scope on ConductorOne's platform side — this is outside the connector's own configuration. Self-hosted or demo-environment setups using a customer-supplied DocuSign app do not have this extra requirement.
    - CLM permission sets sync for visibility only; DocuSign's CLM API has no endpoint to assign or unassign one, so they cannot be granted or revoked.
