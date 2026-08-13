@@ -40,11 +40,9 @@ var (
 	}
 
 	// CLM (Contract Lifecycle Management) resource types. CLM is a separate DocuSign
-	// product/API surface from eSignature above. Registered unconditionally and no
-	// longer gated by any config flag (see connector.go's ResourceSyncers): each CLM
-	// builder's List() always runs, and &v2.OptInRequired{} plus
-	// isOptInFeatureUnavailableError (helper.go) are what keep an account without a CLM
-	// subscription from failing the sync.
+	// product/API surface from eSignature above. &v2.OptInRequired{} keeps these out of
+	// a customer's sync until explicitly enabled; once enabled, List() fails the sync
+	// loudly if the account can't actually reach CLM — see clm_roles.go's doc comment.
 
 	// clmMemberResourceType is CLM's own principal object. Deliberately NOT reusing
 	// userResourceType's id ("user") — the CLM Members API is a distinct upstream

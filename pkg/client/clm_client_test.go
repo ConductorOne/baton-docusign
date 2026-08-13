@@ -8,8 +8,6 @@ import (
 
 	"github.com/conductorone/baton-docusign/pkg/client"
 	"github.com/conductorone/baton-docusign/pkg/client/clmtest"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 )
 
 func TestSearchFolders_Pagination(t *testing.T) {
@@ -385,24 +383,5 @@ func TestListPermissionSets_Pagination(t *testing.T) {
 	}
 	if len(all) != 5 {
 		t.Fatalf("expected 5 permission sets across all pages, got %d", len(all))
-	}
-}
-
-func TestIsClmDiscoveryError(t *testing.T) {
-	s, _ := clmtest.NewServer(t)
-	ctx := context.Background()
-
-	badClient := s.NewClientWithToken("wrong-token")
-	err := badClient.EnsureClmReady(ctx)
-	if err == nil {
-		t.Fatal("expected EnsureClmReady to fail for a bad token")
-	}
-	if !client.IsClmDiscoveryError(err) {
-		t.Errorf("expected a real CLM discovery failure to be detected as a discovery error, got: %v", err)
-	}
-
-	plain := status.Error(codes.Unauthenticated, "not from discovery — a real per-resource CLM data call failure instead")
-	if client.IsClmDiscoveryError(plain) {
-		t.Error("expected a plain gRPC-coded error not produced by discovery to not be treated as a CLM discovery error")
 	}
 }

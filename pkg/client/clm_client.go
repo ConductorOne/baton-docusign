@@ -81,7 +81,6 @@ package client
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -200,7 +199,7 @@ func (c *Client) ensureClmInitialized(ctx context.Context) error {
 
 	var raw map[string]json.RawMessage
 	if _, _, err := doRequestCommon(c.wrapper, request, &raw, &ClmErrorResponse{}); err != nil {
-		return &clmDiscoveryError{err: fmt.Errorf("baton-docusign: failed to discover the CLM API base URL: %w", err)}
+		return fmt.Errorf("baton-docusign: failed to discover the CLM API base URL: %w", err)
 	}
 
 	baseURL, ok := clmExtractBaseURLField(raw)
@@ -209,41 +208,13 @@ func (c *Client) ensureClmInitialized(ctx context.Context) error {
 		for k := range raw {
 			keys = append(keys, k)
 		}
-		// codes.FailedPrecondition (not a bare error, which status.Code() would read as
-		// codes.Unknown): a non-CLM account's discovery response plausibly has a
-		// different shape entirely (e.g. a bare account object with none of the
-		// candidate fields), so isOptInFeatureUnavailableError needs a recognizable
-		// code to tolerate this specific failure the same way it tolerates 401/403 —
-		// see that function's doc in helper.go.
-		return &clmDiscoveryError{err: status.Errorf(codes.FailedPrecondition, "baton-docusign: CLM account discovery response at %s did not contain a recognized "+
-			"base-URL field (checked %v); response contained these fields instead: %v", discoveryURL, clmBaseURLCandidateFields, keys)}
+		return status.Errorf(codes.FailedPrecondition, "baton-docusign: CLM account discovery response at %s did not contain a recognized "+
+			"base-URL field (checked %v); response contained these fields instead: %v", discoveryURL, clmBaseURLCandidateFields, keys)
 	}
 
 	c.clmBaseURI = baseURL
 	c.clmBaseURIReady = true
 	return nil
-}
-
-// clmDiscoveryError marks an error as originating specifically from CLM account
-// discovery (ensureClmInitialized above), not from a later per-resource CLM data call
-// (SearchFolders, ListGroups, ...). isOptInFeatureUnavailableError's tolerated codes
-// (401/403/404/412-equivalent) aren't unique to "no CLM subscription" — a real
-// per-resource call can fail with the same code once discovery has already succeeded
-// and been cached, for an unrelated reason (a token that expired mid-sync, a narrower
-// scope problem on just that endpoint). Without this marker, that later failure would
-// be silently treated as "no CLM" too. See IsClmDiscoveryError.
-type clmDiscoveryError struct {
-	err error
-}
-
-func (e *clmDiscoveryError) Error() string { return e.err.Error() }
-func (e *clmDiscoveryError) Unwrap() error { return e.err }
-
-// IsClmDiscoveryError reports whether err (or a wrapped error within it) originated
-// from ensureClmInitialized's CLM account discovery call — see clmDiscoveryError.
-func IsClmDiscoveryError(err error) bool {
-	var discoveryErr *clmDiscoveryError
-	return errors.As(err, &discoveryErr)
 }
 
 // EnsureClmReady exposes the CLM-readiness check every other CLM client method runs

@@ -26,7 +26,7 @@ The Docusign connector supports [automatic account provisioning and deprovisioni
 
 Every Docusign account must be assigned at least one permission profile. If all other permission profiles are revoked, the account will be automatically assigned the **DocuSign Viewer** profile, which cannot be revoked.
 
-*By default, signing groups are not synced. Enable the **Include Signing Groups** setting to sync signing groups, if your account has the feature enabled.
+*By default, signing groups are not synced. Enable the **Include Signing Groups** setting to sync signing groups. Once enabled, your account must actually have the signing groups feature — ConductorOne doesn't validate this before letting you turn the setting on, so enabling it without the feature will fail the sync rather than silently sync no signing groups.
 
 **DocuSign CLM (Contract Lifecycle Management) is a separate, separately-licensed DocuSign product. CLM resources are opt-in — enable each CLM resource type in your sync configuration to turn them on. Once enabled, your DocuSign account must have a CLM production subscription and the credential must have been granted the OAuth scopes CLM needs; enabling a CLM resource type without them will fail the sync rather than silently sync no data, since ConductorOne doesn't validate the underlying subscription before letting you opt in. CLM permission sets sync for visibility only; DocuSign's CLM API has no endpoint to assign or unassign one.
 
