@@ -239,10 +239,9 @@ func TestClmFolderBuilder_Grants_LogsOnlyForGenuinelyUnrecognizedAccessType(t *t
 	_, c := clmtest.NewServer(t)
 	ctx := context.Background()
 
-	// Seeds all three principal-type collections, not just Groups: clmIsBenignUnmappedAccessType
-	// is re-checked by hand in each of the Groups/Roles/Users loops in clm_folders.go, so a
-	// copy-paste slip in just one of them (an inverted !, or the guard omitted entirely) would
-	// leave a Groups-only test green.
+	// Seeds all three principal-type collections, not just Groups: that's what makes the
+	// principal_kind-to-distinguishing-field binding assertion below meaningful, rather
+	// than only ever exercising the Groups branch.
 	if _, err := c.PatchFolderSecurity(ctx, "folder-templates", client.ClmFolderSecurityWrite{
 		Groups: []client.ClmGroupSecurityEntry{
 			{AccessType: "SomethingUnrecognized", Href: "https://example.com/groups/group-x"},

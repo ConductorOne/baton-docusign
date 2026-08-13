@@ -204,10 +204,10 @@ func (f *clmFolderBuilder) Grants(ctx context.Context, folderResource *v2.Resour
 // branches carry access_type so either case is findable by the same structured-log
 // query as every other skip line in this file.
 func logSkippedFolderSecurityEntry(ctx context.Context, kind, accessType string, fields ...zap.Field) {
-	if accessType != client.ClmAccessTypeCustom && clmIsBenignUnmappedAccessType(accessType) {
+	if clmIsBenignUnmappedAccessType(accessType) {
 		// The common steady-state case (NoAccess/InheritFromParentFolder, on every
-		// folder of every sync) — return before building fields, not just before
-		// logging, so it stays allocation-free like the Sprintf removal above.
+		// folder of every sync) — return before this function's own append/log call.
+		// The caller's fields are already built by this point regardless.
 		return
 	}
 	fields = append(fields, zap.String("principal_kind", kind), zap.String("access_type", accessType))
@@ -484,10 +484,10 @@ func clmSlugForAccessType(accessType string) (string, bool) {
 // represents an access grant C1 is failing to show, so logging them would only add
 // per-sync noise for two expected states large accounts can produce on every sync.
 //
-// Custom is deliberately NOT in this set — see its own Debug log at each call site: it's
-// a real, active grant this connector can't round-trip to a single tier (an arbitrary
-// flag combination), so silencing it the same way would hide an actual access-visibility
-// gap, not just an expected inert state.
+// Custom is deliberately NOT in this set — see its own Debug log in
+// logSkippedFolderSecurityEntry: it's a real, active grant this connector can't
+// round-trip to a single tier (an arbitrary flag combination), so silencing it the same
+// way would hide an actual access-visibility gap, not just an expected inert state.
 func clmIsBenignUnmappedAccessType(accessType string) bool {
 	switch accessType {
 	case client.ClmAccessTypeNoAccess, client.ClmAccessTypeInherit:
