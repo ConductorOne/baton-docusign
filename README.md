@@ -125,6 +125,15 @@ with zero CLM resources — an account that opted in but can't reach CLM is trea
 misconfiguration to fix (disable the resource type, or activate the CLM feature), not an
 expected state to tolerate.
 
+`OptInRequired` is enforced by ConductorOne's platform, not by the connector or baton-sdk
+itself — running `baton-docusign` directly (the quickstarts below, or any self-hosted/CLI
+invocation) attempts all 5 CLM resource types by default, with no opt-in gate at all. If
+that account doesn't have a CLM subscription, the sync now fails instead of skipping CLM
+gracefully. Pass `--sync-resource-types` (or `BATON_SYNC_RESOURCE_TYPES`, comma-separated)
+with the resource type IDs you actually want (e.g. `user,group,permission_profile`) to
+exclude `clm_member,clm_role,clm_group,clm_permission_set,clm_folder` on an
+eSignature-only account run this way.
+
 CLM permission sets sync for visibility only — DocuSign's CLM API has no endpoint to
 assign or unassign a permission set, so they cannot be granted or revoked through this
 connector.

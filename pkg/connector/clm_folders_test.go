@@ -216,8 +216,8 @@ func TestClmIsBenignUnmappedAccessType(t *testing.T) {
 	}{
 		{client.ClmAccessTypeNoAccess, true},
 		// Custom is deliberately excluded — it's a real, active grant this connector
-		// can't round-trip, so it gets its own distinct Debug log at each Grants() call
-		// site instead of being silenced like the truly-inert values here.
+		// can't round-trip, so logSkippedFolderSecurityEntry gives it its own distinct
+		// Debug log instead of silencing it like the truly-inert values here.
 		{client.ClmAccessTypeCustom, false},
 		{client.ClmAccessTypeInherit, true},
 		{client.ClmAccessTypeView, false},
