@@ -190,7 +190,7 @@ func (f *clmFolderBuilder) Grants(ctx context.Context, folderResource *v2.Resour
 func (f *clmFolderBuilder) Grant(ctx context.Context, principal *v2.Resource, ent *v2.Entitlement) ([]*v2.Grant, annotations.Annotations, error) {
 	accessType, ok := clmAccessTypeForSlug(ent.Slug)
 	if !ok {
-		return nil, nil, fmt.Errorf("baton-docusign: unknown CLM folder entitlement slug %q", ent.Slug)
+		return nil, nil, status.Errorf(codes.InvalidArgument, "baton-docusign: unknown CLM folder entitlement slug %q", ent.Slug)
 	}
 	folderID := ent.Resource.Id.Resource
 
@@ -269,7 +269,7 @@ func (f *clmFolderBuilder) Grant(ctx context.Context, principal *v2.Resource, en
 			write.Users = append(write.Users, client.ClmUserSecurityEntry{AccessType: accessType, Href: memberHref})
 		}
 	default:
-		return nil, nil, fmt.Errorf("baton-docusign: invalid principal type for CLM folder security: %s", principal.Id.ResourceType)
+		return nil, nil, status.Errorf(codes.InvalidArgument, "baton-docusign: invalid principal type for CLM folder security: %s", principal.Id.ResourceType)
 	}
 
 	patchAnnos, err := f.client.PatchFolderSecurity(ctx, folderID, write)
@@ -383,7 +383,7 @@ func (f *clmFolderBuilder) Revoke(ctx context.Context, grantObj *v2.Grant) (anno
 		}
 		write.Users[i].AccessType = client.ClmAccessTypeNoAccess
 	default:
-		return nil, fmt.Errorf("baton-docusign: invalid principal type for CLM folder security: %s", principal.Id.ResourceType)
+		return nil, status.Errorf(codes.InvalidArgument, "baton-docusign: invalid principal type for CLM folder security: %s", principal.Id.ResourceType)
 	}
 
 	patchAnnos, err := f.client.PatchFolderSecurity(ctx, folderID, write)

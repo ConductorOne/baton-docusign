@@ -147,7 +147,7 @@ func (g *clmGroupBuilder) Grants(ctx context.Context, groupResource *v2.Resource
 // group appended (additive per the confirmed Members.Patch semantics).
 func (g *clmGroupBuilder) Grant(ctx context.Context, principal *v2.Resource, ent *v2.Entitlement) ([]*v2.Grant, annotations.Annotations, error) {
 	if principal.Id.ResourceType != clmMemberResourceType.Id {
-		return nil, nil, fmt.Errorf("baton-docusign: invalid principal type: expected %s, got %s", clmMemberResourceType.Id, principal.Id.ResourceType)
+		return nil, nil, status.Errorf(codes.InvalidArgument, "baton-docusign: invalid principal type: expected %s, got %s", clmMemberResourceType.Id, principal.Id.ResourceType)
 	}
 
 	memberID := principal.Id.Resource
