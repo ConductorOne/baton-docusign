@@ -28,6 +28,14 @@ env:
 jobs:
   test-groups:
     runs-on: ubuntu-latest
+    # Serializes against every other job in this file sharing this same group name
+    # (across every branch/PR, not just this one) — all three hit the same shared
+    # DocuSign demo account, and running two runs' Grant/Revoke cycles concurrently
+    # races on that account's real state (one run's mid-cycle Grant/Revoke can make
+    # another run's "should be zero grants after Revoke" assertion fail).
+    concurrency:
+      group: docusign-demo-account
+      cancel-in-progress: false
     env:
       BATON_LOG_LEVEL: debug
       BATON_DOCUSIGN_CLIENT_ID: ${{ secrets.CLIENTID }}
@@ -67,6 +75,10 @@ jobs:
   test-signing-groups:
     needs: [test-groups]
     runs-on: ubuntu-latest
+    # See test-groups' identical setting above — same shared demo account.
+    concurrency:
+      group: docusign-demo-account
+      cancel-in-progress: false
     env:
       BATON_LOG_LEVEL: debug
       BATON_DOCUSIGN_CLIENT_ID: ${{ secrets.CLIENTID }}
@@ -100,6 +112,10 @@ jobs:
   test-permission-profiles:
     needs: [test-signing-groups]
     runs-on: ubuntu-latest
+    # See test-groups' identical setting above — same shared demo account.
+    concurrency:
+      group: docusign-demo-account
+      cancel-in-progress: false
     env:
       BATON_LOG_LEVEL: debug
       BATON_DOCUSIGN_CLIENT_ID: ${{ secrets.CLIENTID }}
