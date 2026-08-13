@@ -242,7 +242,7 @@ func TestClmWorkflowQueueBuilder_List_DiscoversQueuesViaMemberScan(t *testing.T)
 // member-carol is scanned after member-alice (who succeeds and contributes a queue),
 // so this exercises the "isolated NotFound" branch specifically, not the "nothing has
 // succeeded yet" escalation
-// TestClmWorkflowQueueBuilder_List_SkipsGracefullyAfterConsecutiveFailures covers.
+// TestClmWorkflowQueueBuilder_List_FailsAfterConsecutiveFailures covers.
 func TestClmWorkflowQueueBuilder_List_ToleratesNotFoundMidScan(t *testing.T) {
 	srv, c := clmtest.NewServer(t)
 	// member-carol is a real seeded member (clmtest/seed.go) with zero queues of its
@@ -551,7 +551,7 @@ func TestClmWorkflowQueueBuilder_List_ReplayedChunkDoesNotDuplicateMembership(t 
 // List() calls, not reset per chunk — otherwise 2 consecutive failures in one chunk
 // followed by 1 more in the next chunk would never reach clmWorkflowQueueUnavailableThreshold
 // (3), even though the same 3 consecutive failures in a single unchunked call already do
-// (per TestClmWorkflowQueueBuilder_List_SkipsGracefullyAfterConsecutiveFailures). Forces
+// (per TestClmWorkflowQueueBuilder_List_FailsAfterConsecutiveFailures). Forces
 // alice and bob (chunk 1, PageSize 2) and carol (chunk 2) to all fail — the first chunk
 // alone only sees 2 failures (below threshold, must NOT escalate yet), and the second
 // chunk's first member pushes the running total to 3 and must escalate there.

@@ -169,6 +169,20 @@ func (b *clmWorkflowQueueBuilder) List(ctx context.Context, _ *v2.ResourceId, at
 
 	for _, member := range members {
 		memberID := clmIDFromHref(member.Href)
+		if memberID == "" {
+			// Symmetric with the empty-queueID guard below: an empty ID would call
+			// GetMemberWorkflowQueues(ctx, "") -> GET .../members//workflowqueues,
+			// which 404s and — on the pre-success path — counts toward
+			// clmWorkflowQueueUnavailableThreshold, so a handful of malformed members
+			// early in scan order could hard-fail the sync and misreport it as "CLM
+			// unavailable" instead of "found members with no usable ID."
+			state.SkippedMembers++
+			if n := state.SkippedMembers; n == 1 || n == 10 || n == 100 || n%1000 == 0 {
+				ctxzap.Extract(ctx).Warn("baton-docusign: CLM member has an empty Href, skipping",
+					zap.String("member_email", member.Email), zap.Int("total_occurrences", n))
+			}
+			continue
+		}
 		queues, queueAnnos, err := b.client.GetMemberWorkflowQueues(ctx, memberID)
 		if err != nil {
 			if isOptInFeatureUnavailableError(err) {
