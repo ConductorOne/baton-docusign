@@ -16,6 +16,16 @@ concurrency:
   group: docusign-demo-account
   cancel-in-progress: false
 env:
+  # This CI account has no CLM subscription, and (unlike a C1-hosted sync) nothing here
+  # filters resource types by OptInRequired — every registered resource type is attempted
+  # by default. CLM builders now fail the whole sync rather than skip gracefully when CLM
+  # isn't available (see pkg/connector/clm_roles.go), so the 5 clm_* types must be
+  # excluded here explicitly to test the ones the three test-* jobs below care about.
+  # This is an allowlist, not a CLM-only exclusion: if you register a new non-CLM
+  # resource type in pkg/connector/connector.go, add it here too — otherwise it silently
+  # gets zero CI sync-test coverage. Declared once at the workflow level (all three jobs
+  # inherit it) so there's no per-job copy to keep in sync.
+  BATON_SYNC_RESOURCE_TYPES: user,group,permission_profile,signing_group
   # Forces the legacy v1/SQLite c1z format instead of baton-sdk v0.25.0's new default
   # (Pebble/v3). The `baton` CLI these jobs download (ConductorOne/github-workflows'
   # get-baton action, currently v0.4.5) is built against baton-sdk v0.8.24 — long before
@@ -44,16 +54,6 @@ jobs:
       BATON_REFRESH_TOKEN: ${{ secrets.REFRESHTOKEN }}
       BATON_DEMO: "true"
       BATON_INCLUDE_SIGNING_GROUPS: "true"
-      # This CI account has no CLM subscription, and (unlike a C1-hosted sync) nothing
-      # here filters resource types by OptInRequired — every registered resource type is
-      # attempted by default. CLM builders now fail the whole sync rather than skip
-      # gracefully when CLM isn't available (see pkg/connector/clm_roles.go), so the 5
-      # clm_* types must be excluded here explicitly to test the ones this job cares about.
-      # This is an allowlist, not a CLM-only exclusion: if you register a new non-CLM
-      # resource type in pkg/connector/connector.go, add it here too (and to the other two
-      # BATON_SYNC_RESOURCE_TYPES settings below, which mirror this one) — otherwise it
-      # silently gets zero CI sync-test coverage.
-      BATON_SYNC_RESOURCE_TYPES: user,group,permission_profile,signing_group
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -87,10 +87,6 @@ jobs:
       BATON_REFRESH_TOKEN: ${{ secrets.REFRESHTOKEN }}
       BATON_DEMO: "true"
       BATON_INCLUDE_SIGNING_GROUPS: "true"
-      # See test-groups' identical setting above: this CI account has no CLM
-      # subscription, and nothing here filters by OptInRequired the way a C1-hosted sync
-      # would, so the 5 clm_* types must be excluded explicitly or this job fails too.
-      BATON_SYNC_RESOURCE_TYPES: user,group,permission_profile,signing_group
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -124,10 +120,6 @@ jobs:
       BATON_REFRESH_TOKEN: ${{ secrets.REFRESHTOKEN }}
       BATON_DEMO: "true"
       BATON_INCLUDE_SIGNING_GROUPS: "true"
-      # See test-groups' identical setting above: this CI account has no CLM
-      # subscription, and nothing here filters by OptInRequired the way a C1-hosted sync
-      # would, so the 5 clm_* types must be excluded explicitly or this job fails too.
-      BATON_SYNC_RESOURCE_TYPES: user,group,permission_profile,signing_group
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
