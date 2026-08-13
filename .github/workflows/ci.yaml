@@ -19,9 +19,11 @@ jobs:
       # This CI account has no CLM subscription, and this job runs the connector
       # directly with no resource-type filter otherwise. clm_workflow_queue now fails
       # the whole sync rather than skipping gracefully when CLM isn't available (see
-      # pkg/connector/clm_workflow_queues.go's List()) — exclude the CLM types here
-      # explicitly to test the ones this job cares about.
-      BATON_SYNC_RESOURCE_TYPES: user,group,permission_profile,signing_group
+      # pkg/connector/clm_workflow_queues.go's List()), so it must be excluded here —
+      # but sync-resource-types is an allowlist, so the other 5 CLM types (which still
+      # gracefully skip, unchanged) are listed back in explicitly to keep exercising
+      # their isOptInFeatureUnavailableError path end-to-end against this no-CLM account.
+      BATON_SYNC_RESOURCE_TYPES: user,group,permission_profile,signing_group,clm_member,clm_role,clm_group,clm_permission_set,clm_folder
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -54,9 +56,11 @@ jobs:
       # This CI account has no CLM subscription, and this job runs the connector
       # directly with no resource-type filter otherwise. clm_workflow_queue now fails
       # the whole sync rather than skipping gracefully when CLM isn't available (see
-      # pkg/connector/clm_workflow_queues.go's List()) — exclude the CLM types here
-      # explicitly to test the ones this job cares about.
-      BATON_SYNC_RESOURCE_TYPES: user,group,permission_profile,signing_group
+      # pkg/connector/clm_workflow_queues.go's List()), so it must be excluded here —
+      # but sync-resource-types is an allowlist, so the other 5 CLM types (which still
+      # gracefully skip, unchanged) are listed back in explicitly to keep exercising
+      # their isOptInFeatureUnavailableError path end-to-end against this no-CLM account.
+      BATON_SYNC_RESOURCE_TYPES: user,group,permission_profile,signing_group,clm_member,clm_role,clm_group,clm_permission_set,clm_folder
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -89,9 +93,11 @@ jobs:
       # This CI account has no CLM subscription, and this job runs the connector
       # directly with no resource-type filter otherwise. clm_workflow_queue now fails
       # the whole sync rather than skipping gracefully when CLM isn't available (see
-      # pkg/connector/clm_workflow_queues.go's List()) — exclude the CLM types here
-      # explicitly to test the ones this job cares about.
-      BATON_SYNC_RESOURCE_TYPES: user,group,permission_profile,signing_group
+      # pkg/connector/clm_workflow_queues.go's List()), so it must be excluded here —
+      # but sync-resource-types is an allowlist, so the other 5 CLM types (which still
+      # gracefully skip, unchanged) are listed back in explicitly to keep exercising
+      # their isOptInFeatureUnavailableError path end-to-end against this no-CLM account.
+      BATON_SYNC_RESOURCE_TYPES: user,group,permission_profile,signing_group,clm_member,clm_role,clm_group,clm_permission_set,clm_folder
     steps:
       - name: Checkout code
         uses: actions/checkout@v4

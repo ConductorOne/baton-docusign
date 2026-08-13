@@ -173,8 +173,9 @@ func TestClmWorkflowQueueBuilder_List_SkipsGracefullyOnSessionStoreReadFailure(t
 
 func TestClmWorkflowQueueBuilder_List_FailsWhenClmUnavailable(t *testing.T) {
 	// clm_workflow_queue is OptInRequired, and C1's opt-in toggle doesn't check the
-	// account can actually use it first — see clm_roles.go's identical rationale. List()
-	// must fail loudly here rather than silently succeed with zero resources.
+	// account can actually use it first — see List()'s escalation branch in
+	// clm_workflow_queues.go for the full rationale. List() must fail loudly here
+	// rather than silently succeed with zero resources.
 	s, _ := clmtest.NewServer(t)
 	badClient := s.NewClientWithToken("wrong-token")
 	b := newClmWorkflowQueueBuilder(badClient)
