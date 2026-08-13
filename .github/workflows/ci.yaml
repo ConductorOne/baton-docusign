@@ -41,6 +41,10 @@ jobs:
       # attempted by default. CLM builders now fail the whole sync rather than skip
       # gracefully when CLM isn't available (see pkg/connector/clm_roles.go), so the 5
       # clm_* types must be excluded here explicitly to test the ones this job cares about.
+      # This is an allowlist, not a CLM-only exclusion: if you register a new non-CLM
+      # resource type in pkg/connector/connector.go, add it here too (and to the other two
+      # BATON_SYNC_RESOURCE_TYPES settings below, which mirror this one) — otherwise it
+      # silently gets zero CI sync-test coverage.
       BATON_SYNC_RESOURCE_TYPES: user,group,permission_profile,signing_group
     steps:
       - name: Checkout code
