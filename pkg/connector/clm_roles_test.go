@@ -10,9 +10,9 @@ import (
 )
 
 func TestClmRoleBuilder_List(t *testing.T) {
-	// The role set itself isn't backed by an API call, but List() now checks CLM
-	// availability via EnsureClmReady first (see clm_roles.go), so it needs a working
-	// mock client to reach the "CLM is available" branch.
+	// The role set isn't backed by an API call at all — CLM availability is checked
+	// once, up front, by Connector.Validate() (see connector_test.go), not here — so
+	// this only needs a client to satisfy the builder's field, never calls it.
 	_, c := clmtest.NewServer(t)
 	b := newClmRoleBuilder(c)
 	ctx := context.Background()
@@ -31,29 +31,6 @@ func TestClmRoleBuilder_List(t *testing.T) {
 		if r.Id.Resource != client.ClmRoles[i].Name {
 			t.Errorf("resource %d: expected ID %q, got %q", i, client.ClmRoles[i].Name, r.Id.Resource)
 		}
-	}
-}
-
-// TestClmRoleBuilder_List_FailsWhenClmUnavailable is a deliberate design choice, not an
-// oversight: clm_role is OptInRequired (resource_types.go), so List() only ever runs
-// once a customer has explicitly enabled it in their sync config, and C1's opt-in toggle
-// has no upstream check against DocuSign — a customer can enable it without actually
-// having a CLM subscription. When EnsureClmReady then fails, that's a real
-// misconfiguration (wrong resource enabled, or the feature needs activating), not an
-// expected/transient state, so it must fail the sync loudly rather than silently
-// succeed with zero roles indefinitely.
-func TestClmRoleBuilder_List_FailsWhenClmUnavailable(t *testing.T) {
-	s, _ := clmtest.NewServer(t)
-	badClient := s.NewClientWithToken("wrong-token")
-	b := newClmRoleBuilder(badClient)
-	ctx := context.Background()
-
-	resources, _, err := b.List(ctx, nil, rs.SyncOpAttrs{})
-	if err == nil {
-		t.Fatal("expected List to fail when CLM is unavailable, got nil error")
-	}
-	if len(resources) != 0 {
-		t.Errorf("expected zero resources on a hard failure, got %d", len(resources))
 	}
 }
 

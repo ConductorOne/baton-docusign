@@ -219,9 +219,10 @@ func (c *Client) ensureClmInitialized(ctx context.Context) error {
 
 // EnsureClmReady exposes the CLM-readiness check every other CLM client method runs
 // internally before its real request, for callers with no CLM endpoint of their own
-// (clm_role — see pkg/connector/clm_roles.go) that still need to detect CLM
-// availability. Memoized after the first successful call, same as every other CLM
-// method — see ensureClmInitialized.
+// that still need to detect CLM availability — namely Connector.Validate() (see
+// pkg/connector/connector.go), which runs this once, up front, before any CLM
+// builder's List() executes. Memoized after the first successful call, same as every
+// other CLM method — see ensureClmInitialized.
 func (c *Client) EnsureClmReady(ctx context.Context) error {
 	return c.ensureClmReady(ctx)
 }

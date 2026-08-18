@@ -8,11 +8,11 @@ import (
 	rs "github.com/conductorone/baton-sdk/pkg/types/resource"
 )
 
-// clmRoleBuilder syncs the 5 fixed CLM account-level roles (client.ClmRoles). The role
-// set itself isn't backed by an API call — see resource_types.go for why this resource
-// type exists — but List() still checks CLM availability via EnsureClmReady before
-// emitting it, the same discovery check every other CLM builder's real API call runs
-// internally.
+// clmRoleBuilder syncs the 5 fixed CLM account-level roles (client.ClmRoles). Not
+// backed by an API call — see resource_types.go for why this resource type exists.
+// CLM availability is checked once, up front, by Connector.Validate() rather than here
+// — see that method's doc for why centralizing it there is better than every opted-in
+// CLM builder repeating the same check on its own first page.
 type clmRoleBuilder struct {
 	resourceType *v2.ResourceType
 	client       *client.Client
@@ -22,22 +22,11 @@ func (b *clmRoleBuilder) ResourceType(_ context.Context) *v2.ResourceType {
 	return clmRoleResourceType
 }
 
-// List returns the fixed set of CLM roles, gated on CLM being available for this
-// account. No pagination needed — the set is small and hardcoded, not fetched from the
-// API — so the availability check always runs (there's no first-page-only gate to
-// apply, unlike the paginated CLM builders).
-//
-// clm_role is OptInRequired (resource_types.go), so this List() only ever runs once a
-// customer has explicitly enabled it in their sync config — the C1 platform's toggle for
-// that has no upstream validation against DocuSign, so a customer can opt in without
-// actually having a CLM subscription. When that happens, EnsureClmReady failing here is
-// a real misconfiguration, not a transient/expected condition: fail loudly so it's
-// visible, rather than silently syncing zero roles indefinitely.
-func (b *clmRoleBuilder) List(ctx context.Context, _ *v2.ResourceId, _ rs.SyncOpAttrs) ([]*v2.Resource, *rs.SyncOpResults, error) {
-	if err := b.client.EnsureClmReady(ctx); err != nil {
-		return nil, nil, err
-	}
-
+// List returns the fixed set of CLM roles. No pagination needed — the set is small and
+// hardcoded, not fetched from the API. CLM availability was already confirmed once, up
+// front, by Connector.Validate() before any builder's List() runs — see that method's
+// doc — so there's no error path here beyond rs.NewRoleResource construction failing.
+func (b *clmRoleBuilder) List(_ context.Context, _ *v2.ResourceId, _ rs.SyncOpAttrs) ([]*v2.Resource, *rs.SyncOpResults, error) {
 	var resources []*v2.Resource
 	for _, role := range client.ClmRoles {
 		roleResource, err := rs.NewRoleResource(
