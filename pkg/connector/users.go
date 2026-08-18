@@ -2,6 +2,7 @@ package connector
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 
@@ -44,16 +45,19 @@ type userBuilder struct {
 	// hourly budget this fix exists to protect.
 	//
 	// A genuinely persistent failure (see isCacheablePermissionProfilesError's doc) is
-	// cached immediately. A transient-shaped failure (a rate limit, a plain 5xx/network
-	// blip, a context error) is deliberately NOT cached on the first attempt — caching
-	// it would replay a stale error forever instead of ever re-checking whether the
-	// condition cleared — but permissionProfilesTransientFails bounds the resulting
+	// cached immediately. A transient-shaped failure (a plain 5xx/network blip, or any
+	// other unclassified error) is deliberately NOT cached on the first attempt —
+	// caching it would replay a stale error forever instead of ever re-checking whether
+	// the condition cleared — but permissionProfilesTransientFails bounds the resulting
 	// worst case: after permissionProfilesTransientFailureThreshold consecutive
-	// transient failures, the call is treated as a sustained outage rather than a blip
-	// and cached anyway, so the 2-calls-per-user cost (failed lookup + GetUserDetails
-	// fallback) only applies to the first few Active users in the sync, not all of
-	// them — the rest fall back at the same 1-call-per-user cost this fast path existed
-	// before.
+	// transient failures of THAT kind, the call is treated as a sustained outage rather
+	// than a blip and cached anyway, so the 2-calls-per-user cost (failed lookup +
+	// GetUserDetails fallback) only applies to the first few Active users in the sync,
+	// not all of them — the rest fall back at the same 1-call-per-user cost this fast
+	// path existed before. A reclassified rate-limit error and a context
+	// cancellation/deadline are exempt from this counter entirely — see
+	// getPermissionProfiles' doc for why counting either toward the threshold would be
+	// actively harmful, not just a missed optimization.
 	permissionProfilesMu             sync.Mutex
 	permissionProfilesCached         bool
 	permissionProfiles               []client.PermissionProfile
@@ -104,7 +108,20 @@ func isCacheablePermissionProfilesError(err error) bool {
 // the call fails with a non-cacheable (transient) error — see the memoization fields'
 // doc on the struct above, and isCacheablePermissionProfilesError's doc, for why — and
 // even then, only up to permissionProfilesTransientFailureThreshold consecutive times
-// before that transient failure is cached too, bounding the worst-case call cost.
+// before that transient failure is cached too, bounding the worst-case call cost. Two
+// exceptions never count toward that threshold and are never cached no matter how many
+// times they recur:
+//   - A reclassified rate-limit error: unlike an ordinary transient blip, this failure
+//     has a known, bounded resolution (the hourly window resetting), so it's always
+//     worth a real retry — caching it would replay the same stale codes.Unavailable on
+//     every retry of the SDK's per-action retry loop (unlimited attempts, same builder
+//     reused) forever, never re-checking whether the window has actually reset. This is
+//     the exact regression the isCacheablePermissionProfilesError allowlist already
+//     exists to prevent; the threshold must not reintroduce it via a different path.
+//   - A context cancellation/deadline: only means whichever caller's context won this
+//     attempt was already done, not that the endpoint is actually degraded. An unlucky
+//     run of cancellations shouldn't accumulate toward disabling the fast path on an
+//     otherwise-healthy account.
 func (b *userBuilder) getPermissionProfiles(ctx context.Context) ([]client.PermissionProfile, error) {
 	b.permissionProfilesMu.Lock()
 	defer b.permissionProfilesMu.Unlock()
@@ -115,6 +132,9 @@ func (b *userBuilder) getPermissionProfiles(ctx context.Context) ([]client.Permi
 
 	profiles, _, err := b.client.GetPermissionProfiles(ctx)
 	if err != nil && !isCacheablePermissionProfilesError(err) {
+		if isReclassifiedRateLimitError(err) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return nil, err
+		}
 		b.permissionProfilesTransientFails++
 		if b.permissionProfilesTransientFails < permissionProfilesTransientFailureThreshold {
 			return nil, err

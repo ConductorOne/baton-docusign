@@ -410,8 +410,11 @@ func TestUserBuilder_Grants_PropagatesRateLimitInsteadOfDoublingCalls(t *testing
 // on the builder — caching it would replay the same stale error on every retry of the
 // SDK's per-action retry loop (which reuses this same userBuilder), spinning forever at
 // the retryer's clamped interval instead of ever re-checking whether the account's
-// hourly window has reset. Two Grants() calls against a rate-limited mock, on the same
-// builder, must each issue a real GetPermissionProfiles call.
+// hourly window has reset. Loops well past permissionProfilesTransientFailureThreshold:
+// the rate-limit exemption must hold regardless of how many consecutive times it
+// recurs, unlike an ordinary transient failure that IS eventually cached (see
+// TestUserBuilder_Grants_BoundsTransientFailureRetries) — every call here must issue a
+// real GetPermissionProfiles request.
 func TestUserBuilder_Grants_DoesNotMemoizeRateLimitFailure(t *testing.T) {
 	var permissionProfilesCalls int32
 
@@ -450,7 +453,8 @@ func TestUserBuilder_Grants_DoesNotMemoizeRateLimitFailure(t *testing.T) {
 	b := newUserBuilder(c, false)
 	resource := userResourceWithProfile(t, "user-1", userStatusActive, "DocuSign Admin")
 
-	for i := 0; i < 2; i++ {
+	const attempts = permissionProfilesTransientFailureThreshold + 2
+	for i := 0; i < attempts; i++ {
 		_, _, err := b.Grants(context.Background(), resource, rs.SyncOpAttrs{})
 		if err == nil {
 			t.Fatalf("call %d: expected Grants to propagate the rate-limit error, got nil", i)
@@ -460,8 +464,8 @@ func TestUserBuilder_Grants_DoesNotMemoizeRateLimitFailure(t *testing.T) {
 		}
 	}
 
-	if got := atomic.LoadInt32(&permissionProfilesCalls); got != 2 {
-		t.Errorf("expected GetPermissionProfiles to be called on every retry (2 calls), got %d — the rate-limit error must not be memoized", got)
+	if got := atomic.LoadInt32(&permissionProfilesCalls); got != attempts {
+		t.Errorf("expected GetPermissionProfiles called on every one of %d retries, got %d — the rate-limit error must never be memoized, even past the threshold", attempts, got)
 	}
 }
 
@@ -630,14 +634,19 @@ func TestUserBuilder_Grants_DoesNotMemoizeContextError(t *testing.T) {
 	b := newUserBuilder(c, false)
 	resource := userResourceWithProfile(t, "user-1", userStatusActive, "DocuSign Admin")
 
-	cancelledCtx, cancel := context.WithCancel(context.Background())
-	cancel() // already cancelled before Grants ever runs
-	if _, _, err := b.Grants(cancelledCtx, resource, rs.SyncOpAttrs{}); err == nil {
-		t.Fatal("expected Grants to fail with an already-cancelled context, got nil")
+	// Cancelled attempts must not count toward permissionProfilesTransientFailureThreshold
+	// either — loop past it to prove a run of unrelated cancellations can't accumulate
+	// into caching a failure on an otherwise-healthy account.
+	for i := 0; i < permissionProfilesTransientFailureThreshold+2; i++ {
+		cancelledCtx, cancel := context.WithCancel(context.Background())
+		cancel() // already cancelled before Grants ever runs
+		if _, _, err := b.Grants(cancelledCtx, resource, rs.SyncOpAttrs{}); err == nil {
+			t.Fatalf("call %d: expected Grants to fail with an already-cancelled context, got nil", i)
+		}
 	}
 
 	// A later Active user with a fresh, valid context must still resolve via the fast
-	// path — the cancelled attempt above must not have poisoned the builder's cache.
+	// path — none of the cancelled attempts above must have poisoned the builder's cache.
 	grants, _, err := b.Grants(context.Background(), resource, rs.SyncOpAttrs{})
 	if err != nil {
 		t.Fatalf("Grants with a fresh context: %v", err)
