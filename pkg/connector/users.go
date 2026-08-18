@@ -2,6 +2,7 @@ package connector
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 
@@ -29,34 +30,59 @@ type userBuilder struct {
 	// grants pass is skipped too, since it is this builder's only output.
 	skipPermissionProfileResourceType bool
 
-	// permissionProfilesOnce/permissionProfiles/permissionProfilesErr memoize the one
-	// account-wide GetPermissionProfiles call tryFastPathGrant's name-lookup branch
-	// needs, across every Active user's Grants() call in this sync (a *userBuilder is
-	// constructed once per sync and Grants() runs concurrently across users, so this
-	// must be shared and safe for concurrent access — hence sync.Once, not a plain
-	// bool). uhttp's GET cache only ever caches a 200 response, never an error, so
-	// without this a persistent non-rate-limit failure (e.g. a service user lacking
+	// permissionProfilesMu/permissionProfilesCached/permissionProfiles/permissionProfilesErr
+	// memoize the one account-wide GetPermissionProfiles call tryFastPathGrant's
+	// name-lookup branch needs, across every Active user's Grants() call in this sync (a
+	// *userBuilder is constructed once per sync and Grants() runs concurrently across
+	// users, so this must be shared and safe for concurrent access — hence a mutex, not
+	// a plain bool). uhttp's GET cache only ever caches a 200 response, never an error,
+	// so without this a persistent non-rate-limit failure (e.g. a service user lacking
 	// permission_profiles read access) would re-hit the real API on every Active user
 	// instead of once per sync — doubling that user's calls (the failed lookup, then the
 	// GetUserDetails fallback) against the same hourly budget this fix exists to
-	// protect. A transient blip is deliberately memoized as a failure for the rest of
-	// this sync too, not just genuine outages — the fallback path still resolves the
-	// grant correctly either way, so the only cost is skipping the fast path's call
-	// savings for this one sync run, in exchange for never amplifying calls during a
-	// real persistent failure.
-	permissionProfilesOnce sync.Once
-	permissionProfiles     []client.PermissionProfile
-	permissionProfilesErr  error
+	// protect. Only a genuinely persistent failure is cached this way, though — see
+	// getPermissionProfiles' doc for why a rate-limit or context error is deliberately
+	// left uncached.
+	permissionProfilesMu     sync.Mutex
+	permissionProfilesCached bool
+	permissionProfiles       []client.PermissionProfile
+	permissionProfilesErr    error
 }
 
 // getPermissionProfiles returns the account's permission profiles, calling
 // client.GetPermissionProfiles at most once for the lifetime of this userBuilder — see
-// the memoization fields' doc on the struct above for why.
+// the memoization fields' doc on the struct above for why — with one deliberate
+// exception: a reclassified rate-limit error, or a context-cancellation/deadline error,
+// is never cached. Caching either would be actively harmful, not just a missed
+// optimization:
+//   - A rate-limit error is exactly the case reclassifyHourlyRateLimitError's Unavailable
+//     reclassification exists to make retryable. The SDK's per-action retry loop
+//     (pkg/sync/parallel_syncer.go, unlimited attempts) reuses this same userBuilder
+//     across every retry of this action, so caching the error would replay the same
+//     stale rate-limit failure on every retry forever, without ever issuing a fresh
+//     request — the sync would spin at the retryer's ~60s interval and never notice the
+//     account's hourly window has actually reset, defeating the whole point of this fix.
+//   - A context error only means whichever caller's context happened to win this call
+//     was already done — not that the account or its permissions are actually broken.
+//     Caching it would incorrectly drop every other Active user in the sync back to the
+//     per-user GetUserDetails fallback for the rest of the run.
 func (b *userBuilder) getPermissionProfiles(ctx context.Context) ([]client.PermissionProfile, error) {
-	b.permissionProfilesOnce.Do(func() {
-		b.permissionProfiles, _, b.permissionProfilesErr = b.client.GetPermissionProfiles(ctx)
-	})
-	return b.permissionProfiles, b.permissionProfilesErr
+	b.permissionProfilesMu.Lock()
+	defer b.permissionProfilesMu.Unlock()
+
+	if b.permissionProfilesCached {
+		return b.permissionProfiles, b.permissionProfilesErr
+	}
+
+	profiles, _, err := b.client.GetPermissionProfiles(ctx)
+	if err != nil && (isReclassifiedRateLimitError(err) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
+		return nil, err
+	}
+
+	b.permissionProfilesCached = true
+	b.permissionProfiles = profiles
+	b.permissionProfilesErr = err
+	return profiles, err
 }
 
 // ResourceType returns the Baton resource type handled by this builder,

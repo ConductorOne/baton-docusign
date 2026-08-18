@@ -405,6 +405,66 @@ func TestUserBuilder_Grants_PropagatesRateLimitInsteadOfDoublingCalls(t *testing
 	}
 }
 
+// TestUserBuilder_Grants_DoesNotMemoizeRateLimitFailure is a regression test: unlike a
+// persistent non-rate-limit failure, a reclassified rate-limit error must NOT be cached
+// on the builder — caching it would replay the same stale error on every retry of the
+// SDK's per-action retry loop (which reuses this same userBuilder), spinning forever at
+// the retryer's clamped interval instead of ever re-checking whether the account's
+// hourly window has reset. Two Grants() calls against a rate-limited mock, on the same
+// builder, must each issue a real GetPermissionProfiles call.
+func TestUserBuilder_Grants_DoesNotMemoizeRateLimitFailure(t *testing.T) {
+	var permissionProfilesCalls int32
+
+	mockServer := httptest.NewServer(nil)
+	t.Cleanup(mockServer.Close)
+	mockServer.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/oauth/userinfo":
+			_ = json.NewEncoder(w).Encode(client.UserInfoResponse{
+				Sub: "service-account-user-id",
+				Accounts: []client.AccountInfo{
+					{AccountId: "acct-1", AccountName: "Acme", BaseURI: mockServer.URL, IsDefault: true},
+				},
+			})
+		case "/restapi/v2.1/accounts/acct-1/permission_profiles":
+			atomic.AddInt32(&permissionProfilesCalls, 1)
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(client.ErrorResponse{
+				ErrorCode:    "HOURLY_APIINVOCATION_LIMIT_EXCEEDED",
+				ErrorMessage: "The maximum number of hourly API invocations has been exceeded. The hourly limit is 3000.",
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	})
+
+	mockServerURL, err := url.Parse(mockServer.URL)
+	if err != nil {
+		t.Fatalf("failed to parse mock server URL: %v", err)
+	}
+	wrapper := uhttp.NewBaseHttpClient(&http.Client{Transport: &rewriteTransport{target: mockServerURL, base: http.DefaultTransport}})
+	tokenSource := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "test-token"})
+	c := client.NewClient(context.Background(), false, tokenSource, "", "", wrapper)
+
+	b := newUserBuilder(c, false)
+	resource := userResourceWithProfile(t, "user-1", userStatusActive, "DocuSign Admin")
+
+	for i := 0; i < 2; i++ {
+		_, _, err := b.Grants(context.Background(), resource, rs.SyncOpAttrs{})
+		if err == nil {
+			t.Fatalf("call %d: expected Grants to propagate the rate-limit error, got nil", i)
+		}
+		if got := grpcstatus.Code(err); got != codes.Unavailable {
+			t.Fatalf("call %d: expected codes.Unavailable, got %v: %v", i, got, err)
+		}
+	}
+
+	if got := atomic.LoadInt32(&permissionProfilesCalls); got != 2 {
+		t.Errorf("expected GetPermissionProfiles to be called on every retry (2 calls), got %d — the rate-limit error must not be memoized", got)
+	}
+}
+
 // TestUserBuilder_Grants_FallsBackOnNonRateLimitPermissionProfilesFailure covers the
 // other half of the fast path's error handling: a GetPermissionProfiles failure that
 // ISN'T the reclassified rate-limit error (e.g. a permissions/scope issue) must still
