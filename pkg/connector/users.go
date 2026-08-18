@@ -2,7 +2,6 @@ package connector
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"sync"
 
@@ -14,6 +13,8 @@ import (
 	rs "github.com/conductorone/baton-sdk/pkg/types/resource"
 	"github.com/grpc-ecosystem/go-grpc-middleware/logging/zap/ctxzap"
 	"go.uber.org/zap"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -36,36 +37,52 @@ type userBuilder struct {
 	// *userBuilder is constructed once per sync and Grants() runs concurrently across
 	// users, so this must be shared and safe for concurrent access — hence a mutex, not
 	// a plain bool). uhttp's GET cache only ever caches a 200 response, never an error,
-	// so without this a persistent non-rate-limit failure (e.g. a service user lacking
+	// so without this a persistent failure (e.g. a service user lacking
 	// permission_profiles read access) would re-hit the real API on every Active user
 	// instead of once per sync — doubling that user's calls (the failed lookup, then the
 	// GetUserDetails fallback) against the same hourly budget this fix exists to
 	// protect. Only a genuinely persistent failure is cached this way, though — see
-	// getPermissionProfiles' doc for why a rate-limit or context error is deliberately
-	// left uncached.
+	// isCacheablePermissionProfilesError's doc for why a transient failure (a rate limit,
+	// a plain 5xx/network blip, a context error) is deliberately left uncached.
 	permissionProfilesMu     sync.Mutex
 	permissionProfilesCached bool
 	permissionProfiles       []client.PermissionProfile
 	permissionProfilesErr    error
 }
 
+// isCacheablePermissionProfilesError reports whether err is a persistent,
+// account-configuration-shaped failure safe to cache on userBuilder for the rest of this
+// sync — mirrors isOptInFeatureUnavailableError's PermissionDenied/Unauthenticated/
+// NotFound classification (this account's permission_profiles access isn't going to
+// change mid-sync), deliberately narrower than that helper: no FailedPrecondition, which
+// is specific to CLM discovery's response-shape check and not relevant here.
+//
+// Everything else is deliberately NOT cacheable — a reclassified rate-limit error
+// (codes.Unavailable with a RateLimitDescription), an ordinary transient 5xx/network
+// blip (codes.Unavailable with none), a context cancellation/deadline, or any other
+// unclassified failure. Caching any of these would be actively harmful, not just a
+// missed optimization: the SDK's per-action retry loop (pkg/sync/parallel_syncer.go,
+// unlimited attempts) reuses this same userBuilder across every retry of this action, so
+// a cached transient error would replay the same stale failure on every retry forever,
+// without ever issuing a fresh request to notice the underlying condition — whether an
+// hourly rate-limit window resetting or a 503 clearing — has cleared. A context error
+// specifically only means whichever caller's context happened to win this call was
+// already done, not that the account or its permissions are actually broken; caching it
+// would incorrectly drop every other Active user in the sync back to the per-user
+// GetUserDetails fallback for the rest of the run.
+func isCacheablePermissionProfilesError(err error) bool {
+	switch status.Code(err) {
+	case codes.PermissionDenied, codes.Unauthenticated, codes.NotFound:
+		return true
+	default:
+		return false
+	}
+}
+
 // getPermissionProfiles returns the account's permission profiles, calling
-// client.GetPermissionProfiles at most once for the lifetime of this userBuilder — see
-// the memoization fields' doc on the struct above for why — with one deliberate
-// exception: a reclassified rate-limit error, or a context-cancellation/deadline error,
-// is never cached. Caching either would be actively harmful, not just a missed
-// optimization:
-//   - A rate-limit error is exactly the case reclassifyHourlyRateLimitError's Unavailable
-//     reclassification exists to make retryable. The SDK's per-action retry loop
-//     (pkg/sync/parallel_syncer.go, unlimited attempts) reuses this same userBuilder
-//     across every retry of this action, so caching the error would replay the same
-//     stale rate-limit failure on every retry forever, without ever issuing a fresh
-//     request — the sync would spin at the retryer's ~60s interval and never notice the
-//     account's hourly window has actually reset, defeating the whole point of this fix.
-//   - A context error only means whichever caller's context happened to win this call
-//     was already done — not that the account or its permissions are actually broken.
-//     Caching it would incorrectly drop every other Active user in the sync back to the
-//     per-user GetUserDetails fallback for the rest of the run.
+// client.GetPermissionProfiles at most once for the lifetime of this userBuilder unless
+// the call fails with a non-cacheable (transient) error — see the memoization fields'
+// doc on the struct above, and isCacheablePermissionProfilesError's doc, for why.
 func (b *userBuilder) getPermissionProfiles(ctx context.Context) ([]client.PermissionProfile, error) {
 	b.permissionProfilesMu.Lock()
 	defer b.permissionProfilesMu.Unlock()
@@ -75,7 +92,7 @@ func (b *userBuilder) getPermissionProfiles(ctx context.Context) ([]client.Permi
 	}
 
 	profiles, _, err := b.client.GetPermissionProfiles(ctx)
-	if err != nil && (isReclassifiedRateLimitError(err) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
+	if err != nil && !isCacheablePermissionProfilesError(err) {
 		return nil, err
 	}
 

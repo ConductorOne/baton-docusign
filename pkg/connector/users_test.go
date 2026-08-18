@@ -465,6 +465,129 @@ func TestUserBuilder_Grants_DoesNotMemoizeRateLimitFailure(t *testing.T) {
 	}
 }
 
+// TestUserBuilder_Grants_DoesNotMemoizeServiceUnavailableFailure is the same regression
+// as TestUserBuilder_Grants_DoesNotMemoizeRateLimitFailure, but for an ordinary
+// transient 5xx with no RateLimitDescription at all (isReclassifiedRateLimitError
+// returns false for it) — isCacheablePermissionProfilesError must still treat
+// codes.Unavailable as non-cacheable regardless of why the error carries that code, or
+// this class of failure would disable the fast path for the rest of the sync even after
+// the endpoint recovers.
+func TestUserBuilder_Grants_DoesNotMemoizeServiceUnavailableFailure(t *testing.T) {
+	var permissionProfilesCalls int32
+
+	mockServer := httptest.NewServer(nil)
+	t.Cleanup(mockServer.Close)
+	mockServer.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/oauth/userinfo":
+			_ = json.NewEncoder(w).Encode(client.UserInfoResponse{
+				Sub: "service-account-user-id",
+				Accounts: []client.AccountInfo{
+					{AccountId: "acct-1", AccountName: "Acme", BaseURI: mockServer.URL, IsDefault: true},
+				},
+			})
+		case "/restapi/v2.1/accounts/acct-1/permission_profiles":
+			atomic.AddInt32(&permissionProfilesCalls, 1)
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_ = json.NewEncoder(w).Encode(client.ErrorResponse{ErrorMessage: "service unavailable"})
+		case "/restapi/v2.1/accounts/acct-1/users/user-1":
+			_ = json.NewEncoder(w).Encode(client.UserDetail{UserID: "user-1", PermissionProfileID: "pp-1"})
+		default:
+			http.NotFound(w, r)
+		}
+	})
+
+	mockServerURL, err := url.Parse(mockServer.URL)
+	if err != nil {
+		t.Fatalf("failed to parse mock server URL: %v", err)
+	}
+	wrapper := uhttp.NewBaseHttpClient(&http.Client{Transport: &rewriteTransport{target: mockServerURL, base: http.DefaultTransport}})
+	tokenSource := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "test-token"})
+	c := client.NewClient(context.Background(), false, tokenSource, "", "", wrapper)
+
+	b := newUserBuilder(c, false)
+	resource := userResourceWithProfile(t, "user-1", userStatusActive, "DocuSign Admin")
+
+	for i := 0; i < 2; i++ {
+		grants, _, err := b.Grants(context.Background(), resource, rs.SyncOpAttrs{})
+		if err != nil {
+			t.Fatalf("call %d: Grants: %v", i, err)
+		}
+		if len(grants) != 1 || grants[0].Entitlement.Resource.Id.Resource != "pp-1" {
+			t.Errorf("call %d: expected the GetUserDetails fallback to resolve pp-1, got %+v", i, grants)
+		}
+	}
+
+	if got := atomic.LoadInt32(&permissionProfilesCalls); got != 2 {
+		t.Errorf("expected GetPermissionProfiles to be called on every retry (2 calls), got %d — a plain transient 503 must not be memoized either", got)
+	}
+}
+
+// TestUserBuilder_Grants_DoesNotMemoizeContextError is a regression test for the other
+// carve-out case: a context cancellation/deadline only means whichever caller's context
+// happened to reach getPermissionProfiles first was already done, not that the account
+// or its permissions are broken. Caching it would incorrectly drop every later Active
+// user back to the GetUserDetails fallback for the rest of the sync, exactly like the
+// rate-limit and service-unavailable cases above.
+func TestUserBuilder_Grants_DoesNotMemoizeContextError(t *testing.T) {
+	var permissionProfilesCalls int32
+
+	mockServer := httptest.NewServer(nil)
+	t.Cleanup(mockServer.Close)
+	mockServer.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/oauth/userinfo":
+			_ = json.NewEncoder(w).Encode(client.UserInfoResponse{
+				Sub: "service-account-user-id",
+				Accounts: []client.AccountInfo{
+					{AccountId: "acct-1", AccountName: "Acme", BaseURI: mockServer.URL, IsDefault: true},
+				},
+			})
+		case "/restapi/v2.1/accounts/acct-1/permission_profiles":
+			atomic.AddInt32(&permissionProfilesCalls, 1)
+			_ = json.NewEncoder(w).Encode(client.PermissionProfilesResponse{
+				PermissionProfiles: []client.PermissionProfile{
+					{PermissionProfileId: "pp-1", PermissionProfileName: "DocuSign Admin"},
+				},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	})
+
+	mockServerURL, err := url.Parse(mockServer.URL)
+	if err != nil {
+		t.Fatalf("failed to parse mock server URL: %v", err)
+	}
+	wrapper := uhttp.NewBaseHttpClient(&http.Client{Transport: &rewriteTransport{target: mockServerURL, base: http.DefaultTransport}})
+	tokenSource := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "test-token"})
+	c := client.NewClient(context.Background(), false, tokenSource, "", "", wrapper)
+
+	b := newUserBuilder(c, false)
+	resource := userResourceWithProfile(t, "user-1", userStatusActive, "DocuSign Admin")
+
+	cancelledCtx, cancel := context.WithCancel(context.Background())
+	cancel() // already cancelled before Grants ever runs
+	if _, _, err := b.Grants(cancelledCtx, resource, rs.SyncOpAttrs{}); err == nil {
+		t.Fatal("expected Grants to fail with an already-cancelled context, got nil")
+	}
+
+	// A later Active user with a fresh, valid context must still resolve via the fast
+	// path — the cancelled attempt above must not have poisoned the builder's cache.
+	grants, _, err := b.Grants(context.Background(), resource, rs.SyncOpAttrs{})
+	if err != nil {
+		t.Fatalf("Grants with a fresh context: %v", err)
+	}
+	if len(grants) != 1 || grants[0].Entitlement.Resource.Id.Resource != "pp-1" {
+		t.Errorf("expected the fast path to resolve pp-1, got %+v", grants)
+	}
+	if got := atomic.LoadInt32(&permissionProfilesCalls); got == 0 {
+		t.Error("expected the fresh-context call to actually reach GetPermissionProfiles, got 0 real calls")
+	}
+}
+
 // TestUserBuilder_Grants_FallsBackOnNonRateLimitPermissionProfilesFailure covers the
 // other half of the fast path's error handling: a GetPermissionProfiles failure that
 // ISN'T the reclassified rate-limit error (e.g. a permissions/scope issue) must still
