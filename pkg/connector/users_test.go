@@ -425,6 +425,72 @@ func TestUserBuilder_Grants_FallsBackOnNonRateLimitPermissionProfilesFailure(t *
 	}
 }
 
+// TestUserBuilder_Grants_MemoizesPermissionProfilesFailureAcrossUsers is a regression
+// test: uhttp's GET cache never stores a non-2xx response, so without its own
+// memoization, tryFastPathGrant would re-hit GetPermissionProfiles for every Active user
+// during a persistent (non-rate-limit) failure — doubling that user's calls (the failed
+// lookup, then the GetUserDetails fallback) instead of the single fallback call this
+// fast path is supposed to cost. Two Active users sharing one userBuilder must trigger
+// exactly one real GetPermissionProfiles call, with both still resolving their grant via
+// the GetUserDetails fallback.
+func TestUserBuilder_Grants_MemoizesPermissionProfilesFailureAcrossUsers(t *testing.T) {
+	var permissionProfilesCalls int32
+
+	mockServer := httptest.NewServer(nil)
+	t.Cleanup(mockServer.Close)
+	mockServer.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/oauth/userinfo":
+			_ = json.NewEncoder(w).Encode(client.UserInfoResponse{
+				Sub: "service-account-user-id",
+				Accounts: []client.AccountInfo{
+					{AccountId: "acct-1", AccountName: "Acme", BaseURI: mockServer.URL, IsDefault: true},
+				},
+			})
+		case "/restapi/v2.1/accounts/acct-1/permission_profiles":
+			atomic.AddInt32(&permissionProfilesCalls, 1)
+			w.WriteHeader(http.StatusForbidden)
+			_ = json.NewEncoder(w).Encode(client.ErrorResponse{
+				ErrorCode:    "USER_LACKS_PERMISSIONS",
+				ErrorMessage: "The user does not have permission to access permission profiles.",
+			})
+		default:
+			const prefix = "/restapi/v2.1/accounts/acct-1/users/"
+			if len(r.URL.Path) > len(prefix) && r.URL.Path[:len(prefix)] == prefix {
+				userID := r.URL.Path[len(prefix):]
+				_ = json.NewEncoder(w).Encode(client.UserDetail{UserID: userID, PermissionProfileID: "pp-1"})
+				return
+			}
+			http.NotFound(w, r)
+		}
+	})
+
+	mockServerURL, err := url.Parse(mockServer.URL)
+	if err != nil {
+		t.Fatalf("failed to parse mock server URL: %v", err)
+	}
+	wrapper := uhttp.NewBaseHttpClient(&http.Client{Transport: &rewriteTransport{target: mockServerURL, base: http.DefaultTransport}})
+	tokenSource := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "test-token"})
+	c := client.NewClient(context.Background(), false, tokenSource, "", "", wrapper)
+
+	b := newUserBuilder(c, false)
+	for _, userID := range []string{"user-1", "user-2"} {
+		resource := userResourceWithProfile(t, userID, userStatusActive, "DocuSign Admin")
+		grants, _, err := b.Grants(context.Background(), resource, rs.SyncOpAttrs{})
+		if err != nil {
+			t.Fatalf("Grants(%s): %v", userID, err)
+		}
+		if len(grants) != 1 || grants[0].Entitlement.Resource.Id.Resource != "pp-1" {
+			t.Errorf("Grants(%s): expected the GetUserDetails fallback to resolve pp-1, got %+v", userID, grants)
+		}
+	}
+
+	if got := atomic.LoadInt32(&permissionProfilesCalls); got != 1 {
+		t.Errorf("expected exactly 1 GetPermissionProfiles call across both users, got %d", got)
+	}
+}
+
 // TestUserBuilder_Grants_FallsBackOnServiceUnavailable: codes.Unavailable is broader
 // than "already rate-limited" — uhttp also maps a plain HTTP 503 to it. A 503 from
 // GetPermissionProfiles (no RateLimitDescription attached, unlike the reclassified

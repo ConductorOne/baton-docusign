@@ -3,6 +3,7 @@ package connector
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	"github.com/conductorone/baton-docusign/pkg/client"
 	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
@@ -27,6 +28,35 @@ type userBuilder struct {
 	// entitlements are skipped, but when permission_profile is excluded the
 	// grants pass is skipped too, since it is this builder's only output.
 	skipPermissionProfileResourceType bool
+
+	// permissionProfilesOnce/permissionProfiles/permissionProfilesErr memoize the one
+	// account-wide GetPermissionProfiles call tryFastPathGrant's name-lookup branch
+	// needs, across every Active user's Grants() call in this sync (a *userBuilder is
+	// constructed once per sync and Grants() runs concurrently across users, so this
+	// must be shared and safe for concurrent access — hence sync.Once, not a plain
+	// bool). uhttp's GET cache only ever caches a 200 response, never an error, so
+	// without this a persistent non-rate-limit failure (e.g. a service user lacking
+	// permission_profiles read access) would re-hit the real API on every Active user
+	// instead of once per sync — doubling that user's calls (the failed lookup, then the
+	// GetUserDetails fallback) against the same hourly budget this fix exists to
+	// protect. A transient blip is deliberately memoized as a failure for the rest of
+	// this sync too, not just genuine outages — the fallback path still resolves the
+	// grant correctly either way, so the only cost is skipping the fast path's call
+	// savings for this one sync run, in exchange for never amplifying calls during a
+	// real persistent failure.
+	permissionProfilesOnce sync.Once
+	permissionProfiles     []client.PermissionProfile
+	permissionProfilesErr  error
+}
+
+// getPermissionProfiles returns the account's permission profiles, calling
+// client.GetPermissionProfiles at most once for the lifetime of this userBuilder — see
+// the memoization fields' doc on the struct above for why.
+func (b *userBuilder) getPermissionProfiles(ctx context.Context) ([]client.PermissionProfile, error) {
+	b.permissionProfilesOnce.Do(func() {
+		b.permissionProfiles, _, b.permissionProfilesErr = b.client.GetPermissionProfiles(ctx)
+	})
+	return b.permissionProfiles, b.permissionProfilesErr
 }
 
 // ResourceType returns the Baton resource type handled by this builder,
@@ -153,16 +183,12 @@ func (b *userBuilder) Grants(ctx context.Context, resource *v2.Resource, _ rs.Sy
 //   - Preferred: client.User.PermissionProfileID directly, if the list response included
 //     it (unconfirmed against a live account — see that field's doc) — no API call at all.
 //   - Otherwise: the permission-profile NAME, resolved to an ID via GetPermissionProfiles
-//     (one account-wide call, already served from uhttp's default GET cache on every call
-//     after the first in this sync — see pkg/client/clm_client.go's WithNoCache usage for
-//     this repo's opt-out convention when a fresh read matters, which this doesn't need).
-//     This path's call-amplification win depends entirely on that cache being enabled and
-//     large enough to hold the response for the rest of the sync: an operator running with
-//     BATON_DISABLE_HTTP_CACHE=true, BATON_HTTP_CACHE_BACKEND=noop, or a small enough
-//     BATON_HTTP_CACHE_TTL/size budget gets one GetPermissionProfiles call per active user
-//     instead — the same 1:1 amplification as the GetUserDetails path this fast path exists
-//     to avoid, just against a different endpoint. Silent, not incorrect: Grants still
-//     resolves correctly either way.
+//     — one account-wide call for the whole sync, via getPermissionProfiles' own
+//     memoization on this builder (see its doc), not uhttp's GET cache: that cache never
+//     stores a non-2xx response, so relying on it alone would let a persistent failure
+//     (not just a rate limit — e.g. a service user lacking permission_profiles read
+//     access) re-hit the real API once per Active user instead of once per sync, the
+//     same 1:1 amplification as the GetUserDetails path this fast path exists to avoid.
 //
 // handled=false means "no decision, fall back to Grants' original GetUserDetails path
 // unchanged" — covers a non-active user, a missing profile field, an unresolvable name
@@ -208,7 +234,7 @@ func (b *userBuilder) tryFastPathGrant(ctx context.Context, resource *v2.Resourc
 		return nil, nil, nil, false
 	}
 
-	profiles, _, err := b.client.GetPermissionProfiles(ctx)
+	profiles, err := b.getPermissionProfiles(ctx)
 	if err != nil {
 		if isReclassifiedRateLimitError(err) {
 			return nil, nil, err, true

@@ -26,11 +26,19 @@ const DefaultPageSize = 100
 // detection below checks the body field independent of resp.StatusCode.
 const docusignHourlyRateLimitErrorCode = "HOURLY_APIINVOCATION_LIMIT_EXCEEDED"
 
-// docusignRateLimitDefaultResetWindow is the fixed wait this connector asks the SDK's
-// retry loop to use for docusignHourlyRateLimitErrorCode — applied unconditionally, not
-// just as a fallback (see reclassifyHourlyRateLimitError's doc for why response headers
-// are deliberately never consulted for this error). The limit this error names is
-// hourly, so an hour is the sane, safe choice.
+// docusignRateLimitDefaultResetWindow is the fixed ResetAt this connector puts on the
+// RateLimitDescription for docusignHourlyRateLimitErrorCode — applied unconditionally,
+// not just as a fallback (see reclassifyHourlyRateLimitError's doc for why response
+// headers are deliberately never consulted for this error). The limit this error names
+// is hourly, so an hour is the semantically correct value to report — but it is not
+// what the SDK's retry loop actually waits: pkg/sync/parallel_syncer.go constructs its
+// Retryer with MaxDelay: 0, which retry.NewRetryer normalizes to a 60-second cap, and
+// retry.Retryer.ShouldWaitAndRetry computes a wait from this ResetAt only to then clamp
+// it down to that same 60 seconds (`if wait > maxDelay { wait = maxDelay }`). With
+// MaxAttempts: 0 (unlimited), the net effect is a 60-second retry with no attempt limit
+// for the rest of the hour, not an hour of backoff — still strictly better than the old
+// fatal classification, but not a full-hour wait. That gap lives in baton-sdk's retry
+// package, not something this connector can change from here.
 const docusignRateLimitDefaultResetWindow = time.Hour
 
 // reclassifyHourlyRateLimitError recognizes docusignHourlyRateLimitErrorCode in errTarget (the
