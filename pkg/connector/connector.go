@@ -184,11 +184,12 @@ func NewWithRefreshToken(
 
 // NewWithClient has no caller anywhere in this repo today (confirmed by repo-wide
 // grep) — unlike NewWithRefreshToken and NewWithTokenSource, nothing in New() ever
-// constructs a Connector this way. Its purpose (an external test harness? a future call
-// site?) isn't established anywhere in this codebase. Kept compiling and in sync with
-// the other two constructors' fields — rather than deleted — since removing an exported
-// function is a breaking change for any consumer of this module outside this repo that
-// may exist.
+// constructs a Connector this way, and its purpose (an external test harness? a future
+// call site?) isn't established anywhere in this codebase. Its signature has already
+// changed more than once as sibling constructors gained fields (most recently,
+// includeClm) — so it carries no compatibility guarantee to preserve; it's kept purely
+// in sync with its siblings' fields, not because removing or reshaping it would be a
+// breaking change worth avoiding.
 func NewWithClient(client *client.Client, includeSigningGroups, includeClm bool, skipPermissionProfileResourceType bool) (*Connector, error) {
 	return &Connector{
 		client:                            client,
