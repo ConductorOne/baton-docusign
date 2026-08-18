@@ -31,24 +31,44 @@ type userBuilder struct {
 	// grants pass is skipped too, since it is this builder's only output.
 	skipPermissionProfileResourceType bool
 
-	// permissionProfilesMu/permissionProfilesCached/permissionProfiles/permissionProfilesErr
-	// memoize the one account-wide GetPermissionProfiles call tryFastPathGrant's
-	// name-lookup branch needs, across every Active user's Grants() call in this sync (a
-	// *userBuilder is constructed once per sync and Grants() runs concurrently across
-	// users, so this must be shared and safe for concurrent access — hence a mutex, not
-	// a plain bool). uhttp's GET cache only ever caches a 200 response, never an error,
-	// so without this a persistent failure (e.g. a service user lacking
-	// permission_profiles read access) would re-hit the real API on every Active user
-	// instead of once per sync — doubling that user's calls (the failed lookup, then the
-	// GetUserDetails fallback) against the same hourly budget this fix exists to
-	// protect. Only a genuinely persistent failure is cached this way, though — see
-	// isCacheablePermissionProfilesError's doc for why a transient failure (a rate limit,
-	// a plain 5xx/network blip, a context error) is deliberately left uncached.
-	permissionProfilesMu     sync.Mutex
-	permissionProfilesCached bool
-	permissionProfiles       []client.PermissionProfile
-	permissionProfilesErr    error
+	// permissionProfilesMu/permissionProfilesCached/permissionProfiles/permissionProfilesErr/
+	// permissionProfilesTransientFails memoize the one account-wide
+	// GetPermissionProfiles call tryFastPathGrant's name-lookup branch needs, across
+	// every Active user's Grants() call in this sync (a *userBuilder is constructed once
+	// per sync and Grants() runs concurrently across users, so this must be shared and
+	// safe for concurrent access — hence a mutex, not a plain bool). uhttp's GET cache
+	// only ever caches a 200 response, never an error, so without this a persistent
+	// failure (e.g. a service user lacking permission_profiles read access) would re-hit
+	// the real API on every Active user instead of once per sync — doubling that user's
+	// calls (the failed lookup, then the GetUserDetails fallback) against the same
+	// hourly budget this fix exists to protect.
+	//
+	// A genuinely persistent failure (see isCacheablePermissionProfilesError's doc) is
+	// cached immediately. A transient-shaped failure (a rate limit, a plain 5xx/network
+	// blip, a context error) is deliberately NOT cached on the first attempt — caching
+	// it would replay a stale error forever instead of ever re-checking whether the
+	// condition cleared — but permissionProfilesTransientFails bounds the resulting
+	// worst case: after permissionProfilesTransientFailureThreshold consecutive
+	// transient failures, the call is treated as a sustained outage rather than a blip
+	// and cached anyway, so the 2-calls-per-user cost (failed lookup + GetUserDetails
+	// fallback) only applies to the first few Active users in the sync, not all of
+	// them — the rest fall back at the same 1-call-per-user cost this fast path existed
+	// before.
+	permissionProfilesMu             sync.Mutex
+	permissionProfilesCached         bool
+	permissionProfiles               []client.PermissionProfile
+	permissionProfilesErr            error
+	permissionProfilesTransientFails int
 }
+
+// permissionProfilesTransientFailureThreshold is how many consecutive transient
+// getPermissionProfiles failures this builder tolerates (each retried against the real
+// API) before treating the failure as a sustained outage and caching it anyway — see
+// the memoization fields' doc on the struct above. Chosen to still give a genuine blip
+// (a single dropped request, one 503 during a brief window) more than one chance to
+// clear before falling back to the pre-fast-path 1-call-per-user cost for the rest of
+// the sync.
+const permissionProfilesTransientFailureThreshold = 3
 
 // isCacheablePermissionProfilesError reports whether err is a persistent,
 // account-configuration-shaped failure safe to cache on userBuilder for the rest of this
@@ -82,7 +102,9 @@ func isCacheablePermissionProfilesError(err error) bool {
 // getPermissionProfiles returns the account's permission profiles, calling
 // client.GetPermissionProfiles at most once for the lifetime of this userBuilder unless
 // the call fails with a non-cacheable (transient) error — see the memoization fields'
-// doc on the struct above, and isCacheablePermissionProfilesError's doc, for why.
+// doc on the struct above, and isCacheablePermissionProfilesError's doc, for why — and
+// even then, only up to permissionProfilesTransientFailureThreshold consecutive times
+// before that transient failure is cached too, bounding the worst-case call cost.
 func (b *userBuilder) getPermissionProfiles(ctx context.Context) ([]client.PermissionProfile, error) {
 	b.permissionProfilesMu.Lock()
 	defer b.permissionProfilesMu.Unlock()
@@ -93,7 +115,10 @@ func (b *userBuilder) getPermissionProfiles(ctx context.Context) ([]client.Permi
 
 	profiles, _, err := b.client.GetPermissionProfiles(ctx)
 	if err != nil && !isCacheablePermissionProfilesError(err) {
-		return nil, err
+		b.permissionProfilesTransientFails++
+		if b.permissionProfilesTransientFails < permissionProfilesTransientFailureThreshold {
+			return nil, err
+		}
 	}
 
 	b.permissionProfilesCached = true

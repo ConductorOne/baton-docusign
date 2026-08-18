@@ -524,6 +524,68 @@ func TestUserBuilder_Grants_DoesNotMemoizeServiceUnavailableFailure(t *testing.T
 	}
 }
 
+// TestUserBuilder_Grants_BoundsTransientFailureRetries is a regression test for the
+// worst case of leaving transient failures uncached: without a cap, a *sustained*
+// outage (not just a blip) would cost every Active user in the sync two calls (the
+// failed lookup plus the GetUserDetails fallback) instead of the one call the fast path
+// would otherwise avoid — worse than not having the fast path at all. After
+// permissionProfilesTransientFailureThreshold consecutive transient failures, the
+// builder must stop re-attempting the real endpoint and fall back at one call per user
+// for the remainder of the sync, like the persistent-failure case.
+func TestUserBuilder_Grants_BoundsTransientFailureRetries(t *testing.T) {
+	var permissionProfilesCalls int32
+
+	mockServer := httptest.NewServer(nil)
+	t.Cleanup(mockServer.Close)
+	mockServer.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/oauth/userinfo":
+			_ = json.NewEncoder(w).Encode(client.UserInfoResponse{
+				Sub: "service-account-user-id",
+				Accounts: []client.AccountInfo{
+					{AccountId: "acct-1", AccountName: "Acme", BaseURI: mockServer.URL, IsDefault: true},
+				},
+			})
+		case "/restapi/v2.1/accounts/acct-1/permission_profiles":
+			atomic.AddInt32(&permissionProfilesCalls, 1)
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_ = json.NewEncoder(w).Encode(client.ErrorResponse{ErrorMessage: "service unavailable"})
+		case "/restapi/v2.1/accounts/acct-1/users/user-1":
+			_ = json.NewEncoder(w).Encode(client.UserDetail{UserID: "user-1", PermissionProfileID: "pp-1"})
+		default:
+			http.NotFound(w, r)
+		}
+	})
+
+	mockServerURL, err := url.Parse(mockServer.URL)
+	if err != nil {
+		t.Fatalf("failed to parse mock server URL: %v", err)
+	}
+	wrapper := uhttp.NewBaseHttpClient(&http.Client{Transport: &rewriteTransport{target: mockServerURL, base: http.DefaultTransport}})
+	tokenSource := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "test-token"})
+	c := client.NewClient(context.Background(), false, tokenSource, "", "", wrapper)
+
+	b := newUserBuilder(c, false)
+	resource := userResourceWithProfile(t, "user-1", userStatusActive, "DocuSign Admin")
+
+	const totalUsers = permissionProfilesTransientFailureThreshold + 2
+	for i := 0; i < totalUsers; i++ {
+		grants, _, err := b.Grants(context.Background(), resource, rs.SyncOpAttrs{})
+		if err != nil {
+			t.Fatalf("call %d: Grants: %v", i, err)
+		}
+		if len(grants) != 1 || grants[0].Entitlement.Resource.Id.Resource != "pp-1" {
+			t.Errorf("call %d: expected the GetUserDetails fallback to resolve pp-1, got %+v", i, grants)
+		}
+	}
+
+	if got := atomic.LoadInt32(&permissionProfilesCalls); got != permissionProfilesTransientFailureThreshold {
+		t.Errorf("expected exactly %d real GetPermissionProfiles calls (retried up to the threshold, then cached), got %d across %d Grants calls",
+			permissionProfilesTransientFailureThreshold, got, totalUsers)
+	}
+}
+
 // TestUserBuilder_Grants_DoesNotMemoizeContextError is a regression test for the other
 // carve-out case: a context cancellation/deadline only means whichever caller's context
 // happened to reach getPermissionProfiles first was already done, not that the account
