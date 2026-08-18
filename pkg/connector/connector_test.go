@@ -155,23 +155,6 @@ func TestNewWithRefreshToken_StoresIncludeClm(t *testing.T) {
 	}
 }
 
-// TestNewWithClient_StoresIncludeClm is a regression test matching its two siblings
-// above, for consistency — see NewWithClient's doc comment for why this constructor is
-// kept despite having no caller anywhere in this repo today. nil is a valid client here
-// since NewWithClient only stores it, never calls it (same pattern as newClmRoleBuilder(nil)
-// elsewhere in this package).
-func TestNewWithClient_StoresIncludeClm(t *testing.T) {
-	for _, includeClm := range []bool{true, false} {
-		cb, err := NewWithClient(nil, false, includeClm, false)
-		if err != nil {
-			t.Fatalf("includeClm=%v: NewWithClient: %v", includeClm, err)
-		}
-		if cb.includeClm != includeClm {
-			t.Errorf("includeClm=%v: expected Connector.includeClm=%v, got %v", includeClm, includeClm, cb.includeClm)
-		}
-	}
-}
-
 // TestNewWithTokenSource_StoresIncludeClm is a regression test for the more serious of
 // the two constructor gaps: NewWithTokenSource — the ConductorOne-hosted path, i.e. the
 // common production case — had no includeClm parameter at all, so Validate() would have

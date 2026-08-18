@@ -182,23 +182,6 @@ func NewWithRefreshToken(
 	}, nil
 }
 
-// NewWithClient has no caller anywhere in this repo today (confirmed by repo-wide
-// grep) — unlike NewWithRefreshToken and NewWithTokenSource, nothing in New() ever
-// constructs a Connector this way, and its purpose (an external test harness? a future
-// call site?) isn't established anywhere in this codebase. Its signature has already
-// changed more than once as sibling constructors gained fields (most recently,
-// includeClm) — so it carries no compatibility guarantee to preserve; it's kept purely
-// in sync with its siblings' fields, not because removing or reshaping it would be a
-// breaking change worth avoiding.
-func NewWithClient(client *client.Client, includeSigningGroups, includeClm bool, skipPermissionProfileResourceType bool) (*Connector, error) {
-	return &Connector{
-		client:                            client,
-		includeSigningGroups:              includeSigningGroups,
-		includeClm:                        includeClm,
-		skipPermissionProfileResourceType: skipPermissionProfileResourceType,
-	}, nil
-}
-
 // NewWithTokenSource's token source is minted by ConductorOne's OAuth flow, so this
 // path can't influence which scopes were granted (unlike NewWithRefreshToken, where
 // includeClm also drives buildScopes) — but it still needs includeClm to gate
