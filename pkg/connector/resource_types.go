@@ -29,9 +29,12 @@ var (
 		DisplayName: "Permission Profile",
 	}
 
-	// signingGroupResourceType is registered unconditionally (see connector.go's
-	// ResourceSyncers) — OptInRequired is the gate, not a config flag, matching the
-	// CLM types below.
+	// signingGroupResourceType is registered only when includeSigningGroups is set (see
+	// connector.go's ResourceSyncers) — unlike the CLM types below, which are always
+	// registered and rely on OptInRequired alone. That means ListResourceTypes()
+	// advertises a different set depending on the flag; see
+	// TestResourceSyncers_SigningGroupRegistrationFollowsFlag for the tradeoff this
+	// carries.
 	signingGroupResourceType = &v2.ResourceType{
 		Id:          "signing_group",
 		DisplayName: "Signing Group",
