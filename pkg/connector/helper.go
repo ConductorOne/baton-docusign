@@ -169,6 +169,14 @@ func clmPreferredHref(ctx context.Context, id string, sampleHrefs []string, deri
 	if lastErr != nil {
 		ctxzap.Extract(ctx).Debug("baton-docusign: every sample href failed to derive a sibling href, falling back to a base-URL-derived href",
 			zap.Int("sample_count", len(sampleHrefs)), zap.Error(lastErr))
+	} else {
+		// No samples at all (as opposed to samples that failed to parse, above) — the
+		// routine case for e.g. a group/member with no other memberships yet. Still
+		// worth a Debug line: deriveFallback's shape is unverified against a live
+		// tenant, so if CLM ever rejects or silently ignores the derived href, this is
+		// the only record that a guess (not a real sample) produced it.
+		ctxzap.Extract(ctx).Debug("baton-docusign: no sample href available, falling back to a base-URL-derived href",
+			zap.String("id", id))
 	}
 	return deriveFallback()
 }
