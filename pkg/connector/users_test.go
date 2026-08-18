@@ -405,18 +405,15 @@ func TestUserBuilder_Grants_PropagatesRateLimitInsteadOfDoublingCalls(t *testing
 	}
 }
 
-// TestUserBuilder_Grants_DoesNotMemoizeRateLimitFailure is a regression test: unlike a
-// persistent non-rate-limit failure, a reclassified rate-limit error must NOT be cached
-// on the builder — caching it would replay the same stale error on every retry of the
-// SDK's per-action retry loop (which reuses this same userBuilder), spinning forever at
-// the retryer's clamped interval instead of ever re-checking whether the account's
-// hourly window has reset. Loops well past permissionProfilesTransientFailureThreshold:
-// the rate-limit exemption must hold regardless of how many consecutive times it
-// recurs, unlike an ordinary transient failure that IS eventually cached (see
-// TestUserBuilder_Grants_BoundsTransientFailureRetries) — every call here must issue a
-// real GetPermissionProfiles request.
-func TestUserBuilder_Grants_DoesNotMemoizeRateLimitFailure(t *testing.T) {
-	var permissionProfilesCalls int32
+// newCountingPermissionProfilesClient wires a *client.Client whose permission_profiles
+// endpoint invokes respond on every request (after incrementing the returned counter)
+// and whose users/{id} endpoint always resolves to PermissionProfileID "pp-1" — shared
+// setup for the tests below, each of which only differs in what the permission_profiles
+// endpoint returns and asserts how many times it was actually called across multiple
+// Grants() calls sharing one userBuilder.
+func newCountingPermissionProfilesClient(t *testing.T, respond func(w http.ResponseWriter)) (*client.Client, *int32) {
+	t.Helper()
+	var calls int32
 
 	mockServer := httptest.NewServer(nil)
 	t.Cleanup(mockServer.Close)
@@ -431,13 +428,15 @@ func TestUserBuilder_Grants_DoesNotMemoizeRateLimitFailure(t *testing.T) {
 				},
 			})
 		case "/restapi/v2.1/accounts/acct-1/permission_profiles":
-			atomic.AddInt32(&permissionProfilesCalls, 1)
-			w.WriteHeader(http.StatusBadRequest)
-			_ = json.NewEncoder(w).Encode(client.ErrorResponse{
-				ErrorCode:    "HOURLY_APIINVOCATION_LIMIT_EXCEEDED",
-				ErrorMessage: "The maximum number of hourly API invocations has been exceeded. The hourly limit is 3000.",
-			})
+			atomic.AddInt32(&calls, 1)
+			respond(w)
 		default:
+			const prefix = "/restapi/v2.1/accounts/acct-1/users/"
+			if len(r.URL.Path) > len(prefix) && r.URL.Path[:len(prefix)] == prefix {
+				userID := r.URL.Path[len(prefix):]
+				_ = json.NewEncoder(w).Encode(client.UserDetail{UserID: userID, PermissionProfileID: "pp-1"})
+				return
+			}
 			http.NotFound(w, r)
 		}
 	})
@@ -448,7 +447,27 @@ func TestUserBuilder_Grants_DoesNotMemoizeRateLimitFailure(t *testing.T) {
 	}
 	wrapper := uhttp.NewBaseHttpClient(&http.Client{Transport: &rewriteTransport{target: mockServerURL, base: http.DefaultTransport}})
 	tokenSource := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "test-token"})
-	c := client.NewClient(context.Background(), false, tokenSource, "", "", wrapper)
+	return client.NewClient(context.Background(), false, tokenSource, "", "", wrapper), &calls
+}
+
+// TestUserBuilder_Grants_DoesNotMemoizeRateLimitFailure is a regression test: unlike a
+// persistent non-rate-limit failure, a reclassified rate-limit error must NOT be cached
+// on the builder — caching it would replay the same stale error on every retry of the
+// SDK's per-action retry loop (which reuses this same userBuilder), spinning forever at
+// the retryer's clamped interval instead of ever re-checking whether the account's
+// hourly window has reset. Loops well past permissionProfilesTransientFailureThreshold:
+// the rate-limit exemption must hold regardless of how many consecutive times it
+// recurs, unlike an ordinary transient failure that IS eventually cached (see
+// TestUserBuilder_Grants_BoundsTransientFailureRetries) — every call here must issue a
+// real GetPermissionProfiles request.
+func TestUserBuilder_Grants_DoesNotMemoizeRateLimitFailure(t *testing.T) {
+	c, permissionProfilesCalls := newCountingPermissionProfilesClient(t, func(w http.ResponseWriter) {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(client.ErrorResponse{
+			ErrorCode:    "HOURLY_APIINVOCATION_LIMIT_EXCEEDED",
+			ErrorMessage: "The maximum number of hourly API invocations has been exceeded. The hourly limit is 3000.",
+		})
+	})
 
 	b := newUserBuilder(c, false)
 	resource := userResourceWithProfile(t, "user-1", userStatusActive, "DocuSign Admin")
@@ -464,7 +483,7 @@ func TestUserBuilder_Grants_DoesNotMemoizeRateLimitFailure(t *testing.T) {
 		}
 	}
 
-	if got := atomic.LoadInt32(&permissionProfilesCalls); got != attempts {
+	if got := atomic.LoadInt32(permissionProfilesCalls); got != attempts {
 		t.Errorf("expected GetPermissionProfiles called on every one of %d retries, got %d — the rate-limit error must never be memoized, even past the threshold", attempts, got)
 	}
 }
@@ -477,38 +496,10 @@ func TestUserBuilder_Grants_DoesNotMemoizeRateLimitFailure(t *testing.T) {
 // this class of failure would disable the fast path for the rest of the sync even after
 // the endpoint recovers.
 func TestUserBuilder_Grants_DoesNotMemoizeServiceUnavailableFailure(t *testing.T) {
-	var permissionProfilesCalls int32
-
-	mockServer := httptest.NewServer(nil)
-	t.Cleanup(mockServer.Close)
-	mockServer.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		switch r.URL.Path {
-		case "/oauth/userinfo":
-			_ = json.NewEncoder(w).Encode(client.UserInfoResponse{
-				Sub: "service-account-user-id",
-				Accounts: []client.AccountInfo{
-					{AccountId: "acct-1", AccountName: "Acme", BaseURI: mockServer.URL, IsDefault: true},
-				},
-			})
-		case "/restapi/v2.1/accounts/acct-1/permission_profiles":
-			atomic.AddInt32(&permissionProfilesCalls, 1)
-			w.WriteHeader(http.StatusServiceUnavailable)
-			_ = json.NewEncoder(w).Encode(client.ErrorResponse{ErrorMessage: "service unavailable"})
-		case "/restapi/v2.1/accounts/acct-1/users/user-1":
-			_ = json.NewEncoder(w).Encode(client.UserDetail{UserID: "user-1", PermissionProfileID: "pp-1"})
-		default:
-			http.NotFound(w, r)
-		}
+	c, permissionProfilesCalls := newCountingPermissionProfilesClient(t, func(w http.ResponseWriter) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_ = json.NewEncoder(w).Encode(client.ErrorResponse{ErrorMessage: "service unavailable"})
 	})
-
-	mockServerURL, err := url.Parse(mockServer.URL)
-	if err != nil {
-		t.Fatalf("failed to parse mock server URL: %v", err)
-	}
-	wrapper := uhttp.NewBaseHttpClient(&http.Client{Transport: &rewriteTransport{target: mockServerURL, base: http.DefaultTransport}})
-	tokenSource := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "test-token"})
-	c := client.NewClient(context.Background(), false, tokenSource, "", "", wrapper)
 
 	b := newUserBuilder(c, false)
 	resource := userResourceWithProfile(t, "user-1", userStatusActive, "DocuSign Admin")
@@ -523,7 +514,7 @@ func TestUserBuilder_Grants_DoesNotMemoizeServiceUnavailableFailure(t *testing.T
 		}
 	}
 
-	if got := atomic.LoadInt32(&permissionProfilesCalls); got != 2 {
+	if got := atomic.LoadInt32(permissionProfilesCalls); got != 2 {
 		t.Errorf("expected GetPermissionProfiles to be called on every retry (2 calls), got %d — a plain transient 503 must not be memoized either", got)
 	}
 }
@@ -537,38 +528,10 @@ func TestUserBuilder_Grants_DoesNotMemoizeServiceUnavailableFailure(t *testing.T
 // builder must stop re-attempting the real endpoint and fall back at one call per user
 // for the remainder of the sync, like the persistent-failure case.
 func TestUserBuilder_Grants_BoundsTransientFailureRetries(t *testing.T) {
-	var permissionProfilesCalls int32
-
-	mockServer := httptest.NewServer(nil)
-	t.Cleanup(mockServer.Close)
-	mockServer.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		switch r.URL.Path {
-		case "/oauth/userinfo":
-			_ = json.NewEncoder(w).Encode(client.UserInfoResponse{
-				Sub: "service-account-user-id",
-				Accounts: []client.AccountInfo{
-					{AccountId: "acct-1", AccountName: "Acme", BaseURI: mockServer.URL, IsDefault: true},
-				},
-			})
-		case "/restapi/v2.1/accounts/acct-1/permission_profiles":
-			atomic.AddInt32(&permissionProfilesCalls, 1)
-			w.WriteHeader(http.StatusServiceUnavailable)
-			_ = json.NewEncoder(w).Encode(client.ErrorResponse{ErrorMessage: "service unavailable"})
-		case "/restapi/v2.1/accounts/acct-1/users/user-1":
-			_ = json.NewEncoder(w).Encode(client.UserDetail{UserID: "user-1", PermissionProfileID: "pp-1"})
-		default:
-			http.NotFound(w, r)
-		}
+	c, permissionProfilesCalls := newCountingPermissionProfilesClient(t, func(w http.ResponseWriter) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_ = json.NewEncoder(w).Encode(client.ErrorResponse{ErrorMessage: "service unavailable"})
 	})
-
-	mockServerURL, err := url.Parse(mockServer.URL)
-	if err != nil {
-		t.Fatalf("failed to parse mock server URL: %v", err)
-	}
-	wrapper := uhttp.NewBaseHttpClient(&http.Client{Transport: &rewriteTransport{target: mockServerURL, base: http.DefaultTransport}})
-	tokenSource := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "test-token"})
-	c := client.NewClient(context.Background(), false, tokenSource, "", "", wrapper)
 
 	b := newUserBuilder(c, false)
 	resource := userResourceWithProfile(t, "user-1", userStatusActive, "DocuSign Admin")
@@ -584,7 +547,7 @@ func TestUserBuilder_Grants_BoundsTransientFailureRetries(t *testing.T) {
 		}
 	}
 
-	if got := atomic.LoadInt32(&permissionProfilesCalls); got != permissionProfilesTransientFailureThreshold {
+	if got := atomic.LoadInt32(permissionProfilesCalls); got != permissionProfilesTransientFailureThreshold {
 		t.Errorf("expected exactly %d real GetPermissionProfiles calls (retried up to the threshold, then cached), got %d across %d Grants calls",
 			permissionProfilesTransientFailureThreshold, got, totalUsers)
 	}
@@ -597,39 +560,13 @@ func TestUserBuilder_Grants_BoundsTransientFailureRetries(t *testing.T) {
 // user back to the GetUserDetails fallback for the rest of the sync, exactly like the
 // rate-limit and service-unavailable cases above.
 func TestUserBuilder_Grants_DoesNotMemoizeContextError(t *testing.T) {
-	var permissionProfilesCalls int32
-
-	mockServer := httptest.NewServer(nil)
-	t.Cleanup(mockServer.Close)
-	mockServer.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		switch r.URL.Path {
-		case "/oauth/userinfo":
-			_ = json.NewEncoder(w).Encode(client.UserInfoResponse{
-				Sub: "service-account-user-id",
-				Accounts: []client.AccountInfo{
-					{AccountId: "acct-1", AccountName: "Acme", BaseURI: mockServer.URL, IsDefault: true},
-				},
-			})
-		case "/restapi/v2.1/accounts/acct-1/permission_profiles":
-			atomic.AddInt32(&permissionProfilesCalls, 1)
-			_ = json.NewEncoder(w).Encode(client.PermissionProfilesResponse{
-				PermissionProfiles: []client.PermissionProfile{
-					{PermissionProfileId: "pp-1", PermissionProfileName: "DocuSign Admin"},
-				},
-			})
-		default:
-			http.NotFound(w, r)
-		}
+	c, permissionProfilesCalls := newCountingPermissionProfilesClient(t, func(w http.ResponseWriter) {
+		_ = json.NewEncoder(w).Encode(client.PermissionProfilesResponse{
+			PermissionProfiles: []client.PermissionProfile{
+				{PermissionProfileId: "pp-1", PermissionProfileName: "DocuSign Admin"},
+			},
+		})
 	})
-
-	mockServerURL, err := url.Parse(mockServer.URL)
-	if err != nil {
-		t.Fatalf("failed to parse mock server URL: %v", err)
-	}
-	wrapper := uhttp.NewBaseHttpClient(&http.Client{Transport: &rewriteTransport{target: mockServerURL, base: http.DefaultTransport}})
-	tokenSource := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "test-token"})
-	c := client.NewClient(context.Background(), false, tokenSource, "", "", wrapper)
 
 	b := newUserBuilder(c, false)
 	resource := userResourceWithProfile(t, "user-1", userStatusActive, "DocuSign Admin")
@@ -654,7 +591,7 @@ func TestUserBuilder_Grants_DoesNotMemoizeContextError(t *testing.T) {
 	if len(grants) != 1 || grants[0].Entitlement.Resource.Id.Resource != "pp-1" {
 		t.Errorf("expected the fast path to resolve pp-1, got %+v", grants)
 	}
-	if got := atomic.LoadInt32(&permissionProfilesCalls); got == 0 {
+	if got := atomic.LoadInt32(permissionProfilesCalls); got == 0 {
 		t.Error("expected the fresh-context call to actually reach GetPermissionProfiles, got 0 real calls")
 	}
 }
@@ -688,45 +625,13 @@ func TestUserBuilder_Grants_FallsBackOnNonRateLimitPermissionProfilesFailure(t *
 // exactly one real GetPermissionProfiles call, with both still resolving their grant via
 // the GetUserDetails fallback.
 func TestUserBuilder_Grants_MemoizesPermissionProfilesFailureAcrossUsers(t *testing.T) {
-	var permissionProfilesCalls int32
-
-	mockServer := httptest.NewServer(nil)
-	t.Cleanup(mockServer.Close)
-	mockServer.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		switch r.URL.Path {
-		case "/oauth/userinfo":
-			_ = json.NewEncoder(w).Encode(client.UserInfoResponse{
-				Sub: "service-account-user-id",
-				Accounts: []client.AccountInfo{
-					{AccountId: "acct-1", AccountName: "Acme", BaseURI: mockServer.URL, IsDefault: true},
-				},
-			})
-		case "/restapi/v2.1/accounts/acct-1/permission_profiles":
-			atomic.AddInt32(&permissionProfilesCalls, 1)
-			w.WriteHeader(http.StatusForbidden)
-			_ = json.NewEncoder(w).Encode(client.ErrorResponse{
-				ErrorCode:    "USER_LACKS_PERMISSIONS",
-				ErrorMessage: "The user does not have permission to access permission profiles.",
-			})
-		default:
-			const prefix = "/restapi/v2.1/accounts/acct-1/users/"
-			if len(r.URL.Path) > len(prefix) && r.URL.Path[:len(prefix)] == prefix {
-				userID := r.URL.Path[len(prefix):]
-				_ = json.NewEncoder(w).Encode(client.UserDetail{UserID: userID, PermissionProfileID: "pp-1"})
-				return
-			}
-			http.NotFound(w, r)
-		}
+	c, permissionProfilesCalls := newCountingPermissionProfilesClient(t, func(w http.ResponseWriter) {
+		w.WriteHeader(http.StatusForbidden)
+		_ = json.NewEncoder(w).Encode(client.ErrorResponse{
+			ErrorCode:    "USER_LACKS_PERMISSIONS",
+			ErrorMessage: "The user does not have permission to access permission profiles.",
+		})
 	})
-
-	mockServerURL, err := url.Parse(mockServer.URL)
-	if err != nil {
-		t.Fatalf("failed to parse mock server URL: %v", err)
-	}
-	wrapper := uhttp.NewBaseHttpClient(&http.Client{Transport: &rewriteTransport{target: mockServerURL, base: http.DefaultTransport}})
-	tokenSource := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "test-token"})
-	c := client.NewClient(context.Background(), false, tokenSource, "", "", wrapper)
 
 	b := newUserBuilder(c, false)
 	for _, userID := range []string{"user-1", "user-2"} {
@@ -740,7 +645,7 @@ func TestUserBuilder_Grants_MemoizesPermissionProfilesFailureAcrossUsers(t *test
 		}
 	}
 
-	if got := atomic.LoadInt32(&permissionProfilesCalls); got != 1 {
+	if got := atomic.LoadInt32(permissionProfilesCalls); got != 1 {
 		t.Errorf("expected exactly 1 GetPermissionProfiles call across both users, got %d", got)
 	}
 }

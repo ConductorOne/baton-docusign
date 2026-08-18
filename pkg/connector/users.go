@@ -252,16 +252,20 @@ func (b *userBuilder) Grants(ctx context.Context, resource *v2.Resource, _ rs.Sy
 		return nil, nil, nil
 	}
 
-	permissionProfileResource := &v2.Resource{
-		Id: &v2.ResourceId{
-			ResourceType: permissionProfilesResourceType.Id,
-			Resource:     permissionProfileID,
-		},
-	}
-
 	return []*v2.Grant{
-		grant.NewGrant(permissionProfileResource, permissionProfileAssignedTag, userID),
+		newPermissionProfileGrant(permissionProfileID, userID),
 	}, &rs.SyncOpResults{Annotations: annos}, nil
+}
+
+// newPermissionProfileGrant builds the permission_profile grant for userID against
+// permissionProfileID — the one shape Grants' fallback and both of tryFastPathGrant's
+// resolution branches all construct.
+func newPermissionProfileGrant(permissionProfileID string, userID *v2.ResourceId) *v2.Grant {
+	return grant.NewGrant(
+		&v2.Resource{Id: &v2.ResourceId{ResourceType: permissionProfilesResourceType.Id, Resource: permissionProfileID}},
+		permissionProfileAssignedTag,
+		userID,
+	)
 }
 
 // tryFastPathGrant is Grants' fast path for an Active user, avoiding the per-user
@@ -309,12 +313,7 @@ func (b *userBuilder) tryFastPathGrant(ctx context.Context, resource *v2.Resourc
 	// against a live account — see client.User.PermissionProfileID's doc), this skips
 	// GetPermissionProfiles entirely: no API call, no name lookup, no cache dependency.
 	if id, ok := rs.GetProfileStringValue(profile, profileFieldPermissionID); ok && id != "" {
-		newGrant := grant.NewGrant(
-			&v2.Resource{Id: &v2.ResourceId{ResourceType: permissionProfilesResourceType.Id, Resource: id}},
-			permissionProfileAssignedTag,
-			userID,
-		)
-		return newGrant, nil, nil, true
+		return newPermissionProfileGrant(id, userID), nil, nil, true
 	}
 
 	name, ok := rs.GetProfileStringValue(profile, profileFieldPermission)
@@ -336,12 +335,7 @@ func (b *userBuilder) tryFastPathGrant(ctx context.Context, resource *v2.Resourc
 	if matches != 1 {
 		return nil, nil, nil, false
 	}
-	newGrant := grant.NewGrant(
-		&v2.Resource{Id: &v2.ResourceId{ResourceType: permissionProfilesResourceType.Id, Resource: id}},
-		permissionProfileAssignedTag,
-		userID,
-	)
-	return newGrant, nil, nil, true
+	return newPermissionProfileGrant(id, userID), nil, nil, true
 }
 
 // CreateAccountCapabilityDetails declares support for account provisioning without a password.
