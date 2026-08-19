@@ -620,6 +620,7 @@ func TestClmFolderBuilder_Grant_SurvivesIdentityOnlyPrincipal_SampleBranch(t *te
 		}
 		if found == nil {
 			t.Fatalf("expected a group-ops entry with the sample-derived Href %q, got %+v", wantHref, groups)
+			return
 		}
 		if found.AccessType != client.ClmAccessTypeView {
 			t.Errorf("expected View AccessType, got %q", found.AccessType)
@@ -645,6 +646,7 @@ func TestClmFolderBuilder_Grant_SurvivesIdentityOnlyPrincipal_SampleBranch(t *te
 		}
 		if found == nil {
 			t.Fatalf("expected a member-dave entry with the sample-derived Href %q, got %+v", wantHref, users)
+			return
 		}
 		if found.AccessType != client.ClmAccessTypeView {
 			t.Errorf("expected View AccessType, got %q", found.AccessType)
