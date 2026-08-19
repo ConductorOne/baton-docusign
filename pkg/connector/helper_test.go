@@ -75,12 +75,15 @@ func TestClmHrefWithID(t *testing.T) {
 	// Regression test: a "/" inside a query string must not be mistaken for the real
 	// path separator. Splitting on the raw string instead of the parsed URL's Path used
 	// to corrupt the query (".../group-old?filter=a/b" became ".../group-old?filter=a/"
-	// + newID) instead of replacing the actual ID segment.
+	// + newID) instead of replacing the actual ID segment. The derived href also drops
+	// the sample's query entirely — it identifies a different object, so the sample's
+	// query/fragment (irrelevant, and potentially misleading, for the target) is cleared
+	// rather than carried over.
 	got, err = clmHrefWithID("https://clm.example.com/v2/acct-1/groups/group-old?filter=a/b", "group-new")
 	if err != nil {
 		t.Fatalf("clmHrefWithID: %v", err)
 	}
-	if want := "https://clm.example.com/v2/acct-1/groups/group-new?filter=a/b"; got != want {
+	if want := "https://clm.example.com/v2/acct-1/groups/group-new"; got != want {
 		t.Errorf("clmHrefWithID = %q, want %q", got, want)
 	}
 }

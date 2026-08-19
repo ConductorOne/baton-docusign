@@ -131,6 +131,12 @@ func clmHrefWithID(sampleHref, newID string) (string, error) {
 		return "", status.Errorf(codes.InvalidArgument, "baton-docusign: cannot derive a sibling href from %q — no path separator found", sampleHref)
 	}
 	u.Path = u.Path[:idx+1] + newID
+	// Clear any query/fragment carried over from the sample — the derived href
+	// identifies a different object than the sample's, so a leftover query string or
+	// fragment (e.g. ".../group-old?filter=a/b" deriving ".../group-new?filter=a/b")
+	// would misrepresent the sample's, not the target's, state in a write body.
+	u.RawQuery = ""
+	u.Fragment = ""
 	return u.String(), nil
 }
 
