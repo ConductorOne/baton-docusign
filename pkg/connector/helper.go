@@ -85,9 +85,9 @@ func isOptInFeatureUnavailableError(err error) bool {
 }
 
 // clmIDFromHref extracts the trailing path segment from a CLM object's Href — see
-// client.IDFromHref's doc. pkg/client/clmtest reimplements the same logic locally to
-// avoid depending on pkg/connector, so both packages call the one shared definition in
-// pkg/client instead of maintaining two copies.
+// client.IDFromHref's doc. pkg/client/clmtest can't import pkg/connector, so the single
+// definition lives in pkg/client and both packages delegate to it instead of
+// maintaining two copies.
 func clmIDFromHref(href string) string {
 	return client.IDFromHref(href)
 }

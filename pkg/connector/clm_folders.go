@@ -269,7 +269,7 @@ func (f *clmFolderBuilder) Grant(ctx context.Context, principal *v2.Resource, en
 			write.Users = append(write.Users, client.ClmUserSecurityEntry{AccessType: accessType, Href: memberHref})
 		}
 	default:
-		return nil, nil, status.Errorf(codes.InvalidArgument, "baton-docusign: invalid principal type for CLM folder security: %s", principal.Id.ResourceType)
+		return nil, getAnnos, status.Errorf(codes.InvalidArgument, "baton-docusign: invalid principal type for CLM folder security: %s", principal.Id.ResourceType)
 	}
 
 	patchAnnos, err := f.client.PatchFolderSecurity(ctx, folderID, write)
@@ -383,7 +383,7 @@ func (f *clmFolderBuilder) Revoke(ctx context.Context, grantObj *v2.Grant) (anno
 		}
 		write.Users[i].AccessType = client.ClmAccessTypeNoAccess
 	default:
-		return nil, status.Errorf(codes.InvalidArgument, "baton-docusign: invalid principal type for CLM folder security: %s", principal.Id.ResourceType)
+		return getAnnos, status.Errorf(codes.InvalidArgument, "baton-docusign: invalid principal type for CLM folder security: %s", principal.Id.ResourceType)
 	}
 
 	patchAnnos, err := f.client.PatchFolderSecurity(ctx, folderID, write)
