@@ -166,7 +166,14 @@ func (b *clmWorkflowQueueBuilder) List(ctx context.Context, _ *v2.ResourceId, at
 		// on, and the final chunk would emit that partial set as the authoritative
 		// result — every queue an earlier chunk already found would read as deleted, the
 		// same false-deletion outcome the pageToken != "" checks above exist to prevent.
-		return nil, nil, fmt.Errorf("baton-docusign: CLM workflow queue discovery state missing mid-scan (page token %q)", pageToken)
+		//
+		// Unlike those checks, this has no self-healing path: the SDK's persisted page
+		// token means every retry of this same sync run arrives with the same stale
+		// token and re-hits this branch, since there's nothing here that can reconstruct
+		// the lost state. Recovery is operator-driven — start a fresh full sync (a new
+		// run gets pageToken == "" and rebuilds state.Queues from scratch) once the
+		// session store is confirmed to persist across whatever caused this loss.
+		return nil, nil, fmt.Errorf("baton-docusign: CLM workflow queue discovery state missing mid-scan (page token %q); start a fresh full sync once the session store is stable", pageToken)
 	}
 	if found && (state.ScanComplete || pageToken != state.NextExpectedInputToken) {
 		return b.replayChunk(bag, state)
