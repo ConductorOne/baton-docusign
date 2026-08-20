@@ -95,7 +95,7 @@ func (d *Connector) Metadata(_ context.Context) (*v2.ConnectorMetadata, error) {
 	// description, so the description no longer branches on includeSigningGroups/
 	// includeClm — it always lists everything the connector can sync.
 	description := "Connector syncs data from Users, Permission Profiles, Groups, and Signing Groups (if enabled on your account). " +
-		"Also syncs DocuSign CLM members, roles, groups, folders, folder security, and permission sets (if your account has a CLM subscription). " +
+		"Also syncs DocuSign CLM members, roles, groups, folders, folder security, permission sets, and workflow queues (if your account has a CLM subscription). " +
 		"It also allows the creation of users in DocuSign"
 
 	return &v2.ConnectorMetadata{
@@ -181,7 +181,7 @@ func New(ctx context.Context, docusignCfg *cfg.Docusign, opts *cli.ConnectorOpts
 
 	includeClm := opts.WillSyncResourceType(clmMemberResourceType.Id) || opts.WillSyncResourceType(clmRoleResourceType.Id) ||
 		opts.WillSyncResourceType(clmGroupResourceType.Id) || opts.WillSyncResourceType(clmPermissionSetResourceType.Id) ||
-		opts.WillSyncResourceType(clmFolderResourceType.Id)
+		opts.WillSyncResourceType(clmFolderResourceType.Id) || opts.WillSyncResourceType(clmWorkflowQueueResourceType.Id)
 
 	// Validate the configuration
 	if err := field.Validate(cfg.ConfigurationSchema, docusignCfg); err != nil {
