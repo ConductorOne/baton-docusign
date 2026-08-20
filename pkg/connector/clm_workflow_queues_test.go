@@ -203,6 +203,34 @@ func TestClmWorkflowQueueBuilder_List_FailsLoudlyOnSessionStoreFailureAfterFirst
 	}
 }
 
+// TestClmWorkflowQueueBuilder_List_FailsLoudlyOnMembershipWriteFailureAfterFirstChunk is
+// the write-side counterpart of the test above — same pageToken != "" gating, but hit on
+// the SetManyJSON membership write instead of the top-of-function discovery-state read.
+func TestClmWorkflowQueueBuilder_List_FailsLoudlyOnMembershipWriteFailureAfterFirstChunk(t *testing.T) {
+	_, c := clmtest.NewServer(t)
+	b := newClmWorkflowQueueBuilder(c)
+	ctx := context.Background()
+	store := newFakeSessionStore()
+
+	_, syncRes, err := b.List(ctx, nil, rs.SyncOpAttrs{Session: store, PageToken: pagination.Token{Size: 1}})
+	if err != nil {
+		t.Fatalf("chunk 1: %v", err)
+	}
+	if syncRes.NextPageToken == "" {
+		t.Fatalf("expected more than one seeded member so chunk 1 doesn't already finish the scan")
+	}
+
+	_, _, err = b.List(ctx, nil, rs.SyncOpAttrs{
+		Session:   &failingSessionStore{fakeSessionStore: store},
+		PageToken: pagination.Token{Size: 1, Token: syncRes.NextPageToken},
+	})
+	if err == nil {
+		t.Fatal("expected a later-chunk membership-write failure to fail loudly, not skip " +
+			"gracefully — an earlier chunk already persisted real queue data that a graceful " +
+			"zero-resource response would read as deleted")
+	}
+}
+
 func TestClmWorkflowQueueBuilder_List_FailsWhenClmUnavailable(t *testing.T) {
 	// clm_workflow_queue is OptInRequired, and C1's opt-in toggle doesn't check the
 	// account can actually use it first — see List()'s escalation branch in
