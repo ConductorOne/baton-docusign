@@ -171,7 +171,7 @@ DocuSign CLM is a separate, separately-licensed DocuSign product. To sync CLM da
 
 1. Confirm your DocuSign account has a CLM production subscription.
 2. Confirm the credential has been granted the CLM OAuth scopes (`impersonation`/`spring_read`/`spring_write`).
-3. The connector then syncs CLM Members, Roles, Groups, Folders, Folder Security, and Permission Sets automatically — there is no flag to set.
+3. The connector then syncs CLM Members, Roles, Groups, Folders, Folder Security, and Permission Sets once a customer explicitly enables each CLM resource type in C1's sync configuration (see the CLM note above — these types carry `OptInRequired`).
 4. An already-connected credential keeps its old consent on refresh (refresh tokens don't resend scopes) — re-run with `--configure` once to re-consent and pick up the new `impersonation` scope.
 
 If running against ConductorOne's managed OAuth app (the default cloud-hosted

@@ -209,11 +209,7 @@ func New(ctx context.Context, docusignCfg *cfg.Docusign, opts *cli.ConnectorOpts
 	l := ctxzap.Extract(ctx)
 	var cb *Connector
 
-	// nil opts means no filter, so nothing is skipped — every CLM type would sync too,
-	// the same "nil means unfiltered" convention skipPermissionProfileResourceType's
-	// guard below applies (inverted here, since this is an "include" flag, not a
-	// "skip" one).
-	includeClm := opts == nil || opts.WillSyncResourceType(clmMemberResourceType.Id) || opts.WillSyncResourceType(clmRoleResourceType.Id) ||
+	includeClm := opts.WillSyncResourceType(clmMemberResourceType.Id) || opts.WillSyncResourceType(clmRoleResourceType.Id) ||
 		opts.WillSyncResourceType(clmGroupResourceType.Id) || opts.WillSyncResourceType(clmPermissionSetResourceType.Id) ||
 		opts.WillSyncResourceType(clmFolderResourceType.Id)
 
