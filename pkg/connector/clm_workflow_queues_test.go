@@ -3,6 +3,7 @@ package connector
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 
@@ -271,6 +272,9 @@ func TestClmWorkflowQueueBuilder_List_FailsLoudlyWhenDiscoveryStateMissingMidSca
 		t.Fatal("expected discovery state missing mid-scan (found == false, no error) to fail " +
 			"loudly, not silently restart the scan — an earlier chunk already persisted real " +
 			"queue data that a fresh, partial scan would read as deleted")
+	}
+	if !strings.Contains(err.Error(), "discovery state missing mid-scan") {
+		t.Errorf("expected the found==false mid-scan branch specifically, got: %v", err)
 	}
 }
 
