@@ -1,11 +1,16 @@
 // Package client — DocuSign CLM (Contract Lifecycle Management) support.
 //
 // CLM is a separate DocuSign product from eSignature, on a different host, with its
-// own OAuth scopes ("impersonation"/"spring_read"/"spring_write", see oauth.go) and a different Object
+// own OAuth scopes ("spring_read"/"spring_write", see oauth.go) and a different Object
 // API surface. Endpoints below are derived from DocuSign's CLM API reference (method
 // tables and request/response schemas). Validate against cmd/test-server during
-// development; a production CLM tenant was not available to exercise this integration
-// directly.
+// development. Live-tested against a real (demo/UAT) CLM tenant: account discovery
+// succeeded, but every data-plane call (ListGroups, ListPermissionSets) returned CLM's
+// own 401 "Access Denied" (ErrorCode 103) even with the scopes DocuSign's own CLM
+// Authentication Overview docs specify for Authorization Code Grant. The demo tenant's
+// admin status was fixed mid-investigation but not yet re-tested — see the CLM auth
+// docs' repeated note that CLM API access requires a production account; this may be a
+// demo/UAT-environment limitation rather than a scope or permission bug.
 //
 // # API Endpoints Used
 //
