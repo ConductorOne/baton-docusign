@@ -40,12 +40,14 @@ func parsePageToken(i string, resourceID *v2.ResourceId) (*pagination.Bag, strin
 // needs (CLM's spring_read/spring_write — see oauth.go) — rather than an unexpected
 // failure.
 //
-// The 5 CLM resource types (and signing_group's List() has the same shape of check)
-// are registered unconditionally in ResourceSyncers() and their List() bodies always
-// run, with no config flag gating them, specifically so that a resource type never
-// disappears from a later sync and gets treated as fully deleted. Tolerating this error
-// on the first page of List() (see call sites) is what makes unconditional registration
-// safe: the sync skips that one resource type gracefully instead of failing outright.
+// 5 of the 6 CLM resource types (and signing_group's List() has the same shape of
+// check) are registered unconditionally in ResourceSyncers() and their List() bodies
+// always run, with no config flag gating them, specifically so that a resource type
+// never disappears from a later sync and gets treated as fully deleted. Tolerating this
+// error on the first page of List() (see call sites) is what makes unconditional
+// registration safe: the sync skips that one resource type gracefully instead of
+// failing outright. clm_workflow_queue is the deliberate exception — see
+// clm_workflow_queues.go's List() doc for why it fails loud instead.
 //
 // Covers four codes, each tied to a specific confirmed failure mode of
 // ensureClmInitialized's CLM base-URL discovery call (clm_client.go) — the first thing
