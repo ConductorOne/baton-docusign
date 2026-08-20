@@ -349,11 +349,17 @@ func (b *clmWorkflowQueueBuilder) List(ctx context.Context, _ *v2.ResourceId, at
 	state.NextExpectedInputToken = nextMemberPageToken
 	state.ScanComplete = nextMemberPageToken == ""
 	if err := session.SetJSON(ctx, attr.Session, clmSessionKeyWorkflowQueueDiscoveryState, state); err != nil {
-		if state.SucceededAtLeastOnce {
-			// Same false-deletion reasoning as the membership-cache writes above: once
-			// real queue data has been discovered, a graceful zero-resource response
-			// here would be the sync's final word on this resource type. Fail loud
-			// instead so the SDK preserves the last-known-good sync.
+		if pageToken != "" {
+			// Same reasoning as the other three session-store failure sites above — and
+			// deliberately the SAME predicate, not state.SucceededAtLeastOnce: that field
+			// answers "did a member scan succeed", not "did an earlier chunk already
+			// prove this session store works", and the two diverge whenever every member
+			// scanned so far has failed below the escalation threshold. A non-empty
+			// incoming page token means chunk 1 already wrote successfully (that's the
+			// only way to get here with one), so a failure now is a genuine regression in
+			// an otherwise-working store, not the first-chunk "maybe never wired at all"
+			// case. Fail loud so the SDK preserves the last-known-good sync instead of
+			// accepting a lossy empty result.
 			return nil, nil, fmt.Errorf("baton-docusign: failed to cache CLM workflow queue discovery progress: %w", err)
 		}
 		// The session store is opt-in end-to-end: WithSessionStoreEnabled (main.go)
