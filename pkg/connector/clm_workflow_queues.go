@@ -182,7 +182,7 @@ func (b *clmWorkflowQueueBuilder) List(ctx context.Context, _ *v2.ResourceId, at
 			// happened first.
 			state.SkippedMembersNoID++
 			if n := state.SkippedMembersNoID; n == 1 || n == 10 || n == 100 || n%1000 == 0 {
-				ctxzap.Extract(ctx).Warn("baton-docusign: CLM member has an empty Href, skipping",
+				ctxzap.Extract(ctx).Debug("baton-docusign: CLM member has an empty Href, skipping",
 					zap.String("member_username", member.UserName), zap.Int("total_occurrences", n))
 			}
 			continue
@@ -227,7 +227,7 @@ func (b *clmWorkflowQueueBuilder) List(ctx context.Context, _ *v2.ResourceId, at
 					// (if any) is silently missing from this sync otherwise.
 					state.SkippedMembers++
 					if n := state.SkippedMembers; n == 1 || n == 10 || n == 100 || n%1000 == 0 {
-						ctxzap.Extract(ctx).Warn("baton-docusign: failed to get CLM workflow queues for member, skipping",
+						ctxzap.Extract(ctx).Debug("baton-docusign: failed to get CLM workflow queues for member, skipping",
 							zap.String("member_id", memberID), zap.Int("total_occurrences", n), zap.Error(err))
 					}
 					continue
@@ -240,7 +240,7 @@ func (b *clmWorkflowQueueBuilder) List(ctx context.Context, _ *v2.ResourceId, at
 					// this member and keep scanning.
 					state.SkippedMembers++
 					if n := state.SkippedMembers; n == 1 || n == 10 || n == 100 || n%1000 == 0 {
-						ctxzap.Extract(ctx).Warn("baton-docusign: CLM member not found while scanning workflow queues, skipping",
+						ctxzap.Extract(ctx).Debug("baton-docusign: CLM member not found while scanning workflow queues, skipping",
 							zap.String("member_id", memberID), zap.Int("total_occurrences", n), zap.Error(err))
 					}
 					continue
@@ -262,7 +262,7 @@ func (b *clmWorkflowQueueBuilder) List(ctx context.Context, _ *v2.ResourceId, at
 			if queueID == "" {
 				state.SkippedQueues++
 				if n := state.SkippedQueues; n == 1 || n == 10 || n == 100 || n%1000 == 0 {
-					ctxzap.Extract(ctx).Warn("baton-docusign: CLM workflow queue has an empty Href, skipping",
+					ctxzap.Extract(ctx).Debug("baton-docusign: CLM workflow queue has an empty Href, skipping",
 						zap.String("member_id", memberID), zap.String("queue_name", q.Name), zap.Int("total_occurrences", n))
 				}
 				continue
@@ -283,6 +283,16 @@ func (b *clmWorkflowQueueBuilder) List(ctx context.Context, _ *v2.ResourceId, at
 		}
 		existing, err := session.GetManyJSON[[]string](ctx, attr.Session, keys)
 		if err != nil {
+			if state.SucceededAtLeastOnce {
+				// Real queue membership from this or an earlier chunk is already sitting
+				// in the session store. Returning success with zero resources here would
+				// make this the last (and only) response the SDK sees for this resource
+				// type — an authoritative empty result that reads as every previously
+				// synced clm_workflow_queue and its grants having been deleted. Propagate
+				// the error instead: the SDK preserves the last-known-good sync rather
+				// than accepting a lossy one.
+				return nil, nil, fmt.Errorf("baton-docusign: failed to read cached CLM workflow queue membership: %w", err)
+			}
 			// Same opt-in-session-store reasoning as the discovery-state read above.
 			ctxzap.Extract(ctx).Debug("baton-docusign: failed to read cached CLM workflow queue membership, skipping clm_workflow_queue sync", zap.Error(err))
 			return nil, &rs.SyncOpResults{Annotations: dedupeRateLimitAnnotations(allAnnos)}, nil
@@ -306,6 +316,13 @@ func (b *clmWorkflowQueueBuilder) List(ctx context.Context, _ *v2.ResourceId, at
 			membersByKey[key] = merged
 		}
 		if err := session.SetManyJSON(ctx, attr.Session, membersByKey); err != nil {
+			if state.SucceededAtLeastOnce {
+				// Same false-deletion reasoning as the read above: this chunk's
+				// membership updates would be silently dropped, and a graceful
+				// zero-resource response here reads as everything already discovered
+				// having been deleted. Fail loud instead of accepting that outcome.
+				return nil, nil, fmt.Errorf("baton-docusign: failed to cache CLM workflow queue membership: %w", err)
+			}
 			ctxzap.Extract(ctx).Debug("baton-docusign: failed to cache CLM workflow queue membership, skipping clm_workflow_queue sync", zap.Error(err))
 			return nil, &rs.SyncOpResults{Annotations: dedupeRateLimitAnnotations(allAnnos)}, nil
 		}
@@ -314,6 +331,13 @@ func (b *clmWorkflowQueueBuilder) List(ctx context.Context, _ *v2.ResourceId, at
 	state.NextExpectedInputToken = nextMemberPageToken
 	state.ScanComplete = nextMemberPageToken == ""
 	if err := session.SetJSON(ctx, attr.Session, clmSessionKeyWorkflowQueueDiscoveryState, state); err != nil {
+		if state.SucceededAtLeastOnce {
+			// Same false-deletion reasoning as the membership-cache writes above: once
+			// real queue data has been discovered, a graceful zero-resource response
+			// here would be the sync's final word on this resource type. Fail loud
+			// instead so the SDK preserves the last-known-good sync.
+			return nil, nil, fmt.Errorf("baton-docusign: failed to cache CLM workflow queue discovery progress: %w", err)
+		}
 		// The session store is opt-in end-to-end: WithSessionStoreEnabled (main.go)
 		// only tells the SDK to accept a store connection — whether one actually
 		// exists still depends on the parent process wiring a listen port, and it
