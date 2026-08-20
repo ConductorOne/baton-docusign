@@ -17,18 +17,27 @@ type ClmPage struct {
 	Total    int    `json:"Total"`
 }
 
-// ClmErrorResponse is CLM's error envelope. DocuSign's API reference does not document
-// an error response shape, so this is intentionally loose; callers should log the raw
-// body if fields don't populate as expected.
+// ClmErrorResponse is CLM's error envelope — confirmed via a live 401 from a real CLM
+// tenant: {"Error":{"HttpStatusCode":401,"UserMessage":"Access Denied",
+// "DeveloperMessage":"Access Denied","ErrorCode":103,"ReferenceId":"..."}}. Errors are
+// nested under "Error", not a top-level "Message" field.
 type ClmErrorResponse struct {
-	Msg string `json:"Message"`
+	Error struct {
+		UserMessage      string `json:"UserMessage"`
+		DeveloperMessage string `json:"DeveloperMessage"`
+		ErrorCode        int    `json:"ErrorCode"`
+		ReferenceId      string `json:"ReferenceId"`
+	} `json:"Error"`
 }
 
 func (e *ClmErrorResponse) Message() string {
-	if e.Msg == "" {
+	if e.Error.UserMessage == "" && e.Error.DeveloperMessage == "" {
 		return "unknown CLM API error"
 	}
-	return fmt.Sprintf("CLM API error: %s", e.Msg)
+	if e.Error.DeveloperMessage != "" && e.Error.DeveloperMessage != e.Error.UserMessage {
+		return fmt.Sprintf("CLM API error %d: %s (%s)", e.Error.ErrorCode, e.Error.UserMessage, e.Error.DeveloperMessage)
+	}
+	return fmt.Sprintf("CLM API error %d: %s", e.Error.ErrorCode, e.Error.UserMessage)
 }
 
 // ClmFolder represents a CLM Folder object.

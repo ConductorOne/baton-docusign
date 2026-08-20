@@ -18,20 +18,20 @@ var (
 	tokenURLProd = "https://account.docusign.com/oauth/token" //nolint:gosec // token URL does not contain sensitive credentials.
 	defaultScope = "signature"
 	// clmScopes are additional OAuth scopes required to call the DocuSign CLM API.
-	// "spring_read"/"spring_write" are confirmed via the CLM Authentication Overview
-	// docs (combine with eSignature's "signature" scope on the same authorization
-	// request); "springcm_read"/"springcm_write" are ALSO requested defensively
-	// because a separate DocuSign docs page (for the account-discovery endpoint
-	// ensureClmInitialized calls, auth.springcm.com/api/v2/{accountId}/account) lists
-	// the required scope as "springcm_read" instead — possibly a docs typo, possibly
-	// a genuinely distinct scope given CLM/SpringCM's inconsistent legacy naming, and
-	// unconfirmed against a real CLM tenant either way. Requesting all 4 covers both
-	// possibilities at once: an unrecognized/unauthorized scope name is expected to be
-	// dropped by DocuSign's OAuth consent rather than rejecting the whole
-	// authorization (standard OAuth2 behavior), so this is a low-risk hedge, not a
-	// confirmed-safe one — the same "check every plausible candidate" pattern
-	// ensureClmInitialized uses for the base-URL response field name.
-	clmScopes = []string{"spring_read", "spring_write", "springcm_read", "springcm_write"}
+	// "impersonation"/"spring_read"/"spring_write" match the CLM Authentication
+	// Overview docs' example authorization request exactly. "impersonation" was
+	// missing here until a live test against a real CLM tenant confirmed the gap:
+	// with only spring_read/spring_write granted, ensureClmInitialized's account
+	// discovery call succeeded (200, real base URLs), but every subsequent CLM data
+	// call (ListGroups, ListPermissionSets) failed with 401 and CLM's own error body
+	// ({"Error":{"UserMessage":"Access Denied",...,"ErrorCode":103}}) — i.e. CLM
+	// gates data-plane access on impersonation consent separately from account
+	// discovery. "springcm_read"/"springcm_write" are kept as an additional
+	// defensive hedge for the same reason as before (a separate docs page names the
+	// account-discovery scope as "springcm_read" instead); confirmed harmless to
+	// request even when unrecognized — DocuSign's OAuth consent silently drops them
+	// rather than rejecting the whole grant.
+	clmScopes = []string{"impersonation", "spring_read", "spring_write", "springcm_read", "springcm_write"}
 )
 
 // buildScopes returns the OAuth scopes to request, adding CLM scopes when includeClm is set.
