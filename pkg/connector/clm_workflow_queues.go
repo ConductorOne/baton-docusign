@@ -157,6 +157,17 @@ func (b *clmWorkflowQueueBuilder) List(ctx context.Context, _ *v2.ResourceId, at
 		ctxzap.Extract(ctx).Debug("baton-docusign: failed to read CLM workflow queue discovery state, skipping clm_workflow_queue sync", zap.Error(err))
 		return nil, &rs.SyncOpResults{}, nil
 	}
+	if !found && pageToken != "" {
+		// A non-empty incoming page token means an earlier chunk already ran and wrote
+		// real progress, but the read above returned no error and no state — the entry
+		// itself is simply gone from the store (e.g. an in-memory store that restarted
+		// between chunks, or an expired entry). Silently restarting the scan from a
+		// zero-value state here would discover only the tail of the queue set from here
+		// on, and the final chunk would emit that partial set as the authoritative
+		// result — every queue an earlier chunk already found would read as deleted, the
+		// same false-deletion outcome the pageToken != "" checks above exist to prevent.
+		return nil, nil, fmt.Errorf("baton-docusign: CLM workflow queue discovery state missing mid-scan (page token %q)", pageToken)
+	}
 	if found && (state.ScanComplete || pageToken != state.NextExpectedInputToken) {
 		return b.replayChunk(bag, state)
 	}
