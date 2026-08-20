@@ -39,4 +39,15 @@ func TestClmErrorResponse_Message(t *testing.T) {
 			t.Errorf("Message() = %q, want %q", e.Message(), want)
 		}
 	})
+
+	t.Run("uses DeveloperMessage as the primary text when UserMessage is empty", func(t *testing.T) {
+		body := `{"Error":{"DeveloperMessage":"token missing impersonation scope","ErrorCode":103}}`
+		var e ClmErrorResponse
+		if err := json.Unmarshal([]byte(body), &e); err != nil {
+			t.Fatalf("Unmarshal: %v", err)
+		}
+		if want := "CLM API error 103: token missing impersonation scope"; e.Message() != want {
+			t.Errorf("Message() = %q, want %q", e.Message(), want)
+		}
+	})
 }

@@ -31,13 +31,17 @@ type ClmErrorResponse struct {
 }
 
 func (e *ClmErrorResponse) Message() string {
-	if e.Error.UserMessage == "" && e.Error.DeveloperMessage == "" {
+	primary := e.Error.UserMessage
+	if primary == "" {
+		primary = e.Error.DeveloperMessage
+	}
+	if primary == "" {
 		return "unknown CLM API error"
 	}
-	if e.Error.DeveloperMessage != "" && e.Error.DeveloperMessage != e.Error.UserMessage {
-		return fmt.Sprintf("CLM API error %d: %s (%s)", e.Error.ErrorCode, e.Error.UserMessage, e.Error.DeveloperMessage)
+	if e.Error.UserMessage != "" && e.Error.DeveloperMessage != "" && e.Error.DeveloperMessage != e.Error.UserMessage {
+		return fmt.Sprintf("CLM API error %d: %s (%s)", e.Error.ErrorCode, primary, e.Error.DeveloperMessage)
 	}
-	return fmt.Sprintf("CLM API error %d: %s", e.Error.ErrorCode, e.Error.UserMessage)
+	return fmt.Sprintf("CLM API error %d: %s", e.Error.ErrorCode, primary)
 }
 
 // ClmFolder represents a CLM Folder object.
