@@ -125,6 +125,18 @@ func (f *readFailingSessionStore) GetMany(_ context.Context, _ []string, _ ...se
 	return nil, nil, errClmSessionStoreDisabledForTest
 }
 
+// amnesiacSessionStore wraps fakeSessionStore but Get always reports "not found" with a
+// nil error, regardless of what's actually stored — stands in for a session store that
+// loses data between chunks without erroring (e.g. an in-memory store that restarted),
+// as opposed to readFailingSessionStore's hard error on every read.
+type amnesiacSessionStore struct {
+	*fakeSessionStore
+}
+
+func (f *amnesiacSessionStore) Get(_ context.Context, _ string, _ ...sessions.SessionStoreOption) ([]byte, bool, error) {
+	return nil, false, nil
+}
+
 var errClmSessionStoreDisabledForTest = errors.New("session store disabled (test double)")
 
 // TestClmWorkflowQueueBuilder_List_SkipsGracefullyOnSessionStoreWriteFailure confirms
@@ -228,6 +240,37 @@ func TestClmWorkflowQueueBuilder_List_FailsLoudlyOnMembershipWriteFailureAfterFi
 		t.Fatal("expected a later-chunk membership-write failure to fail loudly, not skip " +
 			"gracefully — an earlier chunk already persisted real queue data that a graceful " +
 			"zero-resource response would read as deleted")
+	}
+}
+
+// TestClmWorkflowQueueBuilder_List_FailsLoudlyWhenDiscoveryStateMissingMidScan covers a
+// third failure shape distinct from the two above: the session-store read on a later
+// chunk succeeds (no error) but the entry is simply gone (found == false) — e.g. an
+// in-memory store that restarted between chunks. Silently restarting the scan from a
+// zero-value state would discover only the tail of the queue set and emit that as the
+// authoritative result, so this must fail loudly too, the same as an outright read error.
+func TestClmWorkflowQueueBuilder_List_FailsLoudlyWhenDiscoveryStateMissingMidScan(t *testing.T) {
+	_, c := clmtest.NewServer(t)
+	b := newClmWorkflowQueueBuilder(c)
+	ctx := context.Background()
+	store := newFakeSessionStore()
+
+	_, syncRes, err := b.List(ctx, nil, rs.SyncOpAttrs{Session: store, PageToken: pagination.Token{Size: 1}})
+	if err != nil {
+		t.Fatalf("chunk 1: %v", err)
+	}
+	if syncRes.NextPageToken == "" {
+		t.Fatalf("expected more than one seeded member so chunk 1 doesn't already finish the scan")
+	}
+
+	_, _, err = b.List(ctx, nil, rs.SyncOpAttrs{
+		Session:   &amnesiacSessionStore{fakeSessionStore: store},
+		PageToken: pagination.Token{Size: 1, Token: syncRes.NextPageToken},
+	})
+	if err == nil {
+		t.Fatal("expected discovery state missing mid-scan (found == false, no error) to fail " +
+			"loudly, not silently restart the scan — an earlier chunk already persisted real " +
+			"queue data that a fresh, partial scan would read as deleted")
 	}
 }
 
