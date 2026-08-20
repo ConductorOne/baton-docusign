@@ -197,7 +197,9 @@ func TestClmWorkflowQueueBuilder_List_FailsLoudlyOnSessionStoreFailureAfterFirst
 		PageToken: pagination.Token{Size: 1, Token: syncRes.NextPageToken},
 	})
 	if err == nil {
-		t.Fatal("expected a session-store read failure on a later chunk to fail loudly, not skip gracefully — an earlier chunk already persisted real queue data that a graceful zero-resource response would read as deleted")
+		t.Fatal("expected a later-chunk session-store read failure to fail loudly, not skip " +
+			"gracefully — an earlier chunk already persisted real queue data that a graceful " +
+			"zero-resource response would read as deleted")
 	}
 }
 
