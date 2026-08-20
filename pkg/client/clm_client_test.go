@@ -3,6 +3,7 @@ package client_test
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/conductorone/baton-docusign/pkg/client"
 	"github.com/conductorone/baton-docusign/pkg/client/clmtest"
@@ -31,9 +32,32 @@ func TestSearchFolders_Pagination(t *testing.T) {
 	}
 	// Search results are summaries — no Security field.
 	for _, f := range all {
-		if len(f.Security.Groups.Items) != 0 || len(f.Security.Roles.Items) != 0 || len(f.Security.Users.Items) != 0 {
+		if len(f.Security.Groups) != 0 || len(f.Security.Roles) != 0 || len(f.Security.Users) != 0 {
 			t.Errorf("folder %s: expected Search to omit Security, got %+v", f.Name, f.Security)
 		}
+	}
+}
+
+// TestSearchFolders_PollsUntilSuccess is a regression test for SearchFolders'
+// awaitClmFolderSearchTask branch: every live test against a real CLM tenant resolved
+// the task inline (Status "Success" already in the POST response), leaving the polling
+// branch itself unexercised until now.
+func TestSearchFolders_PollsUntilSuccess(t *testing.T) {
+	original := client.ClmFolderSearchTaskPollInterval
+	client.ClmFolderSearchTaskPollInterval = time.Millisecond
+	defer func() { client.ClmFolderSearchTaskPollInterval = original }()
+
+	srv, c := clmtest.NewServer(t)
+	ctx := context.Background()
+
+	srv.SetPendingFolderSearchPolls(2)
+
+	folders, _, _, err := c.SearchFolders(ctx, client.PageOptions{PageSize: 10})
+	if err != nil {
+		t.Fatalf("SearchFolders: %v", err)
+	}
+	if len(folders) != 3 {
+		t.Fatalf("expected all 3 seeded folders once the task resolves, got %d", len(folders))
 	}
 }
 
@@ -46,7 +70,7 @@ func TestGetFolder_ExpandSecurity(t *testing.T) {
 		if err != nil {
 			t.Fatalf("GetFolder: %v", err)
 		}
-		if len(folder.Security.Groups.Items) != 0 || len(folder.Security.Roles.Items) != 0 || len(folder.Security.Users.Items) != 0 {
+		if len(folder.Security.Groups) != 0 || len(folder.Security.Roles) != 0 || len(folder.Security.Users) != 0 {
 			t.Errorf("expected no Security without ?expand=Security, got %+v", folder.Security)
 		}
 	})
@@ -56,14 +80,14 @@ func TestGetFolder_ExpandSecurity(t *testing.T) {
 		if err != nil {
 			t.Fatalf("GetFolder: %v", err)
 		}
-		if len(folder.Security.Groups.Items) != 2 {
-			t.Fatalf("expected 2 seeded group security entries, got %d: %+v", len(folder.Security.Groups.Items), folder.Security.Groups.Items)
+		if len(folder.Security.Groups) != 2 {
+			t.Fatalf("expected 2 seeded group security entries, got %d: %+v", len(folder.Security.Groups), folder.Security.Groups)
 		}
-		if len(folder.Security.Roles.Items) != 1 {
-			t.Fatalf("expected 1 seeded role security entry, got %d: %+v", len(folder.Security.Roles.Items), folder.Security.Roles.Items)
+		if len(folder.Security.Roles) != 1 {
+			t.Fatalf("expected 1 seeded role security entry, got %d: %+v", len(folder.Security.Roles), folder.Security.Roles)
 		}
-		if len(folder.Security.Users.Items) != 1 {
-			t.Fatalf("expected 1 seeded user security entry, got %d: %+v", len(folder.Security.Users.Items), folder.Security.Users.Items)
+		if len(folder.Security.Users) != 1 {
+			t.Fatalf("expected 1 seeded user security entry, got %d: %+v", len(folder.Security.Users), folder.Security.Users)
 		}
 	})
 
@@ -93,8 +117,8 @@ func TestPatchFolderSecurity_SendsExactEntries(t *testing.T) {
 	}
 
 	sec := srv.FolderSecurity("folder-templates")
-	if len(sec.Groups.Items) != 1 || sec.Groups.Items[0].AccessType != client.ClmAccessTypeView || sec.Groups.Items[0].Href != groupHref {
-		t.Fatalf("expected one View entry for %s, got %+v", groupHref, sec.Groups.Items)
+	if len(sec.Groups) != 1 || sec.Groups[0].AccessType != client.ClmAccessTypeView || sec.Groups[0].Href != groupHref {
+		t.Fatalf("expected one View entry for %s, got %+v", groupHref, sec.Groups)
 	}
 
 	// Sending a single-entry Groups list for the same Href again replaces the prior entry.
@@ -105,11 +129,11 @@ func TestPatchFolderSecurity_SendsExactEntries(t *testing.T) {
 	}
 
 	sec = srv.FolderSecurity("folder-templates")
-	if len(sec.Groups.Items) != 1 {
-		t.Fatalf("expected the existing entry to be updated in place, not duplicated: %+v", sec.Groups.Items)
+	if len(sec.Groups) != 1 {
+		t.Fatalf("expected the existing entry to be updated in place, not duplicated: %+v", sec.Groups)
 	}
-	if sec.Groups.Items[0].AccessType != client.ClmAccessTypeNoAccess {
-		t.Errorf("expected AccessType NoAccess after revoke, got %q", sec.Groups.Items[0].AccessType)
+	if sec.Groups[0].AccessType != client.ClmAccessTypeNoAccess {
+		t.Errorf("expected AccessType NoAccess after revoke, got %q", sec.Groups[0].AccessType)
 	}
 }
 

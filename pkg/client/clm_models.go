@@ -1,6 +1,9 @@
 package client
 
-import "fmt"
+import (
+	"encoding/json"
+	"fmt"
+)
 
 // ClmPage is the pagination metadata CLM's Object API embeds in every list response —
 // distinct from eSignature's Page (see models.go). Each *Page wrapper type below embeds
@@ -73,25 +76,53 @@ type ClmFolderPage struct {
 	Items []ClmFolder `json:"Items"`
 }
 
-// ClmFolderSecurity is a folder's explicit (non-inherited) security assignments,
-// confirmed via DocuSign's own Folders.Patch reference page (pasted live, since the
-// site is JS-rendered and unreachable by automated tools) to be three SEPARATE
-// collections by principal type — not a single flat list, and not the
-// AccessType-vs-boolean-flags dual representation an earlier version of this file
-// assumed. No boolean flags (Create/Move/Read/See/SetAccess/Write) appear anywhere in
-// the confirmed schema; every entry across all three collections carries AccessType
-// directly.
-type ClmFolderSecurity struct {
-	Groups ClmGroupSecurityPage `json:"Groups,omitempty"`
-	Roles  ClmRoleSecurityPage  `json:"Roles,omitempty"`
-	Users  ClmUserSecurityPage  `json:"Users,omitempty"`
+// ClmFolderSearchTaskResponse is CLM's FolderSearchTasks response envelope — the same
+// shape whether returned by the initial POST (create) or a poll GET on the task's own
+// Href. Confirmed live for the POST/"Success" case (Result already populated with the
+// same Items/Offset/Limit/Total/Next fields as every other CLM list endpoint); the CLM
+// Task API 101 docs describe the identical {Status, Href, Result} envelope for
+// DocumentSearchTasks, CLM's sibling search-task resource — see SearchFolders' doc in
+// clm_client.go for what's confirmed vs. assumed.
+type ClmFolderSearchTaskResponse struct {
+	Status string         `json:"Status"`
+	Href   string         `json:"Href"`
+	Result *ClmFolderPage `json:"Result,omitempty"`
 }
 
-// ClmGroupSecurityEntry is one folder-security grant to a CLM Group. Confirmed shape:
-// the full Group object's own fields (Href/Name/GroupType/Description/CreatedDate/
-// UpdatedDate) plus AccessType — not a lean {Item, AccessType} pair.
+// ClmFolderSecurity is a folder's explicit (non-inherited) security assignments.
+// Confirmed live against a real CLM tenant (GetFolder?expand=Security) to be three
+// SEPARATE, flat (non-paginated) arrays by principal type — no First/Href/Last/Limit/
+// Next/Offset/Previous/Total pagination envelope wraps them the way every other CLM
+// list response does; an earlier version of this struct wrapped each in a page type
+// based on an unconfirmed reading of the Folders.Patch reference page, which caused a
+// live sync to fail entirely with a JSON unmarshal error (array where an object with an
+// Items field was expected).
+type ClmFolderSecurity struct {
+	Groups []ClmGroupSecurityEntry `json:"Groups,omitempty"`
+	Roles  []ClmRoleSecurityEntry  `json:"Roles,omitempty"`
+	Users  []ClmUserSecurityEntry  `json:"Users,omitempty"`
+}
+
+// ClmGroupSecurityEntry is one folder-security grant to a CLM Group. Confirmed live:
+// the wire shape nests the group's own fields under an "Item" key, sibling to
+// AccessType — {"Item": {"Href":...,"Name":...,...}, "AccessType":"View"} — not a flat
+// merge of AccessType into the group's fields as an earlier version of this struct
+// assumed (that assumption was never actually confirmed against a live tenant, despite
+// its doc comment's claim otherwise). Kept as a flat Go struct via custom (Un)MarshalJSON
+// so callers in pkg/connector/clm_folders.go don't need to know about the wire-level
+// nesting — mirrors ClmRoleSecurityEntry's existing bare-Item shape, just for an object
+// Item instead of a string one.
 type ClmGroupSecurityEntry struct {
-	AccessType  string `json:"AccessType,omitempty"`
+	AccessType  string
+	Href        string
+	Name        string
+	GroupType   string
+	Description string
+	CreatedDate string
+	UpdatedDate string
+}
+
+type clmGroupSecurityItem struct {
 	Href        string `json:"Href"`
 	Name        string `json:"Name,omitempty"`
 	GroupType   string `json:"GroupType,omitempty"`
@@ -100,12 +131,41 @@ type ClmGroupSecurityEntry struct {
 	UpdatedDate string `json:"UpdatedDate,omitempty"`
 }
 
-// ClmGroupSecurityPage is the paginated collection of ClmGroupSecurityEntry returned
-// on a read (GetFolder?expand=Security). See ClmFolderSecurityWrite for the plain-list
-// shape used on writes.
-type ClmGroupSecurityPage struct {
-	ClmPage
-	Items []ClmGroupSecurityEntry `json:"Items"`
+func (e ClmGroupSecurityEntry) MarshalJSON() ([]byte, error) {
+	return json.Marshal(struct {
+		Item       clmGroupSecurityItem `json:"Item"`
+		AccessType string               `json:"AccessType,omitempty"`
+	}{
+		Item: clmGroupSecurityItem{
+			Href:        e.Href,
+			Name:        e.Name,
+			GroupType:   e.GroupType,
+			Description: e.Description,
+			CreatedDate: e.CreatedDate,
+			UpdatedDate: e.UpdatedDate,
+		},
+		AccessType: e.AccessType,
+	})
+}
+
+func (e *ClmGroupSecurityEntry) UnmarshalJSON(data []byte) error {
+	var wire struct {
+		Item       clmGroupSecurityItem `json:"Item"`
+		AccessType string               `json:"AccessType"`
+	}
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	*e = ClmGroupSecurityEntry{
+		AccessType:  wire.AccessType,
+		Href:        wire.Item.Href,
+		Name:        wire.Item.Name,
+		GroupType:   wire.Item.GroupType,
+		Description: wire.Item.Description,
+		CreatedDate: wire.Item.CreatedDate,
+		UpdatedDate: wire.Item.UpdatedDate,
+	}
+	return nil
 }
 
 // ClmRoleSecurityEntry is one folder-security grant to a CLM Role. Confirmed shape:
@@ -116,31 +176,68 @@ type ClmRoleSecurityEntry struct {
 	Item       string `json:"Item"`
 }
 
-// ClmRoleSecurityPage is the paginated collection of ClmRoleSecurityEntry.
-type ClmRoleSecurityPage struct {
-	ClmPage
-	Items []ClmRoleSecurityEntry `json:"Items"`
-}
-
-// ClmUserSecurityEntry is one folder-security grant to a CLM Member (user). Confirmed
-// shape: the Member object's own identifying fields plus AccessType — mirrors
-// ClmGroupSecurityEntry's pattern. Deliberately doesn't repeat every field ClmMember
-// has (Address*, City, Company, etc.): Grant/Revoke only ever need Href to identify
-// the member, never reconstruct a full member profile from a security entry.
+// ClmUserSecurityEntry is one folder-security grant to a CLM Member (user). Assumed to
+// follow ClmGroupSecurityEntry's confirmed {Item: {...}, AccessType} wire shape — not
+// independently confirmed live for Users specifically (every populated folder-security
+// entry found on the live tenant this was tested against was a Group), but consistent
+// with a single API design for all three principal types, and with the equally
+// unconfirmed prior assumption this replaces. Deliberately doesn't repeat every field
+// ClmMember has (Address*, City, Company, etc.): Grant/Revoke only ever need Href to
+// identify the member, never reconstruct a full member profile from a security entry.
 type ClmUserSecurityEntry struct {
-	AccessType string `json:"AccessType,omitempty"`
-	Href       string `json:"Href"`
-	Email      string `json:"Email,omitempty"`
-	UserName   string `json:"UserName,omitempty"`
-	FirstName  string `json:"FirstName,omitempty"`
-	LastName   string `json:"LastName,omitempty"`
-	Role       string `json:"Role,omitempty"`
+	AccessType string
+	Href       string
+	Email      string
+	UserName   string
+	FirstName  string
+	LastName   string
+	Role       string
 }
 
-// ClmUserSecurityPage is the paginated collection of ClmUserSecurityEntry.
-type ClmUserSecurityPage struct {
-	ClmPage
-	Items []ClmUserSecurityEntry `json:"Items"`
+type clmUserSecurityItem struct {
+	Href      string `json:"Href"`
+	Email     string `json:"Email,omitempty"`
+	UserName  string `json:"UserName,omitempty"`
+	FirstName string `json:"FirstName,omitempty"`
+	LastName  string `json:"LastName,omitempty"`
+	Role      string `json:"Role,omitempty"`
+}
+
+func (e ClmUserSecurityEntry) MarshalJSON() ([]byte, error) {
+	return json.Marshal(struct {
+		Item       clmUserSecurityItem `json:"Item"`
+		AccessType string              `json:"AccessType,omitempty"`
+	}{
+		Item: clmUserSecurityItem{
+			Href:      e.Href,
+			Email:     e.Email,
+			UserName:  e.UserName,
+			FirstName: e.FirstName,
+			LastName:  e.LastName,
+			Role:      e.Role,
+		},
+		AccessType: e.AccessType,
+	})
+}
+
+func (e *ClmUserSecurityEntry) UnmarshalJSON(data []byte) error {
+	var wire struct {
+		Item       clmUserSecurityItem `json:"Item"`
+		AccessType string              `json:"AccessType"`
+	}
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	*e = ClmUserSecurityEntry{
+		AccessType: wire.AccessType,
+		Href:       wire.Item.Href,
+		Email:      wire.Item.Email,
+		UserName:   wire.Item.UserName,
+		FirstName:  wire.Item.FirstName,
+		LastName:   wire.Item.LastName,
+		Role:       wire.Item.Role,
+	}
+	return nil
 }
 
 // ClmFolderSecurityPatch is the request body for PATCH .../folders/{id} when updating
@@ -156,6 +253,16 @@ type ClmFolderSecurityPatch struct {
 // folder's complete current security (see clm_folders.go's clmFolderSecurityToWrite),
 // not just the one changed entry: Folders.Patch's merge-vs-replace semantics for
 // Security are undocumented, and sending the complete state is correct either way.
+//
+// Entries serialize via ClmGroupSecurityEntry/ClmUserSecurityEntry's MarshalJSON, so a
+// PATCH sends the same {Item: {...}, AccessType} shape confirmed live on reads. This
+// WAS tested live, against a disposable folder created and deleted solely for the
+// check — and had no effect: see clm_client.go's package doc "Folders" section for the
+// full evidence chain. Neither this shape nor a flat {Href, AccessType} one worked,
+// with either PATCH or PUT; a distinct CLM error code ("136 - Missing Change Security
+// Task") suggests the real mechanism is a dedicated Task API endpoint, not this generic
+// object Patch. Grant/Revoke on clm_folder are NOT confirmed to work against a real CLM
+// tenant — this is a known, open gap, not a residual unconfirmed assumption.
 type ClmFolderSecurityWrite struct {
 	Groups []ClmGroupSecurityEntry `json:"Groups,omitempty"`
 	Roles  []ClmRoleSecurityEntry  `json:"Roles,omitempty"`

@@ -50,7 +50,7 @@ func TestGetClmNextToken_ComputesFromRequestNotResponse(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := getClmNextToken(tt.requested, tt.itemCount, tt.hasNext, tt.total)
+			got, err := getClmNextToken(tt.requested, tt.itemCount, tt.hasNext, tt.total, "")
 			if err != nil {
 				t.Fatalf("getClmNextToken: %v", err)
 			}
@@ -78,7 +78,7 @@ func TestGetClmNextToken_ComputesFromRequestNotResponse(t *testing.T) {
 // multiple of the page size, a full page landing exactly on Total stops immediately —
 // no need to wait for an empty page in this case, since Total confirms it.
 func TestGetClmNextToken_ExactBoundaryDoesNotLoop(t *testing.T) {
-	got, err := getClmNextToken(clmRequestedPage{Offset: 100, PageSize: 100}, 100, false, 200)
+	got, err := getClmNextToken(clmRequestedPage{Offset: 100, PageSize: 100}, 100, false, 200, "")
 	if err != nil {
 		t.Fatalf("getClmNextToken: %v", err)
 	}
@@ -113,7 +113,7 @@ func TestGetClmNextToken_ExactBoundaryDoesNotLoop(t *testing.T) {
 func TestGetClmNextToken_CapsRunawayPagination(t *testing.T) {
 	t.Run("reaches the cap through normal advancement", func(t *testing.T) {
 		requested := clmRequestedPage{Offset: (maxClmListPages - 1) * 100, PageSize: 100}
-		_, err := getClmNextToken(requested, 100, false, 0)
+		_, err := getClmNextToken(requested, 100, false, 0, "")
 		if err == nil {
 			t.Fatal("expected an error once maxClmListPages is reached, got nil")
 		}
@@ -121,7 +121,7 @@ func TestGetClmNextToken_CapsRunawayPagination(t *testing.T) {
 
 	t.Run("does not fire just below the cap", func(t *testing.T) {
 		requested := clmRequestedPage{Offset: (maxClmListPages - 2) * 100, PageSize: 100}
-		got, err := getClmNextToken(requested, 100, false, 0)
+		got, err := getClmNextToken(requested, 100, false, 0, "")
 		if err != nil {
 			t.Fatalf("expected no error just below the cap, got: %v", err)
 		}
@@ -134,7 +134,7 @@ func TestGetClmNextToken_CapsRunawayPagination(t *testing.T) {
 		// Offset alone, with Requests at its zero value (as a pre-cap or
 		// round-tripped token would decode to), must still trigger the cap.
 		requested := clmRequestedPage{Offset: maxClmListPages * 100, PageSize: 100}
-		_, err := getClmNextToken(requested, 100, false, 0)
+		_, err := getClmNextToken(requested, 100, false, 0, "")
 		if err == nil {
 			t.Fatal("expected the cap to fire from Offset alone, got nil error")
 		}
@@ -147,7 +147,7 @@ func TestGetClmNextToken_CapsRunawayPagination(t *testing.T) {
 		// requested.Requests to reach the same cap. Set Requests to exactly one below
 		// the cap to isolate that it alone is what trips it here.
 		requested := clmRequestedPage{Offset: maxClmListPages - 1, PageSize: 100, Requests: maxClmListPages - 1}
-		_, err := getClmNextToken(requested, 1, true, 0)
+		_, err := getClmNextToken(requested, 1, true, 0, "")
 		if err == nil {
 			t.Fatal("expected the request-count estimate to trip the cap even though the offset floor would not have")
 		}

@@ -2,8 +2,10 @@ package clmtest
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 
 	"github.com/conductorone/baton-docusign/pkg/client"
 )
@@ -13,19 +15,71 @@ func idFromHref(href string) string {
 	return client.IDFromHref(href)
 }
 
-// Doc URL: https://developers.docusign.com/docs/clm-api/reference/objects/folders/ (Search).
-func (s *Server) handleSearchFolders(w http.ResponseWriter, r *http.Request) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
+// folderSearchResults builds the flat, paginated ClmFolderPage for a folder search —
+// shared by the create/poll (wrapped in {Status, Href, Result}) and continuation
+// (bare) responses. Search results are summaries; Security only comes via ?expand on
+// Get, mirroring the real API.
+func (s *Server) folderSearchResults(r *http.Request) client.ClmFolderPage {
 	page, meta := pageSlice(r, s.folderOrder)
 	items := make([]client.ClmFolder, 0, len(page))
 	for _, id := range page {
 		f := *s.folders[id]
-		f.Security = client.ClmFolderSecurity{} // Search results are summaries; Security only comes via ?expand on Get
+		f.Security = client.ClmFolderSecurity{}
 		items = append(items, f)
 	}
-	writeJSON(w, client.ClmFolderPage{ClmPage: meta, Items: items})
+	return client.ClmFolderPage{ClmPage: meta, Items: items}
+}
+
+// Doc URL: https://developers.docusign.com/docs/clm-api/reference/tasks/foldersearchtasks/
+// (Post). Real CLM requires a recognized search parameter in the body (confirmed live:
+// {"Title": ""} matches every folder) — this mock doesn't replicate that validation,
+// since every real client call already sends the confirmed-working body.
+func (s *Server) handleCreateFolderSearchTask(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.nextFolderSearchTaskID++
+	taskID := strconv.Itoa(s.nextFolderSearchTaskID)
+	taskHref := fmt.Sprintf("%s/v2/%s/foldersearchtasks/%s", s.baseURL, AccountID, taskID)
+
+	status := "Success"
+	if s.pendingFolderSearchPolls > 0 {
+		status = "Processing"
+	}
+	resp := client.ClmFolderSearchTaskResponse{Status: status, Href: taskHref}
+	if status == "Success" {
+		result := s.folderSearchResults(r)
+		result.Href = taskHref + "/result"
+		resp.Result = &result
+	}
+	writeJSON(w, resp)
+}
+
+// Doc URL: https://developers.docusign.com/docs/clm-api/reference/tasks/foldersearchtasks/get/
+func (s *Server) handlePollFolderSearchTask(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	taskID := r.PathValue("id")
+	taskHref := fmt.Sprintf("%s/v2/%s/foldersearchtasks/%s", s.baseURL, AccountID, taskID)
+
+	if s.pendingFolderSearchPolls > 0 {
+		s.pendingFolderSearchPolls--
+		writeJSON(w, client.ClmFolderSearchTaskResponse{Status: "Processing", Href: taskHref})
+		return
+	}
+
+	result := s.folderSearchResults(r)
+	result.Href = taskHref + "/result"
+	writeJSON(w, client.ClmFolderSearchTaskResponse{Status: "Success", Href: taskHref, Result: &result})
+}
+
+// Doc URL: https://developers.docusign.com/docs/clm-api/reference/tasks/foldersearchtasks/getsearchresult/
+func (s *Server) handleFolderSearchTaskResult(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	writeJSON(w, s.folderSearchResults(r))
 }
 
 // Doc URL: https://developers.docusign.com/docs/clm-api/reference/objects/folders/get/
@@ -108,9 +162,9 @@ func (s *Server) handlePatchFolder(w http.ResponseWriter, r *http.Request) {
 	}
 
 	f.Security = client.ClmFolderSecurity{
-		Groups: client.ClmGroupSecurityPage{Items: body.Security.Groups},
-		Roles:  client.ClmRoleSecurityPage{Items: body.Security.Roles},
-		Users:  client.ClmUserSecurityPage{Items: body.Security.Users},
+		Groups: body.Security.Groups,
+		Roles:  body.Security.Roles,
+		Users:  body.Security.Users,
 	}
 
 	writeJSON(w, *f)

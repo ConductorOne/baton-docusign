@@ -230,7 +230,7 @@ func TestClmFolderBuilder_GrantAndRevoke_Idempotent(t *testing.T) {
 	} else if hasAlreadyExists(annos) {
 		t.Error("first Grant should not report GrantAlreadyExists")
 	}
-	groups := srv.FolderSecurity("folder-templates").Groups.Items
+	groups := srv.FolderSecurity("folder-templates").Groups
 	if len(groups) != 1 || groups[0].AccessType != client.ClmAccessTypeViewEdit {
 		t.Fatalf("expected one ViewEdit group entry after Grant, got %+v", groups)
 	}
@@ -241,7 +241,7 @@ func TestClmFolderBuilder_GrantAndRevoke_Idempotent(t *testing.T) {
 	} else if !hasAlreadyExists(annos) {
 		t.Error("repeat Grant should report GrantAlreadyExists")
 	}
-	if groups := srv.FolderSecurity("folder-templates").Groups.Items; len(groups) != 1 {
+	if groups := srv.FolderSecurity("folder-templates").Groups; len(groups) != 1 {
 		t.Fatalf("expected still exactly one entry after a repeat Grant, got %d", len(groups))
 	}
 
@@ -252,7 +252,7 @@ func TestClmFolderBuilder_GrantAndRevoke_Idempotent(t *testing.T) {
 	} else if hasAlreadyRevoked(annos) {
 		t.Error("first Revoke should not report GrantAlreadyRevoked")
 	}
-	groups = srv.FolderSecurity("folder-templates").Groups.Items
+	groups = srv.FolderSecurity("folder-templates").Groups
 	if len(groups) != 1 || groups[0].AccessType != client.ClmAccessTypeNoAccess {
 		t.Fatalf("expected the entry's AccessType to become NoAccess after Revoke, got %+v", groups)
 	}
@@ -281,7 +281,7 @@ func TestClmFolderBuilder_GrantAndRevoke_PreservesOtherPrincipals(t *testing.T) 
 	ctx := context.Background()
 
 	before := srv.FolderSecurity("folder-contracts")
-	if total := len(before.Groups.Items) + len(before.Roles.Items) + len(before.Users.Items); total != 4 {
+	if total := len(before.Groups) + len(before.Roles) + len(before.Users); total != 4 {
 		t.Fatalf("expected folder-contracts seeded with 4 entries total, got %d: %+v", total, before)
 	}
 
@@ -302,12 +302,12 @@ func TestClmFolderBuilder_GrantAndRevoke_PreservesOtherPrincipals(t *testing.T) 
 	}
 
 	afterGrant := srv.FolderSecurity("folder-contracts")
-	if len(afterGrant.Groups.Items) != 3 { // group-legal, group-finance, + the new group-ops
-		t.Fatalf("expected 3 group entries after granting a new group principal, got %d: %+v", len(afterGrant.Groups.Items), afterGrant.Groups.Items)
+	if len(afterGrant.Groups) != 3 { // group-legal, group-finance, + the new group-ops
+		t.Fatalf("expected 3 group entries after granting a new group principal, got %d: %+v", len(afterGrant.Groups), afterGrant.Groups)
 	}
-	assertGroupsPreserved(t, before.Groups.Items, afterGrant.Groups.Items, "Grant")
-	assertRolesPreserved(t, before.Roles.Items, afterGrant.Roles.Items, "Grant")
-	assertUsersPreserved(t, before.Users.Items, afterGrant.Users.Items, "Grant")
+	assertGroupsPreserved(t, before.Groups, afterGrant.Groups, "Grant")
+	assertRolesPreserved(t, before.Roles, afterGrant.Roles, "Grant")
+	assertUsersPreserved(t, before.Users, afterGrant.Users, "Grant")
 
 	grantObj := &v2.Grant{Principal: groupResource, Entitlement: ent}
 	if annos, err := b.Revoke(ctx, grantObj); err != nil {
@@ -317,12 +317,12 @@ func TestClmFolderBuilder_GrantAndRevoke_PreservesOtherPrincipals(t *testing.T) 
 	}
 
 	afterRevoke := srv.FolderSecurity("folder-contracts")
-	if len(afterRevoke.Groups.Items) != 3 { // still 3 (NoAccess, not removed)
-		t.Fatalf("expected still 3 group entries after Revoke (NoAccess, not removed), got %d: %+v", len(afterRevoke.Groups.Items), afterRevoke.Groups.Items)
+	if len(afterRevoke.Groups) != 3 { // still 3 (NoAccess, not removed)
+		t.Fatalf("expected still 3 group entries after Revoke (NoAccess, not removed), got %d: %+v", len(afterRevoke.Groups), afterRevoke.Groups)
 	}
-	assertGroupsPreserved(t, before.Groups.Items, afterRevoke.Groups.Items, "Revoke")
-	assertRolesPreserved(t, before.Roles.Items, afterRevoke.Roles.Items, "Revoke")
-	assertUsersPreserved(t, before.Users.Items, afterRevoke.Users.Items, "Revoke")
+	assertGroupsPreserved(t, before.Groups, afterRevoke.Groups, "Revoke")
+	assertRolesPreserved(t, before.Roles, afterRevoke.Roles, "Revoke")
+	assertUsersPreserved(t, before.Users, afterRevoke.Users, "Revoke")
 }
 
 func assertGroupsPreserved(t *testing.T, before, after []client.ClmGroupSecurityEntry, when string) {
@@ -406,7 +406,7 @@ func TestClmFolderBuilder_GrantAndRevoke_ToleratesBareIDOnRead(t *testing.T) {
 	} else if !hasAlreadyExists(annos) {
 		t.Error("Grant should recognize a bare-ID entry.Href as already granted, not duplicate it")
 	}
-	if groups := srv.FolderSecurity("folder-templates").Groups.Items; len(groups) != 1 {
+	if groups := srv.FolderSecurity("folder-templates").Groups; len(groups) != 1 {
 		t.Fatalf("expected still exactly one entry, got %d: %+v", len(groups), groups)
 	}
 
@@ -417,7 +417,7 @@ func TestClmFolderBuilder_GrantAndRevoke_ToleratesBareIDOnRead(t *testing.T) {
 	} else if hasAlreadyRevoked(annos) {
 		t.Fatal("Revoke incorrectly reported GrantAlreadyRevoked for a bare-ID entry.Href — access was left in place instead of being revoked")
 	}
-	groups := srv.FolderSecurity("folder-templates").Groups.Items
+	groups := srv.FolderSecurity("folder-templates").Groups
 	if len(groups) != 1 || groups[0].AccessType != client.ClmAccessTypeNoAccess {
 		t.Fatalf("expected the entry's AccessType to become NoAccess after Revoke, got %+v", groups)
 	}
@@ -451,7 +451,7 @@ func TestClmFolderBuilder_GrantAndRevoke_SurvivesIdentityOnlyPrincipal(t *testin
 		if _, _, err := b.Grant(ctx, principal, ent); err != nil {
 			t.Fatalf("Grant with an identity-only principal: %v", err)
 		}
-		groups := srv.FolderSecurity("folder-templates").Groups.Items
+		groups := srv.FolderSecurity("folder-templates").Groups
 		if len(groups) != 1 || groups[0].AccessType != client.ClmAccessTypeView {
 			t.Fatalf("expected one View group entry after Grant, got %+v", groups)
 		}
@@ -473,7 +473,7 @@ func TestClmFolderBuilder_GrantAndRevoke_SurvivesIdentityOnlyPrincipal(t *testin
 		if hasAlreadyRevoked(annos) {
 			t.Fatal("Revoke incorrectly reported GrantAlreadyRevoked — the derived Href didn't match the entry Grant wrote")
 		}
-		groups = srv.FolderSecurity("folder-templates").Groups.Items
+		groups = srv.FolderSecurity("folder-templates").Groups
 		if len(groups) != 1 || groups[0].AccessType != client.ClmAccessTypeNoAccess {
 			t.Fatalf("expected the entry's AccessType to become NoAccess after Revoke, got %+v", groups)
 		}
@@ -486,7 +486,7 @@ func TestClmFolderBuilder_GrantAndRevoke_SurvivesIdentityOnlyPrincipal(t *testin
 		if _, _, err := b.Grant(ctx, principal, ent); err != nil {
 			t.Fatalf("Grant with an identity-only principal: %v", err)
 		}
-		users := srv.FolderSecurity("folder-templates").Users.Items
+		users := srv.FolderSecurity("folder-templates").Users
 		if len(users) != 1 || users[0].AccessType != client.ClmAccessTypeView {
 			t.Fatalf("expected one View user entry after Grant, got %+v", users)
 		}
@@ -505,7 +505,7 @@ func TestClmFolderBuilder_GrantAndRevoke_SurvivesIdentityOnlyPrincipal(t *testin
 		if hasAlreadyRevoked(annos) {
 			t.Fatal("Revoke incorrectly reported GrantAlreadyRevoked — the derived Href didn't match the entry Grant wrote")
 		}
-		users = srv.FolderSecurity("folder-templates").Users.Items
+		users = srv.FolderSecurity("folder-templates").Users
 		if len(users) != 1 || users[0].AccessType != client.ClmAccessTypeNoAccess {
 			t.Fatalf("expected the entry's AccessType to become NoAccess after Revoke, got %+v", users)
 		}
@@ -610,7 +610,7 @@ func TestClmFolderBuilder_Grant_SurvivesIdentityOnlyPrincipal_SampleBranch(t *te
 		if _, _, err := b.Grant(ctx, principal, ent); err != nil {
 			t.Fatalf("Grant with an identity-only principal: %v", err)
 		}
-		groups := srv.FolderSecurity("folder-contracts").Groups.Items
+		groups := srv.FolderSecurity("folder-contracts").Groups
 		wantHref := fmt.Sprintf("%s/v2/%s/groups/group-ops", sampleHost, clmtest.AccountID)
 		var found *client.ClmGroupSecurityEntry
 		for i := range groups {
@@ -636,7 +636,7 @@ func TestClmFolderBuilder_Grant_SurvivesIdentityOnlyPrincipal_SampleBranch(t *te
 		if _, _, err := b.Grant(ctx, principal, ent); err != nil {
 			t.Fatalf("Grant with an identity-only principal: %v", err)
 		}
-		users := srv.FolderSecurity("folder-contracts").Users.Items
+		users := srv.FolderSecurity("folder-contracts").Users
 		wantHref := fmt.Sprintf("%s/v2/%s/members/member-dave", sampleHost, clmtest.AccountID)
 		var found *client.ClmUserSecurityEntry
 		for i := range users {

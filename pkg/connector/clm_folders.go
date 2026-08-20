@@ -138,7 +138,7 @@ func (f *clmFolderBuilder) Grants(ctx context.Context, folderResource *v2.Resour
 
 	var grants []*v2.Grant
 
-	for _, entry := range folder.Security.Groups.Items {
+	for _, entry := range folder.Security.Groups {
 		slug, ok := clmSlugForAccessType(entry.AccessType)
 		if !ok {
 			continue
@@ -153,7 +153,7 @@ func (f *clmFolderBuilder) Grants(ctx context.Context, folderResource *v2.Resour
 		grants = append(grants, grant.NewGrant(folderResource, slug, principalID, grantOpts...))
 	}
 
-	for _, entry := range folder.Security.Roles.Items {
+	for _, entry := range folder.Security.Roles {
 		slug, ok := clmSlugForAccessType(entry.AccessType)
 		if !ok {
 			continue
@@ -168,7 +168,7 @@ func (f *clmFolderBuilder) Grants(ctx context.Context, folderResource *v2.Resour
 		grants = append(grants, grant.NewGrant(folderResource, slug, principalID))
 	}
 
-	for _, entry := range folder.Security.Users.Items {
+	for _, entry := range folder.Security.Users {
 		slug, ok := clmSlugForAccessType(entry.AccessType)
 		if !ok {
 			continue
@@ -285,12 +285,12 @@ func (f *clmFolderBuilder) Grant(ctx context.Context, principal *v2.Resource, en
 // back to PatchFolderSecurity, taking a defensive copy of each collection so callers
 // can mutate the result without aliasing the original read.
 func clmFolderSecurityToWrite(sec client.ClmFolderSecurity) client.ClmFolderSecurityWrite {
-	groups := make([]client.ClmGroupSecurityEntry, len(sec.Groups.Items))
-	copy(groups, sec.Groups.Items)
-	roles := make([]client.ClmRoleSecurityEntry, len(sec.Roles.Items))
-	copy(roles, sec.Roles.Items)
-	users := make([]client.ClmUserSecurityEntry, len(sec.Users.Items))
-	copy(users, sec.Users.Items)
+	groups := make([]client.ClmGroupSecurityEntry, len(sec.Groups))
+	copy(groups, sec.Groups)
+	roles := make([]client.ClmRoleSecurityEntry, len(sec.Roles))
+	copy(roles, sec.Roles)
+	users := make([]client.ClmUserSecurityEntry, len(sec.Users))
+	copy(users, sec.Users)
 	return client.ClmFolderSecurityWrite{Groups: groups, Roles: roles, Users: users}
 }
 

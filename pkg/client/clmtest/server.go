@@ -27,7 +27,9 @@
 //
 //	GET   /oauth/userinfo                              — eSignature account discovery (ensureInitialized)
 //	GET   /api/v2/{accountId}/account                   — CLM account discovery (ensureClmInitialized)
-//	POST  /v2/{accountId}/folders/search                — SearchFolders
+//	POST  /v2/{accountId}/foldersearchtasks             — SearchFolders (create task; resolves inline)
+//	GET   /v2/{accountId}/foldersearchtasks/{id}        — SearchFolders (poll a task — see PendingFolderSearchPolls)
+//	GET   /v2/{accountId}/foldersearchtasks/{id}/result — SearchFolders (continuation pages)
 //	GET   /v2/{accountId}/folders/{id}                  — GetFolder (supports ?expand=Security)
 //	PATCH /v2/{accountId}/folders/{id}                  — PatchFolderSecurity
 //	GET   /v2/{accountId}/groups                        — ListGroups
@@ -115,6 +117,24 @@ type Server struct {
 	memberGroupsRequests int // count of GET .../members/{id}/groups calls, for pagination assertions
 
 	lastPatchedMemberGroupHrefs map[string][]string // memberID -> the raw Href strings the last PATCH request body carried, for tests
+
+	nextFolderSearchTaskID int // incrementing counter for mock FolderSearchTasks task IDs
+
+	// pendingFolderSearchPolls, when > 0, makes the next SearchFolders task created via
+	// POST /foldersearchtasks come back "Processing" this many times before resolving to
+	// "Success" on poll — see SetPendingFolderSearchPolls. Decremented on each poll.
+	pendingFolderSearchPolls int
+}
+
+// SetPendingFolderSearchPolls makes the next folder search task created by this server
+// require n polls of GET .../foldersearchtasks/{id} before resolving to "Success" —
+// exercises SearchFolders' awaitClmFolderSearchTask polling loop, which every live test
+// against a real CLM tenant resolved past on the first try (inline in the POST
+// response), leaving that branch otherwise untested.
+func (s *Server) SetPendingFolderSearchPolls(n int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pendingFolderSearchPolls = n
 }
 
 // MemberGroupsRequestCount returns how many times GET .../members/{id}/groups has been
@@ -184,9 +204,9 @@ func (s *Server) SetFolderGroupSecurityHref(folderID, groupID, href string) {
 	defer s.mu.Unlock()
 	folder, ok := s.folders[folderID]
 	if ok {
-		for i := range folder.Security.Groups.Items {
-			if idFromHref(folder.Security.Groups.Items[i].Href) == groupID {
-				folder.Security.Groups.Items[i].Href = href
+		for i := range folder.Security.Groups {
+			if idFromHref(folder.Security.Groups[i].Href) == groupID {
+				folder.Security.Groups[i].Href = href
 				return
 			}
 		}
@@ -202,9 +222,9 @@ func (s *Server) SetFolderUserSecurityHref(folderID, memberID, href string) {
 	defer s.mu.Unlock()
 	folder, ok := s.folders[folderID]
 	if ok {
-		for i := range folder.Security.Users.Items {
-			if idFromHref(folder.Security.Users.Items[i].Href) == memberID {
-				folder.Security.Users.Items[i].Href = href
+		for i := range folder.Security.Users {
+			if idFromHref(folder.Security.Users[i].Href) == memberID {
+				folder.Security.Users[i].Href = href
 				return
 			}
 		}
@@ -239,16 +259,16 @@ func (s *Server) FolderSecurity(folderID string) client.ClmFolderSecurity {
 	if !ok {
 		return client.ClmFolderSecurity{}
 	}
-	groups := make([]client.ClmGroupSecurityEntry, len(f.Security.Groups.Items))
-	copy(groups, f.Security.Groups.Items)
-	roles := make([]client.ClmRoleSecurityEntry, len(f.Security.Roles.Items))
-	copy(roles, f.Security.Roles.Items)
-	users := make([]client.ClmUserSecurityEntry, len(f.Security.Users.Items))
-	copy(users, f.Security.Users.Items)
+	groups := make([]client.ClmGroupSecurityEntry, len(f.Security.Groups))
+	copy(groups, f.Security.Groups)
+	roles := make([]client.ClmRoleSecurityEntry, len(f.Security.Roles))
+	copy(roles, f.Security.Roles)
+	users := make([]client.ClmUserSecurityEntry, len(f.Security.Users))
+	copy(users, f.Security.Users)
 	return client.ClmFolderSecurity{
-		Groups: client.ClmGroupSecurityPage{Items: groups},
-		Roles:  client.ClmRoleSecurityPage{Items: roles},
-		Users:  client.ClmUserSecurityPage{Items: users},
+		Groups: groups,
+		Roles:  roles,
+		Users:  users,
 	}
 }
 
@@ -272,7 +292,9 @@ func newMux(s *Server) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /oauth/userinfo", s.handleUserInfo)
 	mux.HandleFunc("GET /api/v2/{accountId}/account", s.requireAuth(s.handleClmAccountDiscovery))
-	mux.HandleFunc("POST /v2/{accountId}/folders/search", s.requireAuth(s.handleSearchFolders))
+	mux.HandleFunc("POST /v2/{accountId}/foldersearchtasks", s.requireAuth(s.handleCreateFolderSearchTask))
+	mux.HandleFunc("GET /v2/{accountId}/foldersearchtasks/{id}", s.requireAuth(s.handlePollFolderSearchTask))
+	mux.HandleFunc("GET /v2/{accountId}/foldersearchtasks/{id}/result", s.requireAuth(s.handleFolderSearchTaskResult))
 	mux.HandleFunc("GET /v2/{accountId}/folders/{id}", s.requireAuth(s.handleGetFolder))
 	mux.HandleFunc("PATCH /v2/{accountId}/folders/{id}", s.requireAuth(s.handlePatchFolder))
 	mux.HandleFunc("GET /v2/{accountId}/groups", s.requireAuth(s.handleListGroups))

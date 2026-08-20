@@ -122,7 +122,7 @@ func seed(s *Server) {
 		Name: "Contracts",
 		Path: "/Contracts",
 		Security: client.ClmFolderSecurity{
-			Groups: client.ClmGroupSecurityPage{Items: []client.ClmGroupSecurityEntry{
+			Groups: []client.ClmGroupSecurityEntry{
 				// Known tier granted to a group — tests slug-from-AccessType and
 				// group-Href routing (should carry GrantExpandable at the connector
 				// layer).
@@ -130,15 +130,15 @@ func seed(s *Server) {
 				// "Custom" — not one of the 5 grantable tiers — tests that Grants()
 				// skips rather than guesses.
 				{AccessType: client.ClmAccessTypeCustom, Href: s.GroupHref("group-finance")},
-			}},
-			Roles: client.ClmRoleSecurityPage{Items: []client.ClmRoleSecurityEntry{
+			},
+			Roles: []client.ClmRoleSecurityEntry{
 				// Role-granted entry — tests clm_role routing.
 				{AccessType: client.ClmAccessTypeView, Item: roleFullSubscriberName},
-			}},
-			Users: client.ClmUserSecurityPage{Items: []client.ClmUserSecurityEntry{
+			},
+			Users: []client.ClmUserSecurityEntry{
 				// Known tier granted to a member — tests clm_member routing.
 				{AccessType: client.ClmAccessTypeView, Href: s.MemberHref(memberBobID)},
-			}},
+			},
 		},
 	}
 	contractsFolder.Href = s.FolderHref("folder-contracts")
