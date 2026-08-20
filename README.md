@@ -109,11 +109,14 @@ Requirements:
 
 - Your DocuSign account must have a CLM production subscription.
 - **Demo environment or self-hosted with your own DocuSign app**: no extra setup — the
-  connector requests the additional CLM OAuth scopes (`spring_read`/`spring_write`)
-  automatically.
+  connector requests the additional CLM OAuth scopes (`impersonation`/`spring_read`/
+  `spring_write`) automatically.
 - **Cloud-hosted production (ConductorOne's managed OAuth app)**: the managed app must
   also be granted the CLM API scopes on ConductorOne's platform side before any CLM data
   will sync. Contact ConductorOne if no CLM data appears in this mode.
+- **Already-connected install**: an existing OAuth connection keeps its old consent on
+  refresh, so re-run `--configure` (re-consent) once to pick up the new `impersonation`
+  scope.
 
 The 5 CLM resource types are always registered and visible to C1, but each carries
 `OptInRequired` — C1 excludes them from a customer's sync by default, and they only run

@@ -27,9 +27,10 @@ type Connector struct {
 	// includeClm reports whether this sync will touch any CLM resource type — the same
 	// opts.WillSyncResourceType(...) signal that already determines whether any CLM
 	// builder's List() gets invoked this run (see New()). Gates Validate()'s upfront CLM
-	// readiness check: does NOT gate resource-type registration (ResourceSyncers always
-	// registers all 5 CLM builders unconditionally — see that comment for why a
-	// registration-level gate was tried and reverted once before, in 9cbbd06/002a649).
+	// readiness check only: it does NOT gate resource-type registration. ResourceSyncers
+	// always registers all 5 CLM builders unconditionally, because toggling registration
+	// itself would make ListResourceTypes() advertise a different set between syncs and
+	// C1 would read previously-synced CLM resources/grants as deleted.
 	includeClm bool
 	// skipPermissionProfileResourceType reports whether permission_profile is
 	// excluded from the sync filter.
@@ -143,19 +144,20 @@ func (d *Connector) Metadata(_ context.Context) (*v2.ConnectorMetadata, error) {
 // happens to run first. EnsureReady (base eSignature credentials) runs unconditionally
 // — every sync needs those regardless of CLM — while EnsureClmReady is gated on
 // includeClm: an account that never opted into any CLM resource type has no reason to
-// pay for, or fail on, a CLM discovery call it doesn't need — see this file's
-// includeClm field doc for why this gate doesn't repeat the registration-level opt-in
-// flag this connector already tried and reverted once (9cbbd06/002a649). See
-// clm_roles.go's doc comment for the review discussion that led to centralizing the
-// CLM check here instead of inside every opted-in CLM builder's own List().
+// pay for, or fail on, a CLM discovery call it doesn't need. This gate is separate from
+// resource-type registration (see this file's includeClm field doc) and replaces each
+// CLM builder's own List() checking readiness independently.
 func (d *Connector) Validate(ctx context.Context) (annotations.Annotations, error) {
 	if err := d.client.EnsureReady(ctx); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("baton-docusign: eSignature credential check failed: %w", err)
 	}
 	if !d.includeClm {
 		return nil, nil
 	}
-	return nil, d.client.EnsureClmReady(ctx)
+	if err := d.client.EnsureClmReady(ctx); err != nil {
+		return nil, fmt.Errorf("baton-docusign: CLM readiness check failed — clm_* resource types are enabled for this sync but this account/credential cannot reach the CLM API; disable those resource types or enable CLM on the account: %w", err)
+	}
+	return nil, nil
 }
 
 func NewWithRefreshToken(

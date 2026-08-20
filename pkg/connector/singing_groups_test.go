@@ -79,12 +79,11 @@ func newSigningGroupsTestClient(t *testing.T, userInfoStatus int) *client.Client
 	return client.NewClient(context.Background(), false, tokenSource, "", "", wrapper)
 }
 
-// TestSigningGroupBuilder_List_FailsWhenUnavailable is a regression test for the
-// fail-loud behavior change in 47f58c3: signing_group is gated behind the
-// --include-signing-groups flag (connector.go), but that flag doesn't validate the
-// account actually has the feature before letting an operator turn it on. List() must
-// now propagate any error (here, a 401 from eSignature account discovery) instead of
-// tolerating it and silently syncing zero signing groups.
+// TestSigningGroupBuilder_List_FailsWhenUnavailable is a regression test: signing_group
+// is gated behind the --include-signing-groups flag (connector.go), but that flag
+// doesn't validate the account actually has the feature before letting an operator turn
+// it on. List() must propagate any error (here, a 401 from eSignature account discovery)
+// instead of tolerating it and silently syncing zero signing groups.
 func TestSigningGroupBuilder_List_FailsWhenUnavailable(t *testing.T) {
 	c := newSigningGroupsTestClient(t, http.StatusUnauthorized)
 	b := newSigningGroupBuilder(c)
