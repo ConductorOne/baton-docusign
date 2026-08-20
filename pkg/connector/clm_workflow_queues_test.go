@@ -171,6 +171,36 @@ func TestClmWorkflowQueueBuilder_List_SkipsGracefullyOnSessionStoreReadFailure(t
 	}
 }
 
+// TestClmWorkflowQueueBuilder_List_FailsLoudlyOnSessionStoreFailureAfterFirstChunk is the
+// regression test for the false-deletion bug the pageToken != "" gating (see List's
+// discovery-state read) exists to prevent: unlike the two graceful-skip tests above
+// (both hit on the very first chunk, before anything has been persisted), a
+// session-store read failure on a LATER chunk — after an earlier chunk already durably
+// wrote real queue data — must fail the sync instead of reporting zero resources, which
+// would read as every already-discovered queue having been deleted.
+func TestClmWorkflowQueueBuilder_List_FailsLoudlyOnSessionStoreFailureAfterFirstChunk(t *testing.T) {
+	_, c := clmtest.NewServer(t)
+	b := newClmWorkflowQueueBuilder(c)
+	ctx := context.Background()
+	store := newFakeSessionStore()
+
+	_, syncRes, err := b.List(ctx, nil, rs.SyncOpAttrs{Session: store, PageToken: pagination.Token{Size: 1}})
+	if err != nil {
+		t.Fatalf("chunk 1: %v", err)
+	}
+	if syncRes.NextPageToken == "" {
+		t.Fatalf("expected more than one seeded member so chunk 1 doesn't already finish the scan")
+	}
+
+	_, _, err = b.List(ctx, nil, rs.SyncOpAttrs{
+		Session:   &readFailingSessionStore{fakeSessionStore: store},
+		PageToken: pagination.Token{Size: 1, Token: syncRes.NextPageToken},
+	})
+	if err == nil {
+		t.Fatal("expected a session-store read failure on a later chunk to fail loudly, not skip gracefully — an earlier chunk already persisted real queue data that a graceful zero-resource response would read as deleted")
+	}
+}
+
 func TestClmWorkflowQueueBuilder_List_FailsWhenClmUnavailable(t *testing.T) {
 	// clm_workflow_queue is OptInRequired, and C1's opt-in toggle doesn't check the
 	// account can actually use it first — see List()'s escalation branch in

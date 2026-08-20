@@ -20,9 +20,12 @@ jobs:
       # directly with no resource-type filter otherwise. clm_workflow_queue now fails
       # the whole sync rather than skipping gracefully when CLM isn't available (see
       # pkg/connector/clm_workflow_queues.go's List()), so it must be excluded here —
-      # but sync-resource-types is an allowlist, so the other 5 CLM types (which still
-      # gracefully skip, unchanged) are listed back in explicitly to keep exercising
-      # their isOptInFeatureUnavailableError path end-to-end against this no-CLM account.
+      # but sync-resource-types is an allowlist, so the other 5 CLM types are listed back
+      # in explicitly to keep exercising them end-to-end against this no-CLM account.
+      # Only 4 of those 5 (clm_member, clm_group, clm_permission_set, clm_folder)
+      # actually go through isOptInFeatureUnavailableError's graceful skip; clm_role
+      # makes no API call at all in List() (a hardcoded set), so it's exercised here for
+      # coverage of its own List(), not of the graceful-skip path.
       BATON_SYNC_RESOURCE_TYPES: user,group,permission_profile,signing_group,clm_member,clm_role,clm_group,clm_permission_set,clm_folder
     steps:
       - name: Checkout code
@@ -57,9 +60,12 @@ jobs:
       # directly with no resource-type filter otherwise. clm_workflow_queue now fails
       # the whole sync rather than skipping gracefully when CLM isn't available (see
       # pkg/connector/clm_workflow_queues.go's List()), so it must be excluded here —
-      # but sync-resource-types is an allowlist, so the other 5 CLM types (which still
-      # gracefully skip, unchanged) are listed back in explicitly to keep exercising
-      # their isOptInFeatureUnavailableError path end-to-end against this no-CLM account.
+      # but sync-resource-types is an allowlist, so the other 5 CLM types are listed back
+      # in explicitly to keep exercising them end-to-end against this no-CLM account.
+      # Only 4 of those 5 (clm_member, clm_group, clm_permission_set, clm_folder)
+      # actually go through isOptInFeatureUnavailableError's graceful skip; clm_role
+      # makes no API call at all in List() (a hardcoded set), so it's exercised here for
+      # coverage of its own List(), not of the graceful-skip path.
       BATON_SYNC_RESOURCE_TYPES: user,group,permission_profile,signing_group,clm_member,clm_role,clm_group,clm_permission_set,clm_folder
     steps:
       - name: Checkout code
@@ -94,9 +100,12 @@ jobs:
       # directly with no resource-type filter otherwise. clm_workflow_queue now fails
       # the whole sync rather than skipping gracefully when CLM isn't available (see
       # pkg/connector/clm_workflow_queues.go's List()), so it must be excluded here —
-      # but sync-resource-types is an allowlist, so the other 5 CLM types (which still
-      # gracefully skip, unchanged) are listed back in explicitly to keep exercising
-      # their isOptInFeatureUnavailableError path end-to-end against this no-CLM account.
+      # but sync-resource-types is an allowlist, so the other 5 CLM types are listed back
+      # in explicitly to keep exercising them end-to-end against this no-CLM account.
+      # Only 4 of those 5 (clm_member, clm_group, clm_permission_set, clm_folder)
+      # actually go through isOptInFeatureUnavailableError's graceful skip; clm_role
+      # makes no API call at all in List() (a hardcoded set), so it's exercised here for
+      # coverage of its own List(), not of the graceful-skip path.
       BATON_SYNC_RESOURCE_TYPES: user,group,permission_profile,signing_group,clm_member,clm_role,clm_group,clm_permission_set,clm_folder
     steps:
       - name: Checkout code
