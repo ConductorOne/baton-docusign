@@ -138,6 +138,15 @@ func (b *clmWorkflowQueueBuilder) List(ctx context.Context, _ *v2.ResourceId, at
 
 	state, found, err := session.GetJSON[clmWorkflowQueueDiscoveryState](ctx, attr.Session, clmSessionKeyWorkflowQueueDiscoveryState)
 	if err != nil {
+		if pageToken != "" {
+			// A non-empty incoming page token can only exist because an earlier chunk's
+			// session-store writes already succeeded — state.SucceededAtLeastOnce isn't
+			// available here (that's exactly what this failed read was trying to fetch),
+			// but the token itself proves real queue data is already durably persisted.
+			// Losing it now would read as every previously discovered queue having been
+			// deleted, so fail loud instead of accepting a lossy empty result.
+			return nil, nil, fmt.Errorf("baton-docusign: failed to read CLM workflow queue discovery state: %w", err)
+		}
 		// The session store is opt-in end-to-end: WithSessionStoreEnabled (main.go) only
 		// tells the SDK to accept a store connection — whether one actually exists still
 		// depends on the parent process wiring a listen port, and it falls back to
@@ -283,17 +292,23 @@ func (b *clmWorkflowQueueBuilder) List(ctx context.Context, _ *v2.ResourceId, at
 		}
 		existing, err := session.GetManyJSON[[]string](ctx, attr.Session, keys)
 		if err != nil {
-			if state.SucceededAtLeastOnce {
-				// Real queue membership from this or an earlier chunk is already sitting
-				// in the session store. Returning success with zero resources here would
-				// make this the last (and only) response the SDK sees for this resource
-				// type — an authoritative empty result that reads as every previously
-				// synced clm_workflow_queue and its grants having been deleted. Propagate
-				// the error instead: the SDK preserves the last-known-good sync rather
-				// than accepting a lossy one.
+			if pageToken != "" {
+				// state.SucceededAtLeastOnce is always true by the time we reach this
+				// block (populating chunkMembersByQueue requires a prior successful
+				// GetMemberWorkflowQueues call), so it can't distinguish "real data exists
+				// only in this in-memory chunk" from "an earlier chunk already durably
+				// persisted real data" — a non-empty incoming page token is what actually
+				// proves the latter. Losing an earlier chunk's persisted membership here
+				// would make this the last (and only) response the SDK sees for this
+				// resource type — an authoritative empty result that reads as every
+				// previously synced clm_workflow_queue and its grants having been deleted.
+				// Propagate the error instead: the SDK preserves the last-known-good sync
+				// rather than accepting a lossy one.
 				return nil, nil, fmt.Errorf("baton-docusign: failed to read cached CLM workflow queue membership: %w", err)
 			}
-			// Same opt-in-session-store reasoning as the discovery-state read above.
+			// First chunk: nothing has been durably persisted yet, so this in-memory
+			// chunk's data is all that's at risk — same opt-in-session-store reasoning as
+			// the discovery-state read above.
 			ctxzap.Extract(ctx).Debug("baton-docusign: failed to read cached CLM workflow queue membership, skipping clm_workflow_queue sync", zap.Error(err))
 			return nil, &rs.SyncOpResults{Annotations: dedupeRateLimitAnnotations(allAnnos)}, nil
 		}
@@ -316,13 +331,16 @@ func (b *clmWorkflowQueueBuilder) List(ctx context.Context, _ *v2.ResourceId, at
 			membersByKey[key] = merged
 		}
 		if err := session.SetManyJSON(ctx, attr.Session, membersByKey); err != nil {
-			if state.SucceededAtLeastOnce {
-				// Same false-deletion reasoning as the read above: this chunk's
-				// membership updates would be silently dropped, and a graceful
-				// zero-resource response here reads as everything already discovered
-				// having been deleted. Fail loud instead of accepting that outcome.
+			if pageToken != "" {
+				// Same reasoning as the read above: state.SucceededAtLeastOnce can't tell
+				// "this chunk" apart from "an earlier, already-persisted chunk" here, so
+				// use the incoming page token instead. This chunk's membership updates
+				// would be silently dropped, and a graceful zero-resource response here
+				// reads as everything already discovered having been deleted. Fail loud
+				// instead of accepting that outcome.
 				return nil, nil, fmt.Errorf("baton-docusign: failed to cache CLM workflow queue membership: %w", err)
 			}
+			// First chunk: nothing has been durably persisted yet.
 			ctxzap.Extract(ctx).Debug("baton-docusign: failed to cache CLM workflow queue membership, skipping clm_workflow_queue sync", zap.Error(err))
 			return nil, &rs.SyncOpResults{Annotations: dedupeRateLimitAnnotations(allAnnos)}, nil
 		}
