@@ -155,7 +155,9 @@ func (d *Connector) Validate(ctx context.Context) (annotations.Annotations, erro
 		return nil, nil
 	}
 	if err := d.client.EnsureClmReady(ctx); err != nil {
-		return nil, fmt.Errorf("baton-docusign: CLM readiness check failed — clm_* resource types are enabled for this sync but this account/credential cannot reach the CLM API; disable those resource types or enable CLM on the account: %w", err)
+		return nil, fmt.Errorf("baton-docusign: CLM readiness check failed — clm_* resource types "+
+			"are enabled for this sync but this account/credential cannot reach the CLM API; "+
+			"disable those resource types or enable CLM on the account: %w", err)
 	}
 	return nil, nil
 }
