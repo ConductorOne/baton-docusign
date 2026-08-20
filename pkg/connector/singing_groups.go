@@ -101,7 +101,7 @@ func (g *signingGroupBuilder) Grants(ctx context.Context, groupResource *v2.Reso
 		userDetails, _, err := g.client.GetUserByEmail(ctx, user.Email)
 		if err != nil {
 			l := ctxzap.Extract(ctx)
-			l.Debug("docusign-connector: failed to lookup user by email for signing group member, skipping",
+			l.Debug("baton-docusign: failed to lookup user by email for signing group member, skipping",
 				zap.String("signing_group_id", groupResource.Id.Resource),
 				zap.String("email", user.Email),
 				zap.String("username", user.UserName),
