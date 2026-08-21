@@ -193,16 +193,9 @@ func (f *clmFolderBuilder) Grants(ctx context.Context, folderResource *v2.Resour
 	return grants, &rs.SyncOpResults{Annotations: annos}, nil
 }
 
-// logSkippedFolderSecurityEntry logs the one Debug line for a folder-security entry
-// whose AccessType didn't map to a grantable tier — shared by the Groups/Roles/Users
-// branches of Grants, which differ only in kind ("group"/"role"/"user", carried as a
-// field rather than interpolated into the message, so both messages stay constant
-// strings — no per-call fmt.Sprintf) and the caller-supplied fields identifying the
-// entry. Custom gets its own message, since unlike NoAccess/InheritFromParentFolder
-// (clmIsBenignUnmappedAccessType) it's a real, active grant this connector can't
-// represent — fully silencing it would hide an actual access-visibility gap. Both
-// branches carry access_type so either case is findable by the same structured-log
-// query as every other skip line in this file.
+// logSkippedFolderSecurityEntry Debug-logs an unmapped folder-security AccessType.
+// Benign values (NoAccess / Inherit) return without logging; Custom logs as an
+// unrepresentable active grant. kind is "group"|"role"|"user".
 func logSkippedFolderSecurityEntry(ctx context.Context, kind, accessType string, fields ...zap.Field) {
 	if clmIsBenignUnmappedAccessType(accessType) {
 		// The common steady-state case (NoAccess/InheritFromParentFolder, on every
@@ -475,19 +468,8 @@ func clmSlugForAccessType(accessType string) (string, bool) {
 	return "", false
 }
 
-// clmIsBenignUnmappedAccessType reports whether accessType is one of the two documented
-// non-grantable-but-truly-inert values every folder-security entry can legitimately
-// carry — NoAccess (this connector's own Revoke leaves entries in place at this value,
-// so it appears on every subsequent sync of a revoked entry) and InheritFromParentFolder
-// (an absence-of-override marker — see clmFolderEntitlement's doc). Grants() skips these
-// the same way it skips Custom, but stays fully silent for them, unlike Custom: neither
-// represents an access grant C1 is failing to show, so logging them would only add
-// per-sync noise for two expected states large accounts can produce on every sync.
-//
-// Custom is deliberately NOT in this set — see its own Debug log in
-// logSkippedFolderSecurityEntry: it's a real, active grant this connector can't
-// round-trip to a single tier (an arbitrary flag combination), so silencing it the same
-// way would hide an actual access-visibility gap, not just an expected inert state.
+// clmIsBenignUnmappedAccessType is true for NoAccess and InheritFromParentFolder —
+// inert AccessTypes Grants() skips without logging. Custom is not benign.
 func clmIsBenignUnmappedAccessType(accessType string) bool {
 	switch accessType {
 	case client.ClmAccessTypeNoAccess, client.ClmAccessTypeInherit:
