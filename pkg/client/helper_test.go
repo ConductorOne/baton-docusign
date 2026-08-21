@@ -76,6 +76,27 @@ func TestReclassifyHourlyRateLimitError(t *testing.T) {
 		}
 	})
 
+	t.Run("matches on the docs-quoted message when errorCode differs", func(t *testing.T) {
+		// Published rules-and-limits docs quote the message text for the account hourly
+		// limit but do not list HOURLY_APIINVOCATION_LIMIT_EXCEEDED; accept either signal.
+		errTarget := &ErrorResponse{
+			ErrorCode:    "SOME_FUTURE_HOURLY_CODE",
+			ErrorMessage: "The maximum number of hourly API invocations has been exceeded. The hourly limit is 3000.",
+		}
+
+		got := reclassifyHourlyRateLimitError(errTarget, origErr)
+		if got == nil {
+			t.Fatal("expected a rate-limit error from the docs-quoted message, got nil")
+		}
+		st, ok := status.FromError(got)
+		if !ok {
+			t.Fatalf("expected a gRPC status error, got %v", got)
+		}
+		if st.Code() != codes.Unavailable {
+			t.Errorf("expected codes.Unavailable, got %v", st.Code())
+		}
+	})
+
 	t.Run("does not match CLM's distinct error envelope", func(t *testing.T) {
 		// ClmErrorResponse is a different type from *ErrorResponse even if some CLM error
 		// happened to carry the same string in an analogous field — the type assertion

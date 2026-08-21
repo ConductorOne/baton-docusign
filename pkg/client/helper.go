@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
@@ -20,19 +21,28 @@ import (
 const DefaultPageSize = 100
 
 // docusignHourlyRateLimitErrorCode is the eSignature API's JSON error-body errorCode for
-// "the account's hourly API-call budget is exhausted" — confirmed against a real account.
-// DocuSign returns this as HTTP 400 today and is mid-migration to 429 (DocuSign's own
-// guidance is to key off errorCode, not HTTP status, for exactly this reason), so
-// detection below checks the body field independent of resp.StatusCode.
+// the account's hourly API-call budget being exhausted — confirmed against a real account.
+// The published eSignature "rules and resource limits" / error-codes pages quote the
+// human message (see docusignHourlyRateLimitErrorMessage) and related envelope-scoped
+// codes (e.g. Hourly_APIInvocation_Envelope_Limit_Exceeded), but do not list this exact
+// account-level errorCode string; detection matches either. DocuSign returns this as
+// HTTP 400 today and is mid-migration to 429 (DocuSign's own guidance is to key off
+// errorCode / the error body, not HTTP status), so detection below ignores StatusCode.
 const docusignHourlyRateLimitErrorCode = "HOURLY_APIINVOCATION_LIMIT_EXCEEDED"
 
+// docusignHourlyRateLimitErrorMessage is the account hourly-limit error text quoted by
+// DocuSign's eSignature API rules-and-resource-limits docs ("If you exceed the API rate
+// limit, you will receive the error: …"). Matched as a substring of ErrorResponse.message
+// so a future errorCode rename still classifies correctly when the published message stays.
+const docusignHourlyRateLimitErrorMessage = "The maximum number of hourly API invocations has been exceeded"
+
 // docusignRateLimitDefaultResetWindow is the fixed ResetAt this connector puts on the
-// RateLimitDescription for docusignHourlyRateLimitErrorCode — applied unconditionally,
+// RateLimitDescription for the account hourly-limit error — applied unconditionally,
 // not just as a fallback (see reclassifyHourlyRateLimitError's doc for why response
-// headers are deliberately never consulted for this error). The limit this error names
-// is hourly, so an hour is the semantically correct value to report — but it is not
-// what the SDK's retry loop actually waits: pkg/sync/parallel_syncer.go constructs its
-// Retryer with MaxDelay: 0, which retry.NewRetryer normalizes to a 60-second cap, and
+// headers are not used for ResetAt here). The limit this error names is hourly, so an
+// hour is the semantically correct value to report — but it is not what the SDK's retry
+// loop actually waits: pkg/sync/parallel_syncer.go constructs its Retryer with
+// MaxDelay: 0, which retry.NewRetryer normalizes to a 60-second cap, and
 // retry.Retryer.ShouldWaitAndRetry computes a wait from this ResetAt only to then clamp
 // it down to that same 60 seconds (`if wait > maxDelay { wait = maxDelay }`). With
 // MaxAttempts: 0 (unlimited), the net effect is a 60-second retry with no attempt limit
@@ -41,30 +51,30 @@ const docusignHourlyRateLimitErrorCode = "HOURLY_APIINVOCATION_LIMIT_EXCEEDED"
 // package, not something this connector can change from here.
 const docusignRateLimitDefaultResetWindow = time.Hour
 
-// reclassifyHourlyRateLimitError recognizes docusignHourlyRateLimitErrorCode in errTarget (the
-// same *ErrorResponse instance uhttp.WithErrorResponse already unmarshaled the error body
-// into before returning origErr — no re-parsing needed) and, if matched, returns a
-// codes.Unavailable error carrying a RateLimitDescription. This matters because
+// reclassifyHourlyRateLimitError recognizes the account hourly API-invocation limit in
+// errTarget (the same *ErrorResponse instance uhttp.WithErrorResponse already unmarshaled
+// the error body into before returning origErr — no re-parsing needed) and, if matched,
+// returns a codes.Unavailable error carrying a RateLimitDescription. This matters because
 // uhttp.GrpcCodeFromHTTPStatus maps this error's current HTTP 400 to codes.InvalidArgument,
 // which the SDK's sync-retry loop (pkg/sync's Retryer, wired to SyncResourcesOp/
 // SyncGrantsOp) does not retry — it only waits and retries on Unavailable/DeadlineExceeded,
 // so an otherwise-recoverable rate limit was surfacing as a fatal, non-resumable sync
 // failure. Returns nil (unchanged behavior) when errTarget isn't this specific eSignature
-// error shape, or the errorCode doesn't match — including every ClmErrorResponse-based CLM
-// call, which is a distinct error envelope this func never matches.
+// error shape, or neither the live-confirmed errorCode nor the docs-quoted message match —
+// including every ClmErrorResponse-based CLM call, which is a distinct error envelope
+// this func never matches.
 //
-// Deliberately does NOT read ratelimit.ExtractRateLimitData's header-derived
-// Limit/Remaining/ResetAt for this specific error: DocuSign's docs describe no dedicated
-// headers for this hourly/daily-scoped limit (detection has to go through the error body
-// at all), so any generic X-RateLimit-*/Ratelimit-* headers present on this response most
-// plausibly describe an unrelated shorter-window limit (e.g. a burst counter), not the
-// hourly one that actually produced this error. Trusting them anyway risks the SDK's
-// Retryer (vendor pkg/retry/retry.go) computing a short wait off a nonzero Remaining from
-// the wrong bucket and hammering an account that's still over its hourly budget. Always
-// uses the fixed hourly default window instead — safe by construction, if coarser.
+// Deliberately does NOT use ratelimit.ExtractRateLimitData's header-derived
+// Limit/Remaining/ResetAt for ResetAt on this error. The eSignature rules-and-limits
+// docs do map X-RateLimit-* to the account hourly budget and X-BurstLimit-* to the
+// separate 30-second burst window — but on an already-over-limit response Remaining is
+// uninformative, and trusting ResetAt/Remaining without knowing which limiter produced
+// the body risks the SDK's Retryer (vendor pkg/retry/retry.go) computing a short wait
+// off the burst window and hammering an account that's still over its hourly budget.
+// Always uses the fixed hourly default window instead — safe by construction, if coarser.
 func reclassifyHourlyRateLimitError(errTarget uhttp.ErrorResponse, origErr error) error {
 	er, ok := errTarget.(*ErrorResponse)
-	if !ok || er.ErrorCode != docusignHourlyRateLimitErrorCode {
+	if !ok || !isHourlyAPIInvocationLimitError(er) {
 		return nil
 	}
 
@@ -81,6 +91,16 @@ func reclassifyHourlyRateLimitError(errTarget uhttp.ErrorResponse, origErr error
 		return st.Err()
 	}
 	return withDetails.Err()
+}
+
+// isHourlyAPIInvocationLimitError reports whether er is DocuSign's account-level hourly
+// API-invocation budget error — matching the live-confirmed errorCode and/or the message
+// text quoted in the eSignature rules-and-resource-limits docs.
+func isHourlyAPIInvocationLimitError(er *ErrorResponse) bool {
+	if er.ErrorCode == docusignHourlyRateLimitErrorCode {
+		return true
+	}
+	return strings.Contains(er.ErrorMessage, docusignHourlyRateLimitErrorMessage)
 }
 
 // BuildURL combines the base API URL with a formatted endpoint path.
