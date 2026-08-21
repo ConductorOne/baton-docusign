@@ -131,14 +131,16 @@ func (s *Server) handleCreateChangeSecurityTask(w http.ResponseWriter, r *http.R
 	// representation here is the only way this mock can actually catch a regression
 	// to sending it, across all three of Groups/Roles/Users.
 	var rawBody struct {
-		Security struct {
-			Groups []map[string]any `json:"Groups"`
-			Roles  []map[string]any `json:"Roles"`
-			Users  []map[string]any `json:"Users"`
-		} `json:"Security"`
+		Folder struct {
+			Security struct {
+				Groups []map[string]any `json:"Groups"`
+				Roles  []map[string]any `json:"Roles"`
+				Users  []map[string]any `json:"Users"`
+			} `json:"Security"`
+		} `json:"Folder"`
 	}
 	if json.Unmarshal(bodyBytes, &rawBody) == nil {
-		for _, entries := range [][]map[string]any{rawBody.Security.Groups, rawBody.Security.Roles, rawBody.Security.Users} {
+		for _, entries := range [][]map[string]any{rawBody.Folder.Security.Groups, rawBody.Folder.Security.Roles, rawBody.Folder.Security.Users} {
 			for _, entry := range entries {
 				if v, present := entry["AccessType"]; present {
 					if str, ok := v.(string); ok && str == "" {
@@ -157,7 +159,7 @@ func (s *Server) handleCreateChangeSecurityTask(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	folderID := idFromHref(body.Href)
+	folderID := idFromHref(body.Folder.Href)
 	f, ok := s.folders[folderID]
 	if !ok {
 		writeNotFound(w)
@@ -165,9 +167,9 @@ func (s *Server) handleCreateChangeSecurityTask(w http.ResponseWriter, r *http.R
 	}
 
 	f.Security = client.ClmFolderSecurity{
-		Groups: body.Security.Groups,
-		Roles:  body.Security.Roles,
-		Users:  body.Security.Users,
+		Groups: body.Folder.Security.Groups,
+		Roles:  body.Folder.Security.Roles,
+		Users:  body.Folder.Security.Users,
 	}
 
 	s.nextChangeSecurityTaskID++

@@ -487,42 +487,38 @@ func (c *Client) getFolder(ctx context.Context, folderID string, noCache bool, e
 // complete security state across all three principal-type collections (see the
 // connector-layer caller — clmFolderSecurityToWrite builds this from a fresh read,
 // with one entry changed/added in whichever of Groups/Roles/Users the grant/revoke
-// targets), not just the one entry being changed: Folders.Patch's merge-vs-replace
+// targets), not just the one entry being changed: ChangeSecurityTasks' merge-vs-replace
 // semantics for the Security field are undocumented, and sending the complete state
 // is correct under either interpretation, whereas sending only the one changed entry
 // would wipe every other principal's access to the folder if the real API replaces
 // rather than merges.
 //
-// UNVERIFIED against a real CLM tenant, and higher-risk than the merge-semantics
-// question above: DocuSign's docs also reference a separate `ChangeSecurityTasks`
-// resource (POST /v2/{accountId}/changesecuritytasks), which may be the documented
-// way to mutate folder security asynchronously rather than a direct PATCH on the
-// folder itself. If that's the actual contract, this method - the entire mechanism
-// Grant/Revoke on clm_folder relies on - could silently no-op or 404 against a real
-// tenant. Verify which endpoint the real API expects before treating folder
-// provisioning here as more than best-effort.
-// PatchFolderSecurity sets a folder's security via CLM's ChangeSecurityTasks — a
-// dedicated async Task API endpoint, NOT the generic Folders Patch this function used
-// to call. Confirmed live that the generic PATCH /v2/{accountId}/folders/{id} silently
-// ignores a Security payload entirely (200 OK, no error, but a fresh GET shows no
-// change — a trivial PATCH of another field on the same folder DID apply and bump
-// UpdatedDate, isolating the failure to Security specifically); CLM's own error code
-// list separately names "136 - Missing Change Security Task", and the CLM API
-// Reference confirms a distinct ChangeSecurityTasks resource ("Post: Set the security
-// on a folder") exists for exactly this. See clm_client.go's package doc "Folders"
-// section for the live evidence that led here.
+// Sets a folder's security via CLM's ChangeSecurityTasks — a dedicated async Task API
+// endpoint, NOT the generic Folders Patch this function used to call. Confirmed live
+// that the generic PATCH /v2/{accountId}/folders/{id} silently ignores a Security
+// payload entirely (200 OK, no error, but a fresh GET shows no change — a trivial PATCH
+// of another field on the same folder DID apply and bump UpdatedDate, isolating the
+// failure to Security specifically); CLM's own error code list separately names
+// "136 - Missing Change Security Task", and the CLM API Reference confirms a distinct
+// ChangeSecurityTasks resource ("Post: Set the security on a folder") exists for
+// exactly this. See clm_client.go's package doc "Folders" section for the live
+// evidence that led here.
 //
-// This rewrite is implemented against ChangeSecurityTasks' documented request/response
-// schema but is NOT independently verified live: per explicit instruction, this
-// project is done live-testing against the customer's tenant. Two things are worth a
-// second look if this doesn't work in practice:
-//   - The request body's top-level Href is assumed to identify the target folder
-//     (paralleling ParentFolder/other object references elsewhere in this API), since
-//     ChangeSecurityTasks' POST takes no {id} path parameter at all — the docs' own
-//     schema table doesn't say this in words, only implies it from the shape.
-//   - ChangeSecurityTasks' Status values are documented in lowercase (success/waiting/
-//     failure/processing) — confirmed distinct from FolderSearchTasks' PascalCase
-//     (Success/Processing), not a documentation inconsistency to normalize away.
+// The request body shape (ClmChangeSecurityTaskRequest) is confirmed via the CLM API
+// Reference's interactive schema browser, expanded past its default collapsed view —
+// the target folder's Href and its new Security both nest under a Folder field; a
+// same-shaped top-level Href/Security/Status on the schema are generic Task-wrapper
+// fields this doc-generation tool reuses across every Task type, not what
+// ChangeSecurityTasks actually reads for a folder security change (an earlier version
+// of this code got this wrong from the same page's default collapsed view, which looks
+// identical to a flat {Href, Security} pair until "Folder" is expanded).
+//
+// NOT independently verified live: per explicit instruction, this project is done
+// live-testing against the customer's tenant. ChangeSecurityTasks' Status values are
+// documented in lowercase (success/waiting/failure/processing) — confirmed distinct
+// from FolderSearchTasks' PascalCase (Success/Processing), not a documentation
+// inconsistency to normalize away — is the other thing worth a second look if this
+// doesn't work in practice.
 func (c *Client) PatchFolderSecurity(ctx context.Context, folderID string, write ClmFolderSecurityWrite) (annotations.Annotations, error) {
 	if err := c.ensureClmReady(ctx); err != nil {
 		return nil, err
@@ -538,7 +534,7 @@ func (c *Client) PatchFolderSecurity(ctx context.Context, folderID string, write
 		return nil, err
 	}
 
-	body := ClmChangeSecurityTaskRequest{Href: folderURL.String(), Security: write}
+	body := ClmChangeSecurityTaskRequest{Folder: ClmChangeSecurityTaskFolder{Href: folderURL.String(), Security: write}}
 
 	var task ClmChangeSecurityTaskResponse
 	anno, err := c.doClmRequest(ctx, http.MethodPost, createURL, body, &task)

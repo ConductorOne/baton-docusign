@@ -90,11 +90,14 @@ type ClmFolderSearchTaskResponse struct {
 }
 
 // ClmChangeSecurityTaskResponse is CLM's ChangeSecurityTasks response envelope — per
-// the CLM API Reference's documented schema for this resource's Post/Get methods.
-// Deliberately leaner than ClmFolderSearchTaskResponse: this task mutates rather than
-// returns data, so there's no Result field, just Href (poll URL) and Status. Status
-// uses a distinct, lowercase vocabulary from FolderSearchTasks — see
-// PatchFolderSecurity's doc in clm_client.go. Not independently confirmed live.
+// the CLM API Reference's documented "Task.ChangeSecurityTask" schema (confirmed live
+// via the rendered doc site, not just its collapsed default view — see
+// ClmChangeSecurityTaskRequest's doc for why that distinction mattered here). The full
+// schema also lists top-level Folder and Security fields alongside Href/Status, but
+// PatchFolderSecurity only needs Status to decide success/failure; Href is this task's
+// own poll URL, echoed back from the create call. Status uses a distinct, lowercase
+// vocabulary from FolderSearchTasks — see PatchFolderSecurity's doc in clm_client.go.
+// Not independently confirmed live (no more live-testing against the customer tenant).
 type ClmChangeSecurityTaskResponse struct {
 	Href   string `json:"Href"`
 	Status string `json:"Status"`
@@ -252,10 +255,24 @@ func (e *ClmUserSecurityEntry) UnmarshalJSON(data []byte) error {
 }
 
 // ClmChangeSecurityTaskRequest is the request body for POST .../changesecuritytasks —
-// see PatchFolderSecurity's doc in clm_client.go. Href identifies the target folder
-// (ChangeSecurityTasks' POST takes no {id} path parameter), Security carries the
-// complete new state.
+// see PatchFolderSecurity's doc in clm_client.go. Confirmed via the CLM API Reference's
+// interactive schema browser (its default collapsed view initially looked like a flat
+// {Href, Security} pair sibling to Status — an earlier version of this struct assumed
+// exactly that — but expanding "Folder" shows it's the *complete* Folder object schema,
+// itself carrying its own nested Href and Security fields; the outer Href/Security
+// alongside Status are generic Task-wrapper fields this doc-generation tool reuses
+// across every Task type, not what ChangeSecurityTasks actually reads for a folder
+// security change). The target folder and its new security both nest under Folder.
 type ClmChangeSecurityTaskRequest struct {
+	Folder ClmChangeSecurityTaskFolder `json:"Folder"`
+}
+
+// ClmChangeSecurityTaskFolder is the minimal Folder reference ChangeSecurityTasks'
+// POST needs: which folder (Href) and what to set its security to (Security) — see
+// ClmChangeSecurityTaskRequest's doc. The real Folder object has many more fields
+// (Name, ParentFolder, Path, etc.); none are required here, mirroring how ParentFolder
+// references elsewhere in this API only ever need Href.
+type ClmChangeSecurityTaskFolder struct {
 	Href     string                 `json:"Href"`
 	Security ClmFolderSecurityWrite `json:"Security"`
 }
