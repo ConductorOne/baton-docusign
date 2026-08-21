@@ -18,26 +18,15 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-// clmWorkflowQueueUnavailableThreshold is how many CONSECUTIVE tolerated per-member
-// failures (with nothing yet successfully scanned) List() requires, across however many
-// chunked calls it takes to see them, before concluding the whole account can't use this
-// endpoint — see the escalation branch's doc for why a single failure isn't enough. An
-// arbitrary but deliberately small judgment call: no live CLM tenant to derive it from
-// empirically.
+// Consecutive opt-in failures (no success yet) before failing the sync.
 const clmWorkflowQueueUnavailableThreshold = 3
 
-// clmSessionKeyWorkflowQueueDiscoveryState is where List() persists its accumulating
-// member-scan state between its own successive SDK-driven calls — see List()'s doc for
-// why the scan is chunked this way instead of running to completion inside one call.
+// clmSessionKeyWorkflowQueueDiscoveryState is where List() persists member-scan
+// progress across successive SDK-driven calls.
 const clmSessionKeyWorkflowQueueDiscoveryState = "clm_workflow_queue_discovery_state"
 
-// clmWorkflowQueueDiscoveryState is List()'s accumulator: the registry of distinct
-// queues the scan has found so far (metadata only — member lists are persisted
-// separately and incrementally, see List()'s doc), plus the escalation-threshold
-// counters that must span every chunk of the scan, not reset per chunk (three tolerated
-// failures on members split across two separate List() calls must still escalate,
-// exactly as three in one call would). Exported fields: this round-trips through
-// session.SetJSON/GetJSON (encoding/json can't see unexported fields).
+// clmWorkflowQueueDiscoveryState is List()'s accumulator across chunked calls.
+// Exported fields round-trip through session.SetJSON/GetJSON.
 type clmWorkflowQueueDiscoveryState struct {
 	Queues                         map[string]client.ClmWorkflowQueue `json:"queues"`
 	SucceededAtLeastOnce           bool                               `json:"succeeded_at_least_once"`
@@ -68,50 +57,10 @@ func clmSessionKeyQueueMembers(queueID string) string {
 	return "clm_workflow_queue_members:" + queueID
 }
 
-// clmWorkflowQueueBuilder syncs CLM WorkflowQueues — the API's own term for what the CLM
-// admin console reportedly calls "Task Groups". That equivalence is an unconfirmed
-// assumption: no DocuSign document states it, and confirming it needs eyes on a real CLM
-// admin console — see resource_types.go.
-//
-// The CLM API has no list-all endpoint for workflow queues and no reverse lookup from a
-// queue to its members — the only documented read path is per-member (GET
-// .../members/{id}/workflowqueues). So both List() and Grants() are built around a
-// member scan, not the direct list-all-then-page-per-resource shape every other builder
-// in this connector uses:
-//
-//   - List() chunks the scan one ListMembers page per SDK-driven call — the usual
-//     one-page-per-call shape every sibling builder in this connector uses, unlike an
-//     earlier version of this file that ran the entire member scan (every ListMembers
-//     page, plus a GetMemberWorkflowQueues call per member) inside a single call. Each
-//     chunk merges its own contribution into every touched queue's own session key
-//     (clmSessionKeyQueueMembers) rather than accumulating one all-queues blob in
-//     memory: a single growing value would both rewrite on every chunk (O(members^2)
-//     session-store traffic over a full scan) and risk crossing the session store's
-//     per-value size ceiling on a large account. Bounds this per queue, not per member —
-//     a queue most members belong to still rewrites its own growing list each chunk. A
-//     separate, small
-//     clmWorkflowQueueDiscoveryState blob — just the distinct queues seen so far plus
-//     the escalation-threshold counters — persists across chunks instead, since a plain
-//     Go value doesn't survive across separate List() invocations. Only on the LAST
-//     member page — the queue set can't be confirmed complete before then (there's no
-//     list-all endpoint to check it against) — does it emit the discovered queues as
-//     resources; every earlier chunk returns zero resources plus a NextPageToken.
-//   - Grants(ctx, queueResource, attr) reads that queue's member list straight back out
-//     of the session cache instead of re-scanning every member per queue, which would
-//     turn one expensive O(members) traversal into O(queues * members) API calls against
-//     an already rate-limited endpoint.
-//
-// This only works because the session cache persists for the whole sync (across all of
-// List()'s own chunked calls, and through to when Grants() runs for every resource of
-// this type afterward) and is shared across resource types within one sync — see
-// cmd/baton-docusign/main.go's connectorrunner.WithSessionStoreEnabled().
-//
-// Read-only: the API documents work-item assign/unassign, not queue-membership
-// grant/revoke, so there's no Grant/Revoke on this builder — matching
-// clm_permission_set's precedent for a CLM object with no write endpoint.
-//
-// Like every other CLM model in this connector, the endpoint shapes here are
-// documented-but-unexercised — no live CLM tenant was available to confirm them.
+// clmWorkflowQueueBuilder syncs CLM WorkflowQueues (UI "Task Groups" — unconfirmed).
+// No list-all / no queue→members: List() scans members one page per call, caches
+// membership per queue in the session store; Grants() reads that cache (not O(N×M)).
+// Read-only — no queue-membership write API (same as clm_permission_set).
 type clmWorkflowQueueBuilder struct {
 	resourceType *v2.ResourceType
 	client       *client.Client
@@ -218,32 +167,10 @@ func (b *clmWorkflowQueueBuilder) List(ctx context.Context, _ *v2.ResourceId, at
 		if err != nil {
 			if isOptInFeatureUnavailableError(err) {
 				if !state.SucceededAtLeastOnce {
-					// Nothing has proven this endpoint works for this account yet.
-					// DocuSign's own CLM API docs (Response and Error Codes) confirm
-					// NotFound isn't unique to "this object doesn't exist" — it's the
-					// SAME response CLM returns for "this exists but you don't have
-					// access rights", specifically so a 403 never leaks whether the
-					// object exists ("If the user does not have permissions to see
-					// the object or the object does not exist, a 404 response code is
-					// returned"). So a NotFound here is just as plausible a signal
-					// that workflow queues aren't available for this whole account as
-					// PermissionDenied/Unauthenticated are — treat it the same way.
-					//
-					// But escalating on a SINGLE failure reintroduces a different
-					// false-deletion race: a member that was genuinely deleted between
-					// ListMembers and this call (the case the isolated-NotFound skip
-					// below exists for) would wipe the whole resource type if it just
-					// happens to be first in scan order. A systemic failure (the
-					// endpoint disabled for this account) 404s/403s on EVERY member,
-					// while an isolated deletion race hits exactly one — so require a
-					// few consecutive failures (spanning as many chunks as it takes)
-					// before concluding "systemic", capping wasted requests against an
-					// already rate-limited endpoint without letting one unlucky
-					// ordering fail the sync. Once concluded, fail loud rather than
-					// skip gracefully: clm_workflow_queue is OptInRequired, and C1's
-					// opt-in toggle doesn't check the account can actually use it first
-					// — an account that opted in but can't reach this endpoint is a
-					// misconfiguration to surface, not a state to tolerate silently.
+					// Before any success: tolerate opt-in codes, but require
+					// clmWorkflowQueueUnavailableThreshold consecutive failures before
+					// failing the sync (one isolated NotFound must not wipe queues).
+					// CLM 404 means missing OR no access — same as other opt-in signals.
 					state.ConsecutiveUnavailableFailures++
 					if state.ConsecutiveUnavailableFailures >= clmWorkflowQueueUnavailableThreshold {
 						return nil, nil, fmt.Errorf("baton-docusign: CLM workflow queues unavailable after %d consecutive member failures: %w",
