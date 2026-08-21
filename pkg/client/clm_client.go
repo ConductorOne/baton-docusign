@@ -358,9 +358,13 @@ func (c *Client) SearchFolders(ctx context.Context, options PageOptions) ([]ClmF
 		if err != nil {
 			return nil, "", nil, fmt.Errorf("baton-docusign: invalid CLM page token: %w", err)
 		}
-		if decoded.ResultHref != "" {
-			return c.getClmFolderSearchResultPage(ctx, decoded.ResultHref, options)
+		if decoded.ResultHref == "" {
+			// A SearchFolders continuation token without ResultHref would fall through
+			// to POST a brand-new search task (page 1 again) — an unbounded loop when
+			// more pages remain. Fail loud instead.
+			return nil, "", nil, fmt.Errorf("baton-docusign: CLM folder search page token missing ResultHref")
 		}
+		return c.getClmFolderSearchResultPage(ctx, decoded.ResultHref, options)
 	}
 
 	createURL, err := c.buildClmClientURL(clmCreateFolderSearchTask)
@@ -386,6 +390,12 @@ func (c *Client) SearchFolders(ctx context.Context, options PageOptions) ([]ClmF
 	nextToken, err := getClmNextToken(requestedPage, len(task.Result.Items), task.Result.Next != "", task.Result.Total, task.Result.Href)
 	if err != nil {
 		return nil, "", anno, err
+	}
+	// getClmNextToken will happily mint a token with ResultHref:"" when Href is empty.
+	// The next SearchFolders call would then re-POST (Requests reset to 0) and loop on
+	// page 1 forever — maxClmListPages never fires. Refuse to emit that token.
+	if nextToken != "" && task.Result.Href == "" {
+		return nil, "", anno, fmt.Errorf("baton-docusign: CLM folder search task %s Result has no Href; cannot continue pagination", task.Href)
 	}
 	return task.Result.Items, nextToken, anno, nil
 }

@@ -2,6 +2,7 @@ package client_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -35,6 +36,27 @@ func TestSearchFolders_Pagination(t *testing.T) {
 		if len(f.Security.Groups) != 0 || len(f.Security.Roles) != 0 || len(f.Security.Users) != 0 {
 			t.Errorf("folder %s: expected Search to omit Security, got %+v", f.Name, f.Security)
 		}
+	}
+}
+
+// TestSearchFolders_EmptyResultHrefFailsLoud is a regression for the page-1 loop that
+// happens when Result.Href is empty but more pages remain: getClmNextToken would mint a
+// token with ResultHref:"", and the next SearchFolders call would re-POST a new search
+// (resetting Requests) forever. SearchFolders must error instead of emitting that token.
+func TestSearchFolders_EmptyResultHrefFailsLoud(t *testing.T) {
+	srv, c := clmtest.NewServer(t)
+	ctx := context.Background()
+	srv.SetOmitFolderSearchResultHref(true)
+
+	folders, next, _, err := c.SearchFolders(ctx, client.PageOptions{PageSize: 2})
+	if err == nil {
+		t.Fatalf("expected error when Result.Href is empty and more pages remain, got folders=%d next=%q", len(folders), next)
+	}
+	if next != "" {
+		t.Errorf("expected empty next token on failure, got %q", next)
+	}
+	if !strings.Contains(err.Error(), "Result has no Href") {
+		t.Errorf("expected Result-Href error, got: %v", err)
 	}
 }
 

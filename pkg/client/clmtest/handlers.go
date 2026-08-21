@@ -49,7 +49,20 @@ func (s *Server) handleCreateFolderSearchTask(w http.ResponseWriter, r *http.Req
 	resp := client.ClmFolderSearchTaskResponse{Status: status, Href: taskHref}
 	if status == "Success" {
 		result := s.folderSearchResults(r)
-		result.Href = taskHref + "/result"
+		if s.omitFolderSearchResultHref {
+			// Leave Href empty and force a "more pages remain" shape so SearchFolders'
+			// empty-Href continuation guard is reachable (the create POST has no
+			// offset/limit query, so folderSearchResults alone would return everything).
+			if len(result.Items) > 1 {
+				result.Items = result.Items[:1]
+			}
+			result.Limit = 1
+			result.Total = len(s.folderOrder)
+			result.Next = "more"
+			result.Offset = 0
+		} else {
+			result.Href = taskHref + "/result"
+		}
 		resp.Result = &result
 	}
 	writeJSON(w, resp)
@@ -70,7 +83,9 @@ func (s *Server) handlePollFolderSearchTask(w http.ResponseWriter, r *http.Reque
 	}
 
 	result := s.folderSearchResults(r)
-	result.Href = taskHref + "/result"
+	if !s.omitFolderSearchResultHref {
+		result.Href = taskHref + "/result"
+	}
 	writeJSON(w, client.ClmFolderSearchTaskResponse{Status: "Success", Href: taskHref, Result: &result})
 }
 

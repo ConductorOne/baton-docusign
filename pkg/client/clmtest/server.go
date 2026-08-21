@@ -126,6 +126,10 @@ type Server struct {
 	// "Success" on poll — see SetPendingFolderSearchPolls. Decremented on each poll.
 	pendingFolderSearchPolls int
 
+	// omitFolderSearchResultHref, when true, leaves Result.Href empty on the next
+	// successful folder-search task response — see SetOmitFolderSearchResultHref.
+	omitFolderSearchResultHref bool
+
 	nextChangeSecurityTaskID int // incrementing counter for mock ChangeSecurityTasks task IDs
 
 	// pendingChangeSecurityPolls, when > 0, makes the next PatchFolderSecurity task
@@ -147,6 +151,15 @@ func (s *Server) SetPendingFolderSearchPolls(n int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.pendingFolderSearchPolls = n
+}
+
+// SetOmitFolderSearchResultHref makes the next successful FolderSearchTasks response
+// leave Result.Href empty. Used to pin SearchFolders' guard against minting a
+// continuation token that would re-POST a new search (page-1 loop).
+func (s *Server) SetOmitFolderSearchResultHref(omit bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.omitFolderSearchResultHref = omit
 }
 
 // SetPendingChangeSecurityPolls makes the next change-security task created by this
