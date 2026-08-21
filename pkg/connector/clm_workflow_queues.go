@@ -58,9 +58,12 @@ func clmSessionKeyQueueMembers(queueID string) string {
 }
 
 // clmWorkflowQueueBuilder syncs CLM WorkflowQueues (UI "Task Groups" — unconfirmed).
-// No list-all / no queue→members: List() scans members one page per call, caches
-// membership per queue in the session store; Grants() reads that cache (not O(N×M)).
-// Read-only — no queue-membership write API (same as clm_permission_set).
+// No list-all / no queue→members: List() scans members one page per SDK call (same
+// shape as sibling builders), writes membership into a per-queue session key (a single
+// all-queues blob would rewrite O(members²) and risk the store's size ceiling), and
+// only emits resources on the last member page — the queue set isn't complete before
+// then. Grants() reads that cache (not O(N×M)). Needs a sync-lifetime session store
+// (main.go's WithSessionStoreEnabled). Read-only — no queue-membership write API.
 type clmWorkflowQueueBuilder struct {
 	resourceType *v2.ResourceType
 	client       *client.Client
