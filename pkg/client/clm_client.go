@@ -15,7 +15,9 @@
 // # API Endpoints Used
 //
 // Folders:
-//   - POST /v2/{accountId}/foldersearchtasks - Search for folders (async Task API — see SearchFolders' doc)
+//   - POST /v2/{accountId}/foldersearchtasks - Search for folders (async Task API — see
+//     SearchFolders' doc). Prefer this over the also-documented Folders:Search
+//     (POST /v2/{accountId}/folders/search), which returns 405 live.
 //   - GET  /v2/{accountId}/folders/{id}?expand=Security - Get a folder with its explicit security entries.
 //     Security is three separate collections by principal type (Groups/Roles/Users), confirmed via
 //     DocuSign's own Folders.Patch reference page - see ClmFolderSecurity's doc in clm_models.go.
@@ -117,8 +119,10 @@ var clmBaseURLCandidateFields = []string{
 // CLM API endpoint constants.
 const (
 	// clmCreateFolderSearchTask creates a CLM FolderSearchTasks task — see
-	// SearchFolders' doc. The previously-assumed synchronous "/v2/%s/folders/search"
-	// endpoint does not exist for folders (confirmed live: 405 Method Not Allowed).
+	// SearchFolders' doc. The CLM API Reference also documents a synchronous
+	// Folders:Search at POST /v2/{accountId}/folders/search, but against a real
+	// tenant that path returns 405 Method Not Allowed, so this connector uses the
+	// documented async FolderSearchTasks resource instead.
 	clmCreateFolderSearchTask = "/v2/%s/foldersearchtasks"
 	// clmCreateChangeSecurityTask creates a CLM ChangeSecurityTasks task — see
 	// PatchFolderSecurity's doc. The generic Folders Patch this replaced silently
@@ -316,24 +320,28 @@ const clmMaxTaskPolls = 30
 // needlessly slow.
 var ClmFolderSearchTaskPollInterval = 2 * time.Second
 
-// SearchFolders discovers folders via CLM's FolderSearchTasks — there is no flat
-// list-all or synchronous search endpoint for folders (unlike Groups/Members/
-// PermissionSets). Folder search is part of CLM's async Task API (CLM Task API 101 /
-// FolderSearchTasks reference, pasted live since the site is JS-rendered): a POST
-// creates a search task, which either resolves inline or must be polled via its own
-// Href until Status leaves "Processing", after which the paginated folder list is read
-// from the task's Result.
+// SearchFolders discovers folders via CLM's FolderSearchTasks (CLM API Reference →
+// Tasks → FolderSearchTasks). Unlike Groups/Members/PermissionSets there is no
+// flat list-all for folders. The Reference also documents Folders:Search
+// (POST /v2/{accountId}/folders/search); this connector follows FolderSearchTasks
+// because that sync path returns 405 live (see bullets below). A POST creates a
+// search task, which either resolves inline or must be polled via its own Href
+// until Status leaves "Processing", after which the paginated folder list is read
+// from the task's Result. (FolderSearchTasks' Status field is an unenumerated
+// string in the schema — live returns Title-Case "Success"/"Processing", distinct
+// from ChangeSecurityTasks' documented lowercase success/waiting/failure/processing.)
 //
 // Confirmed live against a real CLM tenant:
-//   - POST /v2/{accountId}/folders/search (a plain synchronous search — this function's
-//     original implementation) returns 405 Method Not Allowed: that endpoint doesn't
-//     exist for folders.
+//   - POST /v2/{accountId}/folders/search (Folders:Search in the Reference — this
+//     function's original implementation) returns 405 Method Not Allowed, so the
+//     documented sync search is not usable on the tenants we hit.
 //   - POST /v2/{accountId}/foldersearchtasks requires a recognized search parameter in
 //     the body — an empty body, or {"Name": ...} (the field ClmFolder's own JSON tag
 //     uses), is rejected with CLM ErrorCode 1024 "no valid search parameter" against
 //     every property name tried except "Title". {"Title": ""} is accepted and matches
 //     every folder (Title is a substring match, so empty matches everything) —
-//     confirmed against a real account with 100 folders.
+//     confirmed against a real account with 100 folders. Title is a documented
+//     FolderSearchTask request field in the Reference.
 //   - The task resolved inline (Status "Success" already in the POST response, Result
 //     already populated) on every live test; the "Processing" polling branch below is
 //     unverified live.
