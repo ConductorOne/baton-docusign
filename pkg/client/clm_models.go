@@ -89,6 +89,17 @@ type ClmFolderSearchTaskResponse struct {
 	Result *ClmFolderPage `json:"Result,omitempty"`
 }
 
+// ClmChangeSecurityTaskResponse is CLM's ChangeSecurityTasks response envelope — per
+// the CLM API Reference's documented schema for this resource's Post/Get methods.
+// Deliberately leaner than ClmFolderSearchTaskResponse: this task mutates rather than
+// returns data, so there's no Result field, just Href (poll URL) and Status. Status
+// uses a distinct, lowercase vocabulary from FolderSearchTasks — see
+// PatchFolderSecurity's doc in clm_client.go. Not independently confirmed live.
+type ClmChangeSecurityTaskResponse struct {
+	Href   string `json:"Href"`
+	Status string `json:"Status"`
+}
+
 // ClmFolderSecurity is a folder's explicit (non-inherited) security assignments.
 // Confirmed live against a real CLM tenant (GetFolder?expand=Security) to be three
 // SEPARATE, flat (non-paginated) arrays by principal type — no First/Href/Last/Limit/
@@ -240,9 +251,12 @@ func (e *ClmUserSecurityEntry) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// ClmFolderSecurityPatch is the request body for PATCH .../folders/{id} when updating
-// folder security.
-type ClmFolderSecurityPatch struct {
+// ClmChangeSecurityTaskRequest is the request body for POST .../changesecuritytasks —
+// see PatchFolderSecurity's doc in clm_client.go. Href identifies the target folder
+// (ChangeSecurityTasks' POST takes no {id} path parameter), Security carries the
+// complete new state.
+type ClmChangeSecurityTaskRequest struct {
+	Href     string                 `json:"Href"`
 	Security ClmFolderSecurityWrite `json:"Security"`
 }
 

@@ -61,6 +61,33 @@ func TestSearchFolders_PollsUntilSuccess(t *testing.T) {
 	}
 }
 
+// TestPatchFolderSecurity_PollsUntilSuccess is a regression test for
+// PatchFolderSecurity's awaitClmChangeSecurityTask branch — unverified against a live
+// tenant (see PatchFolderSecurity's doc in clm_client.go), so this mock-driven test is
+// this branch's only coverage.
+func TestPatchFolderSecurity_PollsUntilSuccess(t *testing.T) {
+	original := client.ClmFolderSearchTaskPollInterval
+	client.ClmFolderSearchTaskPollInterval = time.Millisecond
+	defer func() { client.ClmFolderSearchTaskPollInterval = original }()
+
+	srv, c := clmtest.NewServer(t)
+	ctx := context.Background()
+
+	groupHref := srv.GroupHref("group-ops")
+	srv.SetPendingChangeSecurityPolls(2)
+
+	if _, err := c.PatchFolderSecurity(ctx, "folder-templates", client.ClmFolderSecurityWrite{
+		Groups: []client.ClmGroupSecurityEntry{{AccessType: client.ClmAccessTypeView, Href: groupHref}},
+	}); err != nil {
+		t.Fatalf("PatchFolderSecurity: %v", err)
+	}
+
+	sec := srv.FolderSecurity("folder-templates")
+	if len(sec.Groups) != 1 || sec.Groups[0].AccessType != client.ClmAccessTypeView || sec.Groups[0].Href != groupHref {
+		t.Fatalf("expected one View entry for %s once the task resolves, got %+v", groupHref, sec.Groups)
+	}
+}
+
 func TestGetFolder_ExpandSecurity(t *testing.T) {
 	_, c := clmtest.NewServer(t)
 	ctx := context.Background()

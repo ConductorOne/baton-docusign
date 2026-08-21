@@ -19,19 +19,16 @@
 //   - GET  /v2/{accountId}/folders/{id}?expand=Security - Get a folder with its explicit security entries.
 //     Security is three separate collections by principal type (Groups/Roles/Users), confirmed via
 //     DocuSign's own Folders.Patch reference page - see ClmFolderSecurity's doc in clm_models.go.
-//   - PATCH /v2/{accountId}/folders/{id} - does NOT actually update Security, despite Security being a
-//     documented field on this same Patch reference page and the write appearing to succeed (200,
-//     no error). Confirmed live: a trivial PATCH of another field (Description) applies and bumps
-//     UpdatedDate; the identical request with only Security populated returns 200 but a subsequent
-//     fresh GET shows Security unchanged and UpdatedDate untouched. Tried against a freshly-created,
-//     disposable test folder (created and deleted solely for this check — never against real
-//     customer data): both the {Item: {...}, AccessType} shape confirmed on reads and a flat
-//     {Href, AccessType} shape, both PATCH and PUT, all had zero effect. CLM's own error code list
-//     (see the Response and Error Codes page) names a distinct "136 - Missing Change Security Task",
-//     which strongly suggests folder security changes require a dedicated Task API endpoint (like
-//     SearchFolders' FolderSearchTasks) rather than this generic object Patch — not yet located.
-//     PatchFolderSecurity/clm_folders.go's Grant/Revoke are UNCONFIRMED to work against a real
-//     tenant as a result; treat this as a known, open gap, not a confirmed-working path.
+//   - POST /v2/{accountId}/changesecuritytasks - Update folder security (grant: set an AccessType on
+//     the relevant Groups/Roles/Users entry; revoke: set that entry's AccessType to "NoAccess") — see
+//     PatchFolderSecurity's doc. NOT the generic Folders Patch: that endpoint accepts a Security field
+//     in its documented schema but silently ignores it live (confirmed: 200 OK, no error, but a fresh
+//     GET shows no change, while a trivial PATCH of another field on the same folder did apply). CLM's
+//     own error code list names a distinct "136 - Missing Change Security Task", and the CLM API
+//     Reference confirms ChangeSecurityTasks as its own Task API resource for this. This rewrite
+//     matches ChangeSecurityTasks' documented request/response schema but is NOT independently
+//     verified live — per explicit instruction, this project is done live-testing against the
+//     customer's tenant.
 //
 // Groups:
 //   - GET /v2/{accountId}/groups - List CLM groups (GetAllGroups)
@@ -123,14 +120,17 @@ const (
 	// SearchFolders' doc. The previously-assumed synchronous "/v2/%s/folders/search"
 	// endpoint does not exist for folders (confirmed live: 405 Method Not Allowed).
 	clmCreateFolderSearchTask = "/v2/%s/foldersearchtasks"
-	clmGetFolder              = "/v2/%s/folders/%s"
-	clmPatchFolder            = "/v2/%s/folders/%s"
-	clmGetGroups              = "/v2/%s/groups"
-	clmGetGroupMembers        = "/v2/%s/groups/%s/groupmembers"
-	clmGetMembers             = "/v2/%s/members"
-	clmGetMemberGroups        = "/v2/%s/members/%s/groups"
-	clmPatchPutMember         = "/v2/%s/members/%s"
-	clmGetPermissionSet       = "/v2/%s/permissionsets"
+	// clmCreateChangeSecurityTask creates a CLM ChangeSecurityTasks task — see
+	// PatchFolderSecurity's doc. The generic Folders Patch this replaced silently
+	// ignores a Security payload (confirmed live: 200 OK, but no effect).
+	clmCreateChangeSecurityTask = "/v2/%s/changesecuritytasks"
+	clmGetFolder                = "/v2/%s/folders/%s"
+	clmGetGroups                = "/v2/%s/groups"
+	clmGetGroupMembers          = "/v2/%s/groups/%s/groupmembers"
+	clmGetMembers               = "/v2/%s/members"
+	clmGetMemberGroups          = "/v2/%s/members/%s/groups"
+	clmPatchPutMember           = "/v2/%s/members/%s"
+	clmGetPermissionSet         = "/v2/%s/permissionsets"
 
 	// clmGroupPath and clmMemberPath are path *shapes*, not endpoints this connector
 	// calls — hrefFor builds a Href string locally from these, issuing no request beyond
@@ -302,12 +302,13 @@ func (c *Client) doClmRequest(ctx context.Context, method string, reqURL *url.UR
 	return anno, err
 }
 
-// clmMaxFolderSearchTaskPolls bounds how many times SearchFolders polls a "Processing"
-// FolderSearchTasks task before giving up. Against a live CLM tenant the task always
-// resolved inline (Status "Success" already in the POST response), so this branch is
-// implemented per the Task API's documented contract but unverified live; the cap
-// exists so a task that genuinely never resolves fails loudly instead of hanging.
-const clmMaxFolderSearchTaskPolls = 30
+// clmMaxTaskPolls bounds how many times a CLM Task API poll loop (SearchFolders,
+// PatchFolderSecurity) retries a not-yet-resolved task before giving up. Against a live
+// CLM tenant, FolderSearchTasks always resolved inline (Status "Success" already in the
+// POST response), so both polling branches are implemented per the Task API's
+// documented contract but unverified live; the cap exists so a task that genuinely
+// never resolves fails loudly instead of hanging.
+const clmMaxTaskPolls = 30
 
 // ClmFolderSearchTaskPollInterval is how long SearchFolders waits between polls of a
 // "Processing" FolderSearchTasks task. Exported, like DefaultPageSize, so tests can
@@ -413,8 +414,8 @@ func (c *Client) getClmFolderSearchResultPage(ctx context.Context, resultHref st
 // is unverified against a live tenant.
 func (c *Client) awaitClmFolderSearchTask(ctx context.Context, task ClmFolderSearchTaskResponse) (ClmFolderSearchTaskResponse, error) {
 	for attempt := 0; task.Status == "Processing"; attempt++ {
-		if attempt >= clmMaxFolderSearchTaskPolls {
-			return task, fmt.Errorf("baton-docusign: CLM folder search task %s did not finish after %d polls", task.Href, clmMaxFolderSearchTaskPolls)
+		if attempt >= clmMaxTaskPolls {
+			return task, fmt.Errorf("baton-docusign: CLM folder search task %s did not finish after %d polls", task.Href, clmMaxTaskPolls)
 		}
 		select {
 		case <-ctx.Done():
@@ -500,23 +501,98 @@ func (c *Client) getFolder(ctx context.Context, folderID string, noCache bool, e
 // Grant/Revoke on clm_folder relies on - could silently no-op or 404 against a real
 // tenant. Verify which endpoint the real API expects before treating folder
 // provisioning here as more than best-effort.
+// PatchFolderSecurity sets a folder's security via CLM's ChangeSecurityTasks — a
+// dedicated async Task API endpoint, NOT the generic Folders Patch this function used
+// to call. Confirmed live that the generic PATCH /v2/{accountId}/folders/{id} silently
+// ignores a Security payload entirely (200 OK, no error, but a fresh GET shows no
+// change — a trivial PATCH of another field on the same folder DID apply and bump
+// UpdatedDate, isolating the failure to Security specifically); CLM's own error code
+// list separately names "136 - Missing Change Security Task", and the CLM API
+// Reference confirms a distinct ChangeSecurityTasks resource ("Post: Set the security
+// on a folder") exists for exactly this. See clm_client.go's package doc "Folders"
+// section for the live evidence that led here.
+//
+// This rewrite is implemented against ChangeSecurityTasks' documented request/response
+// schema but is NOT independently verified live: per explicit instruction, this
+// project is done live-testing against the customer's tenant. Two things are worth a
+// second look if this doesn't work in practice:
+//   - The request body's top-level Href is assumed to identify the target folder
+//     (paralleling ParentFolder/other object references elsewhere in this API), since
+//     ChangeSecurityTasks' POST takes no {id} path parameter at all — the docs' own
+//     schema table doesn't say this in words, only implies it from the shape.
+//   - ChangeSecurityTasks' Status values are documented in lowercase (success/waiting/
+//     failure/processing) — confirmed distinct from FolderSearchTasks' PascalCase
+//     (Success/Processing), not a documentation inconsistency to normalize away.
 func (c *Client) PatchFolderSecurity(ctx context.Context, folderID string, write ClmFolderSecurityWrite) (annotations.Annotations, error) {
 	if err := c.ensureClmReady(ctx); err != nil {
 		return nil, err
 	}
 
-	folderURL, err := c.buildClmClientURL(clmPatchFolder, folderID)
+	folderURL, err := c.buildClmClientURL(clmGetFolder, folderID)
 	if err != nil {
 		return nil, err
 	}
 
-	body := ClmFolderSecurityPatch{Security: write}
-	anno, err := c.doClmRequest(ctx, http.MethodPatch, folderURL, body, nil)
+	createURL, err := c.buildClmClientURL(clmCreateChangeSecurityTask)
 	if err != nil {
-		return anno, fmt.Errorf("baton-docusign: failed to update CLM folder %s security: %w", folderID, err)
+		return nil, err
+	}
+
+	body := ClmChangeSecurityTaskRequest{Href: folderURL.String(), Security: write}
+
+	var task ClmChangeSecurityTaskResponse
+	anno, err := c.doClmRequest(ctx, http.MethodPost, createURL, body, &task)
+	if err != nil {
+		return anno, fmt.Errorf("baton-docusign: failed to create CLM change-security task for folder %s: %w", folderID, err)
+	}
+
+	task, err = c.awaitClmChangeSecurityTask(ctx, task)
+	if err != nil {
+		return anno, err
+	}
+	if task.Status != ClmChangeSecurityStatusSuccess {
+		return anno, fmt.Errorf("baton-docusign: CLM change-security task %s for folder %s did not succeed (status %q)", task.Href, folderID, task.Status)
 	}
 
 	return anno, nil
+}
+
+// clmChangeSecurityStatus* are ChangeSecurityTasks' documented Status values —
+// lowercase, distinct from FolderSearchTasks' PascalCase. See PatchFolderSecurity's doc.
+const (
+	ClmChangeSecurityStatusSuccess    = "success"
+	ClmChangeSecurityStatusWaiting    = "waiting"
+	ClmChangeSecurityStatusFailure    = "failure"
+	ClmChangeSecurityStatusProcessing = "processing"
+)
+
+// awaitClmChangeSecurityTask polls a CLM ChangeSecurityTasks task until it leaves
+// "waiting"/"processing" — mirrors awaitClmFolderSearchTask's polling loop, but against
+// ChangeSecurityTasks' distinct (lowercase) Status vocabulary and leaner response shape
+// (no Result field: this task mutates rather than returns data, so success/failure is
+// the only thing to observe). Unverified live — see PatchFolderSecurity's doc.
+func (c *Client) awaitClmChangeSecurityTask(ctx context.Context, task ClmChangeSecurityTaskResponse) (ClmChangeSecurityTaskResponse, error) {
+	for attempt := 0; task.Status == ClmChangeSecurityStatusWaiting || task.Status == ClmChangeSecurityStatusProcessing; attempt++ {
+		if attempt >= clmMaxTaskPolls {
+			return task, fmt.Errorf("baton-docusign: CLM change-security task %s did not finish after %d polls", task.Href, clmMaxTaskPolls)
+		}
+		select {
+		case <-ctx.Done():
+			return task, ctx.Err()
+		case <-time.After(ClmFolderSearchTaskPollInterval):
+		}
+
+		pollURL, err := url.Parse(task.Href)
+		if err != nil {
+			return task, fmt.Errorf("baton-docusign: invalid CLM change-security task href %q: %w", task.Href, err)
+		}
+		// WithNoCache: see awaitClmFolderSearchTask's identical comment — repeated polls
+		// of the same task URL must observe its latest Status, not a memoized first one.
+		if _, err := c.doClmRequest(ctx, http.MethodGet, pollURL, nil, &task, uhttp.WithNoCache()); err != nil {
+			return task, fmt.Errorf("baton-docusign: failed to poll CLM change-security task %s: %w", task.Href, err)
+		}
+	}
+	return task, nil
 }
 
 // ListGroups lists CLM groups (a distinct object from eSignature groups).

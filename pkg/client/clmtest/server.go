@@ -31,7 +31,8 @@
 //	GET   /v2/{accountId}/foldersearchtasks/{id}        — SearchFolders (poll a task — see PendingFolderSearchPolls)
 //	GET   /v2/{accountId}/foldersearchtasks/{id}/result — SearchFolders (continuation pages)
 //	GET   /v2/{accountId}/folders/{id}                  — GetFolder (supports ?expand=Security)
-//	PATCH /v2/{accountId}/folders/{id}                  — PatchFolderSecurity
+//	POST  /v2/{accountId}/changesecuritytasks           — PatchFolderSecurity (create task; resolves inline)
+//	GET   /v2/{accountId}/changesecuritytasks/{id}      — PatchFolderSecurity (poll a task — see PendingChangeSecurityPolls)
 //	GET   /v2/{accountId}/groups                        — ListGroups
 //	GET   /v2/{accountId}/groups/{id}/groupmembers       — GetGroupMembers
 //	GET   /v2/{accountId}/members                       — ListMembers
@@ -124,6 +125,17 @@ type Server struct {
 	// POST /foldersearchtasks come back "Processing" this many times before resolving to
 	// "Success" on poll — see SetPendingFolderSearchPolls. Decremented on each poll.
 	pendingFolderSearchPolls int
+
+	nextChangeSecurityTaskID int // incrementing counter for mock ChangeSecurityTasks task IDs
+
+	// pendingChangeSecurityPolls, when > 0, makes the next PatchFolderSecurity task
+	// created via POST /changesecuritytasks come back "waiting" this many times before
+	// resolving to "success" on poll — see SetPendingChangeSecurityPolls. Decremented on
+	// each poll.
+	pendingChangeSecurityPolls int
+
+	forcedDiscoveryStatus int // non-zero forces handleClmAccountDiscovery to fail with this HTTP status, for tests
+	forcedUserInfoStatus  int // non-zero forces handleUserInfo to fail with this HTTP status, for tests
 }
 
 // SetPendingFolderSearchPolls makes the next folder search task created by this server
@@ -135,6 +147,42 @@ func (s *Server) SetPendingFolderSearchPolls(n int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.pendingFolderSearchPolls = n
+}
+
+// SetPendingChangeSecurityPolls makes the next change-security task created by this
+// server require n polls of GET .../changesecuritytasks/{id} before resolving to
+// "success" — exercises PatchFolderSecurity's awaitClmChangeSecurityTask polling loop,
+// unverified against a live tenant (see PatchFolderSecurity's doc in clm_client.go).
+func (s *Server) SetPendingChangeSecurityPolls(n int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pendingChangeSecurityPolls = n
+}
+
+// ForceClmDiscoveryStatus makes CLM account discovery fail with the given HTTP status
+// for the fixed test bearer token — for tests that need a specific gRPC code out of
+// ensureClmInitialized (e.g. a transient 5xx) rather than the normal 401/403/404 an
+// auth/account failure produces. Call after NewServer returns.
+//
+// handleClmAccountDiscovery is registered behind requireAuth, so only a client
+// presenting testBearerToken reaches this forced status; a client built via
+// NewClientWithToken("wrong-token") (or any other mismatched token) still gets a plain
+// 401 from requireAuth itself and never sees it. ForceUserInfoStatus has no such
+// caveat — /oauth/userinfo isn't wrapped in requireAuth.
+func (s *Server) ForceClmDiscoveryStatus(status int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.forcedDiscoveryStatus = status
+}
+
+// ForceUserInfoStatus makes every subsequent eSignature /oauth/userinfo call fail with
+// the given HTTP status — for tests that need ensureInitialized itself (not CLM account
+// discovery) to fail with a specific gRPC code, since handleUserInfo otherwise has no
+// auth check to fail on. Call after NewServer returns.
+func (s *Server) ForceUserInfoStatus(status int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.forcedUserInfoStatus = status
 }
 
 // MemberGroupsRequestCount returns how many times GET .../members/{id}/groups has been
@@ -296,7 +344,8 @@ func newMux(s *Server) *http.ServeMux {
 	mux.HandleFunc("GET /v2/{accountId}/foldersearchtasks/{id}", s.requireAuth(s.handlePollFolderSearchTask))
 	mux.HandleFunc("GET /v2/{accountId}/foldersearchtasks/{id}/result", s.requireAuth(s.handleFolderSearchTaskResult))
 	mux.HandleFunc("GET /v2/{accountId}/folders/{id}", s.requireAuth(s.handleGetFolder))
-	mux.HandleFunc("PATCH /v2/{accountId}/folders/{id}", s.requireAuth(s.handlePatchFolder))
+	mux.HandleFunc("POST /v2/{accountId}/changesecuritytasks", s.requireAuth(s.handleCreateChangeSecurityTask))
+	mux.HandleFunc("GET /v2/{accountId}/changesecuritytasks/{id}", s.requireAuth(s.handlePollChangeSecurityTask))
 	mux.HandleFunc("GET /v2/{accountId}/groups", s.requireAuth(s.handleListGroups))
 	mux.HandleFunc("GET /v2/{accountId}/groups/{id}/groupmembers", s.requireAuth(s.handleGroupMembers))
 	mux.HandleFunc("GET /v2/{accountId}/members", s.requireAuth(s.handleListMembers))

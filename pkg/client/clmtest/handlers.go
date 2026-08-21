@@ -111,16 +111,12 @@ func (s *Server) handleGetFolder(w http.ResponseWriter, r *http.Request) {
 // because it's safe under replace semantics too. Modeling this endpoint as a merge
 // would hide a regression to sending just the one changed entry — replace surfaces it
 // immediately as other principals' entries disappearing.
-func (s *Server) handlePatchFolder(w http.ResponseWriter, r *http.Request) {
+// Doc URL: https://developers.docusign.com/docs/clm-api/reference/tasks/changesecuritytasks/post/
+// Simulates PatchFolderSecurity's real endpoint (ChangeSecurityTasks), not the generic
+// Folders Patch this replaced — see clm_client.go's PatchFolderSecurity doc for why.
+func (s *Server) handleCreateChangeSecurityTask(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
-	id := r.PathValue("id")
-	f, ok := s.folders[id]
-	if !ok {
-		writeNotFound(w)
-		return
-	}
 
 	bodyBytes, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -155,9 +151,16 @@ func (s *Server) handlePatchFolder(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	var body client.ClmFolderSecurityPatch
+	var body client.ClmChangeSecurityTaskRequest
 	if err := json.Unmarshal(bodyBytes, &body); err != nil {
 		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	folderID := idFromHref(body.Href)
+	f, ok := s.folders[folderID]
+	if !ok {
+		writeNotFound(w)
 		return
 	}
 
@@ -167,7 +170,30 @@ func (s *Server) handlePatchFolder(w http.ResponseWriter, r *http.Request) {
 		Users:  body.Security.Users,
 	}
 
-	writeJSON(w, *f)
+	s.nextChangeSecurityTaskID++
+	taskHref := fmt.Sprintf("%s/v2/%s/changesecuritytasks/%d", s.baseURL, AccountID, s.nextChangeSecurityTaskID)
+	status := client.ClmChangeSecurityStatusSuccess
+	if s.pendingChangeSecurityPolls > 0 {
+		status = client.ClmChangeSecurityStatusWaiting
+	}
+	writeJSON(w, client.ClmChangeSecurityTaskResponse{Href: taskHref, Status: status})
+}
+
+// Doc URL: https://developers.docusign.com/docs/clm-api/reference/tasks/changesecuritytasks/get/
+func (s *Server) handlePollChangeSecurityTask(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	taskID := r.PathValue("id")
+	taskHref := fmt.Sprintf("%s/v2/%s/changesecuritytasks/%s", s.baseURL, AccountID, taskID)
+
+	if s.pendingChangeSecurityPolls > 0 {
+		s.pendingChangeSecurityPolls--
+		writeJSON(w, client.ClmChangeSecurityTaskResponse{Href: taskHref, Status: client.ClmChangeSecurityStatusWaiting})
+		return
+	}
+
+	writeJSON(w, client.ClmChangeSecurityTaskResponse{Href: taskHref, Status: client.ClmChangeSecurityStatusSuccess})
 }
 
 // Doc URL: https://developers.docusign.com/docs/clm-api/reference/objects/groups/
