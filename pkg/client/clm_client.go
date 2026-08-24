@@ -280,13 +280,29 @@ func (c *Client) prepareClmPagedRequest(endpoint string, options PageOptions, ex
 	return preparePagedRequestClm(baseURL, formatted, options)
 }
 
-// validateClmURL rejects a URL whose scheme/host don't match the CLM base URL this
-// client discovered — a guard for the Task API polling/continuation URLs (task Href,
-// SearchFolders' ResultHref) that come from a response body or a round-tripped page
-// token rather than being built from clmBaseURI like every other CLM request. doClmRequest
-// attaches this connector's bearer token to whatever URL it's given, with no host check
-// of its own, so a malformed or tampered href here would otherwise send that token to an
-// arbitrary host. source names the caller/field for the error message.
+// clmKnownDomains are registrable domains CLM's own product is confirmed to use across
+// its different hosts — see this file's package doc "Base URL resolution" section: the
+// discovered Object API base URL is on *.clm.docusign.net, while account discovery is a
+// separate, hardcoded auth.springcm.com/authuat.springcm.com host on a wholly different
+// domain. Since CLM itself already spans two unrelated domains for different purposes,
+// a Task API href on yet another CLM-owned host is plausible, which is why
+// validateClmURL checks domain family rather than requiring the exact discovered host.
+var clmKnownDomains = []string{"docusign.net", "springcm.com"}
+
+// validateClmURL rejects a URL that isn't a plausible CLM host — a guard for the Task
+// API polling/continuation URLs (task Href, SearchFolders' ResultHref) that come from a
+// response body or a round-tripped page token rather than being built from clmBaseURI
+// like every other CLM request. doClmRequest attaches this connector's bearer token to
+// whatever URL it's given, with no host check of its own, so a malformed or tampered
+// href here would otherwise send that token to an arbitrary host.
+//
+// Deliberately not an exact match against the discovered base host: clmPreferredHref's
+// doc (pkg/connector/helper.go) notes CLM's Href host isn't guaranteed to match the
+// discovered base URL, and this package's own confirmed base-URL-resolution flow proves
+// it — the Object API base and the account-discovery host are already two different
+// domains. An exact-host check would risk hard-failing every genuine Task API call (and
+// so the whole clm_folder sync) the first time CLM legitimately serves one from a
+// sibling host. source names the caller/field for the error message.
 func (c *Client) validateClmURL(u *url.URL, source string) error {
 	c.mutex.RLock()
 	clmBaseURI := c.clmBaseURI
@@ -295,10 +311,19 @@ func (c *Client) validateClmURL(u *url.URL, source string) error {
 	if err != nil {
 		return fmt.Errorf("baton-docusign: invalid CLM base URL: %w", err)
 	}
-	if !strings.EqualFold(u.Scheme, base.Scheme) || !strings.EqualFold(u.Host, base.Host) {
-		return fmt.Errorf("baton-docusign: refusing to send CLM credentials to %s %q — expected host %q", source, u.String(), base.Host)
+	if !strings.EqualFold(u.Scheme, base.Scheme) {
+		return fmt.Errorf("baton-docusign: refusing to send CLM credentials to %s %q — expected scheme %q", source, u.String(), base.Scheme)
 	}
-	return nil
+	host := u.Hostname()
+	if strings.EqualFold(host, base.Hostname()) {
+		return nil
+	}
+	for _, domain := range clmKnownDomains {
+		if strings.EqualFold(host, domain) || strings.HasSuffix(strings.ToLower(host), "."+domain) {
+			return nil
+		}
+	}
+	return fmt.Errorf("baton-docusign: refusing to send CLM credentials to %s %q — host %q is not a recognized CLM host", source, u.String(), host)
 }
 
 // doClmRequest executes an HTTP request against the CLM API and decodes the response.
@@ -416,6 +441,14 @@ func (c *Client) SearchFolders(ctx context.Context, options PageOptions) ([]ClmF
 	}
 	if task.Result == nil {
 		return nil, "", anno, fmt.Errorf("baton-docusign: CLM folder search task %s succeeded with no Result", task.Href)
+	}
+	// Prefer the server's own echoed Limit over what was requested: applying
+	// pageSortParams.limit to the create POST is unconfirmed live (see this func's
+	// doc), so if CLM ignores it and serves its own default page size instead, using
+	// the requested size here would make a genuinely full page look short and stop
+	// pagination early.
+	if task.Result.Limit > 0 {
+		requestedPage.PageSize = task.Result.Limit
 	}
 
 	nextToken, err := getClmNextToken(requestedPage, len(task.Result.Items), task.Result.Next != "", task.Result.Total, task.Result.Href)
