@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	"github.com/conductorone/baton-docusign/pkg/client/clmtest"
+	cfg "github.com/conductorone/baton-docusign/pkg/config"
+	"github.com/conductorone/baton-sdk/pkg/cli"
 	"golang.org/x/oauth2"
 )
 
@@ -174,5 +176,48 @@ func TestNewWithTokenSource_StoresIncludeClm(t *testing.T) {
 		if cb.includeClm != includeClm {
 			t.Errorf("includeClm=%v: expected Connector.includeClm=%v, got %v", includeClm, includeClm, cb.includeClm)
 		}
+	}
+}
+
+// TestNew_IncludeClmDerivation pins New()'s opts.WillSyncResourceType(clm*) disjunction
+// (connector.go) directly — CI's own BATON_SYNC_RESOURCE_TYPES allowlist depends on this
+// exact logic to keep includeClm=false, and none of the other tests here exercise it: a
+// renamed clm_* resource type ID or a term dropped from the disjunction would silently
+// stop being caught by anything else in this file. Routes through opts.TokenSource
+// (client.NewClient makes zero network I/O at construction, see client.go), so this
+// needs no mock server and no refresh token.
+func TestNew_IncludeClmDerivation(t *testing.T) {
+	ctx := context.Background()
+	docusignCfg := &cfg.Docusign{DocusignClientId: "client-id", DocusignClientSecret: "client-secret"}
+	tokenSource := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "tok"})
+
+	tests := []struct {
+		name                string
+		syncResourceTypeIDs []string
+		wantIncludeClm      bool
+	}{
+		{"no filter (opts.SyncResourceTypeIDs empty): syncs everything, including CLM", nil, true},
+		{"CI's actual allowlist: no clm_* type present", []string{"user", "group", "permission_profile", "signing_group"}, false},
+		{"clm_member present", []string{"user", clmMemberResourceType.Id}, true},
+		{"clm_role present", []string{"user", clmRoleResourceType.Id}, true},
+		{"clm_group present", []string{"user", clmGroupResourceType.Id}, true},
+		{"clm_permission_set present", []string{"user", clmPermissionSetResourceType.Id}, true},
+		{"clm_folder present", []string{"user", clmFolderResourceType.Id}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			opts := &cli.ConnectorOpts{TokenSource: tokenSource, SyncResourceTypeIDs: tt.syncResourceTypeIDs}
+			built, _, err := New(ctx, docusignCfg, opts)
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			cb, ok := built.(*Connector)
+			if !ok {
+				t.Fatalf("New returned %T, expected *Connector", built)
+			}
+			if cb.includeClm != tt.wantIncludeClm {
+				t.Errorf("SyncResourceTypeIDs=%v: expected includeClm=%v, got %v", tt.syncResourceTypeIDs, tt.wantIncludeClm, cb.includeClm)
+			}
+		})
 	}
 }
