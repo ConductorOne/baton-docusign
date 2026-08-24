@@ -3,7 +3,26 @@ package client
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 )
+
+// clmTopLevelKeys returns the sorted top-level JSON keys of data, for describing an
+// unrecognized security-entry wire shape in an error without echoing the entry's actual
+// field values — a member/group entry's raw JSON can carry Email/Name/etc. that
+// shouldn't end up verbatim in a sync task error message. Returns nil if data isn't a
+// JSON object.
+func clmTopLevelKeys(data []byte) []string {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil
+	}
+	keys := make([]string, 0, len(raw))
+	for k := range raw {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
 
 // ClmPage is the pagination metadata CLM's Object API embeds in every list response —
 // distinct from eSignature's Page (see models.go). Each *Page wrapper type below embeds
@@ -164,26 +183,43 @@ func (e ClmGroupSecurityEntry) MarshalJSON() ([]byte, error) {
 
 func (e *ClmGroupSecurityEntry) UnmarshalJSON(data []byte) error {
 	var wire struct {
-		Item       clmGroupSecurityItem `json:"Item"`
-		AccessType string               `json:"AccessType"`
+		Item       json.RawMessage `json:"Item"`
+		AccessType string          `json:"AccessType"`
 	}
 	if err := json.Unmarshal(data, &wire); err != nil {
 		return err
 	}
-	if wire.Item.Href == "" {
+	var item clmGroupSecurityItem
+	if len(wire.Item) > 0 {
+		if err := json.Unmarshal(wire.Item, &item); err != nil {
+			return err
+		}
+	} else {
+		// No "Item" key at all — mirrors ClmUserSecurityEntry's flat-shape fallback.
+		// Groups' nested shape is confirmed live, so this is defense against a
+		// hypothetical regression rather than a known gap, but the alternative (hard
+		// error on any flat entry) would take down the whole folder's Grants/Grant/
+		// Revoke rather than just this one entry.
+		if err := json.Unmarshal(data, &item); err != nil {
+			return err
+		}
+	}
+	if item.Href == "" {
 		// Same reasoning as ClmUserSecurityEntry's identical check: an empty Href here
 		// would round-trip into a PatchFolderSecurity body and silently drop this
-		// group's real folder access under replace semantics.
-		return fmt.Errorf("baton-docusign: CLM group security entry has no Href — unrecognized wire shape: %s", data)
+		// group's real folder access under replace semantics. Reports only the
+		// top-level key names, not data itself — a group entry's raw JSON can carry
+		// Name/Description that shouldn't end up verbatim in a sync task error.
+		return fmt.Errorf("baton-docusign: CLM group security entry has no Href — unrecognized wire shape (keys: %v)", clmTopLevelKeys(data))
 	}
 	*e = ClmGroupSecurityEntry{
 		AccessType:  wire.AccessType,
-		Href:        wire.Item.Href,
-		Name:        wire.Item.Name,
-		GroupType:   wire.Item.GroupType,
-		Description: wire.Item.Description,
-		CreatedDate: wire.Item.CreatedDate,
-		UpdatedDate: wire.Item.UpdatedDate,
+		Href:        item.Href,
+		Name:        item.Name,
+		GroupType:   item.GroupType,
+		Description: item.Description,
+		CreatedDate: item.CreatedDate,
+		UpdatedDate: item.UpdatedDate,
 	}
 	return nil
 }
@@ -307,8 +343,11 @@ func (e *ClmUserSecurityEntry) UnmarshalJSON(data []byte) error {
 		// shape (e.g. "Item":null, "Item":{}, or the member nested under some other
 		// key). Fail loud rather than let clmFolderSecurityToWrite round-trip an
 		// empty-Href entry into a PatchFolderSecurity body, which would silently drop
-		// this user's real folder access under replace semantics.
-		return fmt.Errorf("baton-docusign: CLM user security entry has no Href — unrecognized wire shape: %s", data)
+		// this user's real folder access under replace semantics. Reports only the
+		// top-level key names, not data itself — this error propagates out through
+		// Grants/Grant/Revoke into the sync task's own error, and a member entry's raw
+		// JSON can carry Email/FirstName/LastName that shouldn't end up there verbatim.
+		return fmt.Errorf("baton-docusign: CLM user security entry has no Href — unrecognized wire shape (keys: %v)", clmTopLevelKeys(data))
 	}
 	*e = ClmUserSecurityEntry{
 		AccessType: wire.AccessType,

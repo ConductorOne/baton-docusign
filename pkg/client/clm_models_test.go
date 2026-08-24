@@ -2,6 +2,7 @@ package client
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -101,18 +102,50 @@ func TestClmUserSecurityEntry_UnmarshalJSON(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("error does not leak PII field values", func(t *testing.T) {
+		body := `{"Member":{"Href":"https://clm.example.com/v2/acct/members/1","Email":"secret@example.com","FirstName":"Alice","LastName":"Smith"},"AccessType":"View"}`
+		var e ClmUserSecurityEntry
+		err := json.Unmarshal([]byte(body), &e)
+		if err == nil {
+			t.Fatalf("expected an error for an unrecognized wire shape, got %+v", e)
+		}
+		for _, leaked := range []string{"secret@example.com", "Alice", "Smith"} {
+			if strings.Contains(err.Error(), leaked) {
+				t.Errorf("error message leaked PII field value %q: %v", leaked, err)
+			}
+		}
+	})
 }
 
-// TestClmGroupSecurityEntry_UnmarshalJSON_FailsLoudOnUnrecognizedShape mirrors
-// ClmUserSecurityEntry's identical fail-loud guard: Groups' nested shape is confirmed
-// live today, but if that ever regresses, an empty-Href entry silently round-tripped
-// into a PatchFolderSecurity body would drop that group's real folder access under
-// replace semantics.
-func TestClmGroupSecurityEntry_UnmarshalJSON_FailsLoudOnUnrecognizedShape(t *testing.T) {
-	var e ClmGroupSecurityEntry
-	if err := json.Unmarshal([]byte(`{"Item":{},"AccessType":"View"}`), &e); err == nil {
-		t.Fatalf("expected an error for an unrecognized wire shape, got %+v", e)
-	}
+// TestClmGroupSecurityEntry_UnmarshalJSON mirrors ClmUserSecurityEntry's fail-loud
+// guard and flat-shape fallback: Groups' nested shape is confirmed live today, but if
+// that ever regresses, an empty-Href entry silently round-tripped into a
+// PatchFolderSecurity body would drop that group's real folder access under replace
+// semantics.
+func TestClmGroupSecurityEntry_UnmarshalJSON(t *testing.T) {
+	t.Run("flat shape falls back instead of hard-failing", func(t *testing.T) {
+		body := `{"Href":"https://clm.example.com/v2/acct/groups/1","Name":"Legal","AccessType":"View"}`
+		var e ClmGroupSecurityEntry
+		if err := json.Unmarshal([]byte(body), &e); err != nil {
+			t.Fatalf("Unmarshal: %v", err)
+		}
+		if e.Href != "https://clm.example.com/v2/acct/groups/1" || e.Name != "Legal" {
+			t.Errorf("got %+v", e)
+		}
+	})
+
+	t.Run("fails loud on an unrecognized shape without leaking field values", func(t *testing.T) {
+		body := `{"Item":{},"AccessType":"View","Name":"Legal"}`
+		var e ClmGroupSecurityEntry
+		err := json.Unmarshal([]byte(body), &e)
+		if err == nil {
+			t.Fatalf("expected an error for an unrecognized wire shape, got %+v", e)
+		}
+		if strings.Contains(err.Error(), "Legal") {
+			t.Errorf("error message leaked a field value: %v", err)
+		}
+	})
 }
 
 // TestClmRoleSecurityEntry_UnmarshalJSON is a regression test for a review finding:
