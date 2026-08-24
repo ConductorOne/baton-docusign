@@ -26,6 +26,14 @@ env:
   # resource type in pkg/connector/connector.go, add it here too — otherwise it silently
   # gets zero CI sync-test coverage. Declared once at the workflow level (all three jobs
   # inherit it) so there's no per-job copy to keep in sync.
+  #
+  # signing_group specifically only works here because every job below also sets
+  # BATON_INCLUDE_SIGNING_GROUPS: "true" — the connector only advertises signing_group
+  # via ListResourceTypes() when that flag is set (pkg/connector/connector.go), and the
+  # SDK hard-errors on any filter entry the connector doesn't advertise
+  # ("invalid resource type 'signing_group' in filter"). If a future job drops that
+  # per-job env var, it fails with that confusing filter error instead of just skipping
+  # signing groups.
   BATON_SYNC_RESOURCE_TYPES: user,group,permission_profile,signing_group
   # Forces the legacy v1/SQLite c1z format instead of baton-sdk v0.25.0's new default
   # (Pebble/v3). The `baton` CLI these jobs download (ConductorOne/github-workflows'
