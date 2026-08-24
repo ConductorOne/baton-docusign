@@ -28,11 +28,11 @@ const (
 
 // newSigningGroupsTestClient builds a *client.Client wired to a mock server serving
 // /oauth/userinfo plus a minimal /signing_groups response (one seeded group).
-// signingGroupBuilder.List()'s only failure path that matters here is ensureInitialized
-// (called by GetSigningGroups before it ever reaches the signing-groups endpoint), so a
-// full eSignature REST API mock isn't needed to exercise it — matching how the CLM
-// builders' equivalent tests fail at CLM account discovery.
-func newSigningGroupsTestClient(t *testing.T, userInfoStatus int) *client.Client {
+// signingGroupsStatus forces the /signing_groups response itself to fail — the
+// realistic "feature not enabled on this account" signal — independent of
+// userInfoStatus, which only fails base account discovery. Pass http.StatusOK for
+// either to use the normal (working) response.
+func newSigningGroupsTestClient(t *testing.T, userInfoStatus, signingGroupsStatus int) *client.Client {
 	t.Helper()
 	var mockServer *httptest.Server
 	mockServer = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -52,6 +52,11 @@ func newSigningGroupsTestClient(t *testing.T, userInfoStatus int) *client.Client
 			return
 		}
 		if strings.HasSuffix(r.URL.Path, "/signing_groups") {
+			if signingGroupsStatus != http.StatusOK {
+				w.WriteHeader(signingGroupsStatus)
+				_ = json.NewEncoder(w).Encode(client.ErrorResponse{ErrorCode: "FEATURE_NOT_ENABLED", ErrorMessage: "Signing groups are not enabled for this account"})
+				return
+			}
 			// One seeded group is enough to exercise both the happy path and
 			// parseIntoSigningGroupResource, without a full pagination fixture (no next
 			// page: the zero-valued embedded Page makes getNextToken's
@@ -85,7 +90,7 @@ func newSigningGroupsTestClient(t *testing.T, userInfoStatus int) *client.Client
 // it on. List() must propagate any error (here, a 401 from eSignature account discovery)
 // instead of tolerating it and silently syncing zero signing groups.
 func TestSigningGroupBuilder_List_FailsWhenUnavailable(t *testing.T) {
-	c := newSigningGroupsTestClient(t, http.StatusUnauthorized)
+	c := newSigningGroupsTestClient(t, http.StatusUnauthorized, http.StatusOK)
 	b := newSigningGroupBuilder(c)
 	ctx := context.Background()
 
@@ -98,13 +103,33 @@ func TestSigningGroupBuilder_List_FailsWhenUnavailable(t *testing.T) {
 	}
 }
 
+// TestSigningGroupBuilder_List_FailsOnSigningGroupsEndpointError is a regression test
+// for the tolerance the fail-loud commit actually removed: the old code caught a
+// 401/403/404 from the /signing_groups endpoint itself (this account's real "feature
+// not enabled" signal), not from base account discovery — the sibling test above forces
+// a 401 on /oauth/userinfo instead, which Connector.Validate()'s EnsureReady already
+// catches for every resource type and never reached the removed branch.
+func TestSigningGroupBuilder_List_FailsOnSigningGroupsEndpointError(t *testing.T) {
+	c := newSigningGroupsTestClient(t, http.StatusOK, http.StatusForbidden)
+	b := newSigningGroupBuilder(c)
+	ctx := context.Background()
+
+	resources, _, err := b.List(ctx, nil, rs.SyncOpAttrs{PageToken: pagination.Token{Size: 10}})
+	if err == nil {
+		t.Fatal("expected List to fail when the /signing_groups endpoint itself errors, got nil error")
+	}
+	if len(resources) != 0 {
+		t.Errorf("expected zero resources on a hard failure, got %d", len(resources))
+	}
+}
+
 // TestSigningGroupBuilder_List_Succeeds is a sanity check for
 // newSigningGroupsTestClient itself: confirms the happy path (account discovery
 // succeeds) reaches List()'s normal return and correctly parses the one seeded signing
 // group via parseIntoSigningGroupResource, distinguishing a correctly-wired mock from
 // the fail-loud test above passing only because everything errors regardless.
 func TestSigningGroupBuilder_List_Succeeds(t *testing.T) {
-	c := newSigningGroupsTestClient(t, http.StatusOK)
+	c := newSigningGroupsTestClient(t, http.StatusOK, http.StatusOK)
 	b := newSigningGroupBuilder(c)
 	ctx := context.Background()
 

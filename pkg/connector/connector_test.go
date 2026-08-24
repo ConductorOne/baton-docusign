@@ -123,7 +123,7 @@ func TestConnectorValidate(t *testing.T) {
 	})
 
 	t.Run("includeClm=false, base credentials bad: fails", func(t *testing.T) {
-		badBaseClient := newSigningGroupsTestClient(t, http.StatusUnauthorized)
+		badBaseClient := newSigningGroupsTestClient(t, http.StatusUnauthorized, http.StatusOK)
 		d := &Connector{client: badBaseClient, includeClm: false}
 		if _, err := d.Validate(ctx); err == nil {
 			t.Error("expected Validate to fail on bad base credentials even when includeClm is false, got nil error")
