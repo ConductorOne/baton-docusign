@@ -314,10 +314,14 @@ func (c *Client) validateClmURL(u *url.URL, source string) error {
 	if !strings.EqualFold(u.Scheme, base.Scheme) {
 		return fmt.Errorf("baton-docusign: refusing to send CLM credentials to %s %q — expected scheme %q", source, u.String(), base.Scheme)
 	}
-	host := u.Hostname()
-	if strings.EqualFold(host, base.Hostname()) {
+	// Exact match compares the full authority (host+port): a --base-url/mock target like
+	// http://127.0.0.1:5000 has no domain of its own to fall back on, so a same-host,
+	// different-port href must still be rejected there. Hostname() (no port) is only
+	// used in the domain-family loop below, where CLM's real hosts are all on 443.
+	if strings.EqualFold(u.Host, base.Host) {
 		return nil
 	}
+	host := u.Hostname()
 	for _, domain := range clmKnownDomains {
 		if strings.EqualFold(host, domain) || strings.HasSuffix(strings.ToLower(host), "."+domain) {
 			return nil
@@ -442,12 +446,16 @@ func (c *Client) SearchFolders(ctx context.Context, options PageOptions) ([]ClmF
 	if task.Result == nil {
 		return nil, "", anno, fmt.Errorf("baton-docusign: CLM folder search task %s succeeded with no Result", task.Href)
 	}
-	// Prefer the server's own echoed Limit over what was requested: applying
+	// Prefer the smaller of the requested and echoed page sizes: applying
 	// pageSortParams.limit to the create POST is unconfirmed live (see this func's
-	// doc), so if CLM ignores it and serves its own default page size instead, using
-	// the requested size here would make a genuinely full page look short and stop
-	// pagination early.
-	if task.Result.Limit > 0 {
+	// doc), so either direction of mismatch is possible. An echoed Limit smaller than
+	// requested (CLM ignored the param, served its own default) would make a
+	// genuinely full page look short if left at the requested size; an echoed Limit
+	// larger than requested (e.g. CLM's max page size rather than what it actually
+	// applied) would make a genuinely full page look short the other way if trusted
+	// outright. Taking the minimum is safe either way — worst case it costs one extra
+	// empty-page request, never lost data.
+	if task.Result.Limit > 0 && task.Result.Limit < requestedPage.PageSize {
 		requestedPage.PageSize = task.Result.Limit
 	}
 
