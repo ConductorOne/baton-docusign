@@ -154,9 +154,6 @@ func (s *Server) SetPendingFolderSearchPolls(n int) {
 	s.pendingFolderSearchPolls = n
 }
 
-// SetOmitFolderSearchResultHref makes the next successful FolderSearchTasks response
-// leave Result.Href empty. Used to pin SearchFolders' guard against minting a
-// continuation token that would re-POST a new search (page-1 loop).
 // SetFolderSearchTaskHrefOverride makes the next folder search task response carry the
 // given Href instead of this server's own — used to pin the client's host-validation
 // guard (Client.validateClmURL) against a task Href pointing at an unexpected host.
@@ -166,6 +163,9 @@ func (s *Server) SetFolderSearchTaskHrefOverride(href string) {
 	s.folderSearchTaskHrefOverride = href
 }
 
+// SetOmitFolderSearchResultHref makes the next successful FolderSearchTasks response
+// leave Result.Href empty. Used to pin SearchFolders' guard against minting a
+// continuation token that would re-POST a new search (page-1 loop).
 func (s *Server) SetOmitFolderSearchResultHref(omit bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
