@@ -3,6 +3,9 @@ package connector
 import (
 	"context"
 	"net/http"
+	"os"
+	"reflect"
+	"sort"
 	"strings"
 	"testing"
 
@@ -10,6 +13,7 @@ import (
 	cfg "github.com/conductorone/baton-docusign/pkg/config"
 	"github.com/conductorone/baton-sdk/pkg/cli"
 	"golang.org/x/oauth2"
+	"gopkg.in/yaml.v3"
 )
 
 // alwaysRegisteredTypeIDs are the resource types ResourceSyncers registers on every
@@ -182,11 +186,12 @@ func TestNewWithTokenSource_StoresIncludeClm(t *testing.T) {
 
 // nonClmAllowlist derives the "no CLM types opted in" test case from
 // alwaysRegisteredTypeIDs — the connector's own source of truth for always-registered
-// resource types — instead of a second hardcoded literal, so registering a new non-CLM
-// resource type there surfaces here too rather than the two lists silently drifting
-// apart. signing_group is added separately since it's intentionally NOT in
-// alwaysRegisteredTypeIDs (conditionally registered, see that var's doc) but is present
-// in CI's real BATON_SYNC_RESOURCE_TYPES allowlist (ci.yaml).
+// resource types — instead of a second hardcoded literal, so there's only one list to
+// keep in sync with reality (this doesn't by itself catch ci.yaml drifting from this
+// value; TestNonClmAllowlistMatchesCI below asserts that separately). signing_group is
+// added separately since it's intentionally NOT in alwaysRegisteredTypeIDs
+// (conditionally registered, see that var's doc) but is present in CI's real
+// BATON_SYNC_RESOURCE_TYPES allowlist (ci.yaml).
 func nonClmAllowlist() []string {
 	ids := []string{"signing_group"}
 	for _, id := range alwaysRegisteredTypeIDs {
@@ -195,6 +200,37 @@ func nonClmAllowlist() []string {
 		}
 	}
 	return ids
+}
+
+// TestNonClmAllowlistMatchesCI is the actual enforcement ci.yaml's own comment asks
+// for: a new non-CLM resource type in alwaysRegisteredTypeIDs (and so in
+// nonClmAllowlist()) is worthless as a drift guard unless something also checks
+// ci.yaml's BATON_SYNC_RESOURCE_TYPES against it. Parses the real workflow file rather
+// than duplicating its value a third time.
+func TestNonClmAllowlistMatchesCI(t *testing.T) {
+	data, err := os.ReadFile("../../.github/workflows/ci.yaml")
+	if err != nil {
+		t.Fatalf("reading ci.yaml: %v", err)
+	}
+	var workflow struct {
+		Env map[string]string `yaml:"env"`
+	}
+	if err := yaml.Unmarshal(data, &workflow); err != nil {
+		t.Fatalf("parsing ci.yaml: %v", err)
+	}
+	raw, ok := workflow.Env["BATON_SYNC_RESOURCE_TYPES"]
+	if !ok {
+		t.Fatal("ci.yaml's workflow-level env has no BATON_SYNC_RESOURCE_TYPES — did it move to a per-job env block?")
+	}
+
+	got := strings.Split(raw, ",")
+	want := nonClmAllowlist()
+	sort.Strings(got)
+	sort.Strings(want)
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("ci.yaml's BATON_SYNC_RESOURCE_TYPES (%v) doesn't match nonClmAllowlist() (%v) — "+
+			"update ci.yaml's allowlist (or alwaysRegisteredTypeIDs) to match", got, want)
+	}
 }
 
 // TestNew_IncludeClmDerivation pins New()'s opts.WillSyncResourceType(clm*) disjunction
