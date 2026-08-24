@@ -3,6 +3,7 @@ package connector
 import (
 	"context"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/conductorone/baton-docusign/pkg/client/clmtest"
@@ -179,6 +180,23 @@ func TestNewWithTokenSource_StoresIncludeClm(t *testing.T) {
 	}
 }
 
+// nonClmAllowlist derives the "no CLM types opted in" test case from
+// alwaysRegisteredTypeIDs — the connector's own source of truth for always-registered
+// resource types — instead of a second hardcoded literal, so registering a new non-CLM
+// resource type there surfaces here too rather than the two lists silently drifting
+// apart. signing_group is added separately since it's intentionally NOT in
+// alwaysRegisteredTypeIDs (conditionally registered, see that var's doc) but is present
+// in CI's real BATON_SYNC_RESOURCE_TYPES allowlist (ci.yaml).
+func nonClmAllowlist() []string {
+	ids := []string{"signing_group"}
+	for _, id := range alwaysRegisteredTypeIDs {
+		if !strings.HasPrefix(id, "clm_") {
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
 // TestNew_IncludeClmDerivation pins New()'s opts.WillSyncResourceType(clm*) disjunction
 // (connector.go) directly — CI's own BATON_SYNC_RESOURCE_TYPES allowlist depends on this
 // exact logic to keep includeClm=false, and none of the other tests here exercise it: a
@@ -197,7 +215,7 @@ func TestNew_IncludeClmDerivation(t *testing.T) {
 		wantIncludeClm      bool
 	}{
 		{"no filter (opts.SyncResourceTypeIDs empty): syncs everything, including CLM", nil, true},
-		{"CI's actual allowlist: no clm_* type present", []string{"user", "group", "permission_profile", "signing_group"}, false},
+		{"CI's actual allowlist: no clm_* type present", nonClmAllowlist(), false},
 		{"clm_member present", []string{"user", clmMemberResourceType.Id}, true},
 		{"clm_role present", []string{"user", clmRoleResourceType.Id}, true},
 		{"clm_group present", []string{"user", clmGroupResourceType.Id}, true},
