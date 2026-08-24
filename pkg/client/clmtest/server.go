@@ -459,6 +459,15 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 }
 
 func (s *Server) handleUserInfo(w http.ResponseWriter, _ *http.Request) {
+	s.mu.Lock()
+	forcedStatus := s.forcedUserInfoStatus
+	s.mu.Unlock()
+	if forcedStatus != 0 {
+		w.WriteHeader(forcedStatus)
+		_ = json.NewEncoder(w).Encode(client.ClmErrorResponse{})
+		return
+	}
+
 	resp := client.UserInfoResponse{
 		Sub:   "clm-test-user",
 		Name:  "CLM Test Account",
@@ -484,6 +493,15 @@ func (s *Server) handleUserInfo(w http.ResponseWriter, _ *http.Request) {
 // (ApiBaseUrl), matching the field name confirmed on CLM's legacy token-exchange
 // response for the same concept.
 func (s *Server) handleClmAccountDiscovery(w http.ResponseWriter, _ *http.Request) {
+	s.mu.Lock()
+	forcedStatus := s.forcedDiscoveryStatus
+	s.mu.Unlock()
+	if forcedStatus != 0 {
+		w.WriteHeader(forcedStatus)
+		_ = json.NewEncoder(w).Encode(client.ClmErrorResponse{})
+		return
+	}
+
 	writeJSON(w, map[string]string{client.ClmDiscoveryFieldAPIBaseURL: s.baseURL})
 }
 
