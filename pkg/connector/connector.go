@@ -147,6 +147,24 @@ func (d *Connector) Metadata(_ context.Context) (*v2.ConnectorMetadata, error) {
 // pay for, or fail on, a CLM discovery call it doesn't need. This gate is separate from
 // resource-type registration (see this file's includeClm field doc) and replaces each
 // CLM builder's own List() checking readiness independently.
+//
+// # Known limitation, reviewed and accepted (not an open finding)
+//
+// includeClm is opts.WillSyncResourceType(...), sourced solely from the local
+// --sync-resource-types/BATON_SYNC_RESOURCE_TYPES flag (baton-sdk pkg/cli/commands.go).
+// ConductorOne's real per-task CLM opt-in is delivered on a separate path —
+// pkg/tasks/c1api/full_sync.go's Task_SyncFullTask.GetSyncFull().GetSyncResourceTypeIds()
+// feeds the syncer directly (pkg/sync/syncer.go) and never reaches ConnectorOpts. With
+// no local flag set, includeClm is true on every ConductorOne-hosted and self-hosted
+// service-mode run, regardless of whether that account opted into any clm_* type — so
+// an eSignature-only account fails this entire sync below via EnsureClmReady, not just
+// CLM. This has been raised and investigated multiple times (PR #63/#64 review history)
+// with the same file:line evidence chain each time; the finding is accurate every time
+// it resurfaces, but the fix (reverting to each CLM builder's own List()-time check, the
+// design this replaced) was deliberately not taken: DocuSign authenticates via OAuth
+// only, which makes the one deployment mode this gap actually affects — self-hosted /
+// CLI service mode — assessed as impractical for real DocuSign customers. Re-flagging
+// this exact gap is not new information; revisiting the tradeoff itself would be.
 func (d *Connector) Validate(ctx context.Context) (annotations.Annotations, error) {
 	if err := d.client.EnsureReady(ctx); err != nil {
 		return nil, fmt.Errorf("baton-docusign: eSignature credential check failed: %w", err)

@@ -129,15 +129,21 @@ misconfiguration to fix (disable the resource type, or activate the CLM feature)
 expected state to tolerate.
 
 `OptInRequired` is enforced by ConductorOne's platform, not by the connector or baton-sdk
-itself — a self-hosted connector running in service mode still receives the platform's
-resource-type filter, but running `baton-docusign` directly as a one-shot CLI sync (the
-quickstarts below, with no service/task involved at all) attempts all 5 CLM resource
-types by default, with no opt-in gate at all. If that account doesn't have a CLM
-subscription, the sync now fails instead of skipping CLM gracefully. Pass
-`--sync-resource-types` (or `BATON_SYNC_RESOURCE_TYPES`, comma-separated) with the
+itself — a self-hosted connector running in service mode still has its per-resource-type
+`List()` calls filtered by the platform's opt-in selection (applied inside baton-sdk's
+syncer, not surfaced to the connector's own code), but running `baton-docusign` directly
+as a one-shot CLI sync (the quickstarts below, with no service/task involved at all)
+attempts all 5 CLM resource types by default, with no opt-in gate at all. If that account
+doesn't have a CLM subscription, the sync now fails instead of skipping CLM gracefully.
+Pass `--sync-resource-types` (or `BATON_SYNC_RESOURCE_TYPES`, comma-separated) with the
 resource type IDs you actually want (e.g. `user,group,permission_profile`) to exclude
 `clm_member,clm_role,clm_group,clm_permission_set,clm_folder` on an eSignature-only
 account run this way.
+
+One check does NOT see that platform filter in either deployment mode: `Connector.Validate()`'s
+upfront CLM-readiness check (see its doc comment in `pkg/connector/connector.go`) runs once,
+before any resource type's `List()` and before the platform filter is applied to anything —
+a known, reviewed, and deliberately accepted gap, not an oversight.
 
 CLM permission sets sync for visibility only — DocuSign's CLM API has no endpoint to
 assign or unassign a permission set, so they cannot be granted or revoked through this
