@@ -250,4 +250,19 @@ func TestValidateClmURL(t *testing.T) {
 			}
 		})
 	}
+
+	// A --base-url/mock target has no domain of its own to fall back on, so the exact
+	// match must compare host+port, not just host: switching to Hostname() (which
+	// strips the port) for that branch would let a same-host, different-port href
+	// through.
+	t.Run("exact-match branch rejects a same-host different-port href", func(t *testing.T) {
+		mockClient := &Client{clmBaseURI: "http://127.0.0.1:5000"}
+		u, err := url.Parse("http://127.0.0.1:9999/v2/acct/foldersearchtasks/1")
+		if err != nil {
+			t.Fatalf("url.Parse: %v", err)
+		}
+		if err := mockClient.validateClmURL(u, "test href"); err == nil {
+			t.Fatal("expected a different port on a non-domain host to be rejected")
+		}
+	})
 }
