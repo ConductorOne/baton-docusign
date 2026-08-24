@@ -182,22 +182,63 @@ func (e *ClmGroupSecurityEntry) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// ClmRoleSecurityEntry is one folder-security grant to a CLM Role. Confirmed shape:
-// flat {AccessType, Item} — unlike Groups/Users, a Role has no separate object to
-// expand, so Item is just the role name string.
+// ClmRoleSecurityEntry is one folder-security grant to a CLM Role. Confirmed shape on
+// writes (this connector's own PATCH body): flat {AccessType, Item}, Item the bare role
+// name — unlike Groups/Users, a Role has no separate object to expand. Reads use a
+// custom UnmarshalJSON tolerating either that flat string or a Groups/Users-style
+// nested {Item: {Name: ...}} object: only Groups has been independently confirmed live
+// (see ClmUserSecurityEntry's doc for the same gap on Users), so if CLM nests Roles too,
+// decoding a JSON object into a bare Go string would otherwise hard-fail every
+// clm_folder read/Grant/Revoke on that folder instead of just this one entry.
 type ClmRoleSecurityEntry struct {
 	AccessType string `json:"AccessType,omitempty"`
 	Item       string `json:"Item"`
 }
 
-// ClmUserSecurityEntry is one folder-security grant to a CLM Member (user). Assumed to
-// follow ClmGroupSecurityEntry's confirmed {Item: {...}, AccessType} wire shape — not
-// independently confirmed live for Users specifically (every populated folder-security
-// entry found on the live tenant this was tested against was a Group), but consistent
-// with a single API design for all three principal types, and with the equally
-// unconfirmed prior assumption this replaces. Deliberately doesn't repeat every field
-// ClmMember has (Address*, City, Company, etc.): Grant/Revoke only ever need Href to
-// identify the member, never reconstruct a full member profile from a security entry.
+func (e ClmRoleSecurityEntry) MarshalJSON() ([]byte, error) {
+	return json.Marshal(struct {
+		AccessType string `json:"AccessType,omitempty"`
+		Item       string `json:"Item"`
+	}{AccessType: e.AccessType, Item: e.Item})
+}
+
+func (e *ClmRoleSecurityEntry) UnmarshalJSON(data []byte) error {
+	var wire struct {
+		AccessType string          `json:"AccessType"`
+		Item       json.RawMessage `json:"Item"`
+	}
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	var name string
+	if len(wire.Item) > 0 {
+		if err := json.Unmarshal(wire.Item, &name); err != nil {
+			var obj struct {
+				Name string `json:"Name"`
+			}
+			if err2 := json.Unmarshal(wire.Item, &obj); err2 != nil {
+				return fmt.Errorf("baton-docusign: CLM role security entry Item is neither a string nor an object with Name: %w", err)
+			}
+			name = obj.Name
+		}
+	}
+	*e = ClmRoleSecurityEntry{AccessType: wire.AccessType, Item: name}
+	return nil
+}
+
+// ClmUserSecurityEntry is one folder-security grant to a CLM Member (user). Read via a
+// custom UnmarshalJSON tolerating both ClmGroupSecurityEntry's confirmed nested
+// {Item: {...}, AccessType} wire shape and a flat {Href, AccessType, ...} one: Users'
+// shape isn't independently confirmed live (every populated folder-security entry found
+// on the live tenant this was tested against was a Group), and guessing wrong on a
+// struct-typed Item field fails silently (a missing key leaves Item's fields at their
+// zero value, not a decode error) rather than loudly — see the review finding that
+// caught this: every existing user's Href would decode as "", and since
+// clmFolderSecurityToWrite round-trips the complete security state on every
+// Grant/Revoke, an unrelated write could silently blank and then drop every other
+// user's folder access. Deliberately doesn't repeat every field ClmMember has
+// (Address*, City, Company, etc.): Grant/Revoke only ever need Href to identify the
+// member, never reconstruct a full member profile from a security entry.
 type ClmUserSecurityEntry struct {
 	AccessType string
 	Href       string
@@ -236,20 +277,33 @@ func (e ClmUserSecurityEntry) MarshalJSON() ([]byte, error) {
 
 func (e *ClmUserSecurityEntry) UnmarshalJSON(data []byte) error {
 	var wire struct {
-		Item       clmUserSecurityItem `json:"Item"`
-		AccessType string              `json:"AccessType"`
+		Item       json.RawMessage `json:"Item"`
+		AccessType string          `json:"AccessType"`
 	}
 	if err := json.Unmarshal(data, &wire); err != nil {
 		return err
 	}
+	var item clmUserSecurityItem
+	if len(wire.Item) > 0 {
+		if err := json.Unmarshal(wire.Item, &item); err != nil {
+			return err
+		}
+	} else {
+		// No "Item" key at all — the flat-shape fallback (see this type's doc). Decode
+		// the same fields straight off the top level instead of leaving item at its zero
+		// value, which would otherwise silently produce Href == "".
+		if err := json.Unmarshal(data, &item); err != nil {
+			return err
+		}
+	}
 	*e = ClmUserSecurityEntry{
 		AccessType: wire.AccessType,
-		Href:       wire.Item.Href,
-		Email:      wire.Item.Email,
-		UserName:   wire.Item.UserName,
-		FirstName:  wire.Item.FirstName,
-		LastName:   wire.Item.LastName,
-		Role:       wire.Item.Role,
+		Href:       item.Href,
+		Email:      item.Email,
+		UserName:   item.UserName,
+		FirstName:  item.FirstName,
+		LastName:   item.LastName,
+		Role:       item.Role,
 	}
 	return nil
 }

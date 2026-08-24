@@ -51,3 +51,67 @@ func TestClmErrorResponse_Message(t *testing.T) {
 		}
 	})
 }
+
+// TestClmUserSecurityEntry_UnmarshalJSON is a regression test for a review finding:
+// ClmUserSecurityEntry's wire shape is unconfirmed live (unlike Groups), and the
+// original UnmarshalJSON only handled the nested {Item:{...}} shape — a flat
+// {Href,...} response would have decoded with Href == "" silently (a missing "Item"
+// key leaves a struct-typed field at its zero value, not a decode error), and since
+// clmFolderSecurityToWrite round-trips the complete security state on every
+// Grant/Revoke, that would blank and then drop every other user's folder access on an
+// unrelated write.
+func TestClmUserSecurityEntry_UnmarshalJSON(t *testing.T) {
+	t.Run("nested Item shape (Groups' confirmed shape)", func(t *testing.T) {
+		body := `{"Item":{"Href":"https://clm.example.com/v2/acct/members/1","Email":"a@example.com"},"AccessType":"View"}`
+		var e ClmUserSecurityEntry
+		if err := json.Unmarshal([]byte(body), &e); err != nil {
+			t.Fatalf("Unmarshal: %v", err)
+		}
+		if e.Href != "https://clm.example.com/v2/acct/members/1" || e.AccessType != "View" {
+			t.Errorf("got %+v", e)
+		}
+	})
+
+	t.Run("flat shape falls back instead of leaving Href empty", func(t *testing.T) {
+		body := `{"Href":"https://clm.example.com/v2/acct/members/1","Email":"a@example.com","AccessType":"View"}`
+		var e ClmUserSecurityEntry
+		if err := json.Unmarshal([]byte(body), &e); err != nil {
+			t.Fatalf("Unmarshal: %v", err)
+		}
+		if e.Href != "https://clm.example.com/v2/acct/members/1" {
+			t.Errorf("expected the flat shape's Href to be picked up, got %+v", e)
+		}
+		if e.AccessType != "View" {
+			t.Errorf("got %+v", e)
+		}
+	})
+}
+
+// TestClmRoleSecurityEntry_UnmarshalJSON is a regression test for a review finding:
+// Item was a bare Go string, confirmed live only as a flat string — if CLM ever nests
+// Roles the way Groups turned out to be nested, json.Unmarshal would hard-error
+// decoding a JSON object into a string field, failing every clm_folder read/Grant/
+// Revoke on that folder instead of just the one entry.
+func TestClmRoleSecurityEntry_UnmarshalJSON(t *testing.T) {
+	t.Run("flat string shape (confirmed live)", func(t *testing.T) {
+		body := `{"AccessType":"View","Item":"FullSubscriber"}`
+		var e ClmRoleSecurityEntry
+		if err := json.Unmarshal([]byte(body), &e); err != nil {
+			t.Fatalf("Unmarshal: %v", err)
+		}
+		if e.Item != "FullSubscriber" || e.AccessType != "View" {
+			t.Errorf("got %+v", e)
+		}
+	})
+
+	t.Run("nested object shape doesn't hard-fail", func(t *testing.T) {
+		body := `{"AccessType":"View","Item":{"Name":"FullSubscriber","Href":"https://clm.example.com/v2/acct/roles/1"}}`
+		var e ClmRoleSecurityEntry
+		if err := json.Unmarshal([]byte(body), &e); err != nil {
+			t.Fatalf("Unmarshal: %v", err)
+		}
+		if e.Item != "FullSubscriber" || e.AccessType != "View" {
+			t.Errorf("got %+v", e)
+		}
+	})
+}
