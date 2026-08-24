@@ -2,6 +2,7 @@ package client
 
 import (
 	"encoding/json"
+	"net/url"
 	"testing"
 )
 
@@ -211,6 +212,41 @@ func TestClmExtractBaseURLField_FindsRecognizedFieldRegardlessOfShape(t *testing
 			got, ok := clmExtractBaseURLField(rawJSONFields(t, tt.raw))
 			if ok != tt.wantOK || got != tt.wantURL {
 				t.Errorf("clmExtractBaseURLField(%+v) = (%q, %v), want (%q, %v)", tt.raw, got, ok, tt.wantURL, tt.wantOK)
+			}
+		})
+	}
+}
+
+// TestValidateClmURL is a regression test for a review finding: an exact-host check
+// against the discovered CLM base URL would hard-fail every Task API call the first
+// time CLM legitimately serves a task/result href from a sibling host — this package's
+// own confirmed base-URL-resolution flow already spans two unrelated domains
+// (*.clm.docusign.net for the Object API, auth.springcm.com for discovery), so
+// validateClmURL checks domain family instead of exact host equality.
+func TestValidateClmURL(t *testing.T) {
+	c := &Client{clmBaseURI: "https://api.na1.clm.docusign.net"}
+
+	tests := []struct {
+		name    string
+		rawURL  string
+		wantErr bool
+	}{
+		{"exact host match", "https://api.na1.clm.docusign.net/v2/acct/foldersearchtasks/1", false},
+		{"sibling docusign.net host", "https://tasks.na2.clm.docusign.net/v2/acct/foldersearchtasks/1", false},
+		{"springcm.com sibling (CLM's other confirmed domain)", "https://auth.springcm.com/v2/acct/foldersearchtasks/1", false},
+		{"unrelated host", "https://attacker.example.com/v2/acct/foldersearchtasks/1", true},
+		{"docusign.net as a suffix of an unrelated domain is not a match", "https://evil-docusign.net.attacker.com/x", true},
+		{"scheme mismatch", "http://api.na1.clm.docusign.net/v2/acct/foldersearchtasks/1", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			u, err := url.Parse(tt.rawURL)
+			if err != nil {
+				t.Fatalf("url.Parse: %v", err)
+			}
+			err = c.validateClmURL(u, "test href")
+			if (err != nil) != tt.wantErr {
+				t.Errorf("validateClmURL(%q) error = %v, wantErr %v", tt.rawURL, err, tt.wantErr)
 			}
 		})
 	}
