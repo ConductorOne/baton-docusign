@@ -15,12 +15,14 @@ func TestSearchFolders_Pagination(t *testing.T) {
 	ctx := context.Background()
 
 	var all []client.ClmFolder
+	pages := 0
 	pageToken := ""
 	for i := 0; i < 10; i++ { // safety bound for the test loop itself
 		folders, next, _, err := c.SearchFolders(ctx, client.PageOptions{PageSize: 2, PageToken: pageToken})
 		if err != nil {
 			t.Fatalf("SearchFolders page %d: %v", i, err)
 		}
+		pages++
 		all = append(all, folders...)
 		if next == "" {
 			break
@@ -28,6 +30,13 @@ func TestSearchFolders_Pagination(t *testing.T) {
 		pageToken = next
 	}
 
+	// Pins the requested PageSize actually reaching the create-task POST (not just
+	// continuation pages): with PageSize 2 and 3 seeded folders, a real second page is
+	// the only way this test exercises getClmFolderSearchResultPage and the ResultHref
+	// token round-trip at all.
+	if pages < 2 {
+		t.Fatalf("expected SearchFolders to paginate across at least 2 pages with PageSize 2 and 3 folders, got %d page(s)", pages)
+	}
 	if len(all) != 3 {
 		t.Fatalf("expected 3 folders across all pages, got %d", len(all))
 	}
@@ -107,6 +116,30 @@ func TestPatchFolderSecurity_PollsUntilSuccess(t *testing.T) {
 	sec := srv.FolderSecurity("folder-templates")
 	if len(sec.Groups) != 1 || sec.Groups[0].AccessType != client.ClmAccessTypeView || sec.Groups[0].Href != groupHref {
 		t.Fatalf("expected one View entry for %s once the task resolves, got %+v", groupHref, sec.Groups)
+	}
+}
+
+// TestSearchFolders_RejectsTaskHrefOnUnexpectedHost is a regression test for
+// Client.validateClmURL: doClmRequest attaches the bearer token to whatever URL it's
+// given, so a task Href pointing at a host other than the discovered CLM base URL must
+// be rejected before it's ever dispatched, not just parsed.
+func TestSearchFolders_RejectsTaskHrefOnUnexpectedHost(t *testing.T) {
+	original := client.ClmFolderSearchTaskPollInterval
+	client.ClmFolderSearchTaskPollInterval = time.Millisecond
+	defer func() { client.ClmFolderSearchTaskPollInterval = original }()
+
+	srv, c := clmtest.NewServer(t)
+	ctx := context.Background()
+
+	srv.SetPendingFolderSearchPolls(1)
+	srv.SetFolderSearchTaskHrefOverride("http://attacker.example.com/v2/acct-clm-test/foldersearchtasks/1")
+
+	_, _, _, err := c.SearchFolders(ctx, client.PageOptions{PageSize: 10})
+	if err == nil {
+		t.Fatal("expected SearchFolders to reject a task href on an unexpected host, got nil error")
+	}
+	if !strings.Contains(err.Error(), "refusing to send CLM credentials") {
+		t.Fatalf("expected a host-validation error, got: %v", err)
 	}
 }
 

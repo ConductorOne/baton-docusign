@@ -41,6 +41,9 @@ func (s *Server) handleCreateFolderSearchTask(w http.ResponseWriter, r *http.Req
 	s.nextFolderSearchTaskID++
 	taskID := strconv.Itoa(s.nextFolderSearchTaskID)
 	taskHref := fmt.Sprintf("%s/v2/%s/foldersearchtasks/%s", s.baseURL, AccountID, taskID)
+	if s.folderSearchTaskHrefOverride != "" {
+		taskHref = s.folderSearchTaskHrefOverride
+	}
 
 	status := "Success"
 	if s.pendingFolderSearchPolls > 0 {
@@ -51,8 +54,8 @@ func (s *Server) handleCreateFolderSearchTask(w http.ResponseWriter, r *http.Req
 		result := s.folderSearchResults(r)
 		if s.omitFolderSearchResultHref {
 			// Leave Href empty and force a "more pages remain" shape so SearchFolders'
-			// empty-Href continuation guard is reachable (the create POST has no
-			// offset/limit query, so folderSearchResults alone would return everything).
+			// empty-Href continuation guard is reachable, regardless of what page size the
+			// caller requested.
 			if len(result.Items) > 1 {
 				result.Items = result.Items[:1]
 			}

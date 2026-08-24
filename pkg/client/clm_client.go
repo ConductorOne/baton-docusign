@@ -84,6 +84,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/conductorone/baton-sdk/pkg/annotations"
@@ -279,6 +280,27 @@ func (c *Client) prepareClmPagedRequest(endpoint string, options PageOptions, ex
 	return preparePagedRequestClm(baseURL, formatted, options)
 }
 
+// validateClmURL rejects a URL whose scheme/host don't match the CLM base URL this
+// client discovered — a guard for the Task API polling/continuation URLs (task Href,
+// SearchFolders' ResultHref) that come from a response body or a round-tripped page
+// token rather than being built from clmBaseURI like every other CLM request. doClmRequest
+// attaches this connector's bearer token to whatever URL it's given, with no host check
+// of its own, so a malformed or tampered href here would otherwise send that token to an
+// arbitrary host. source names the caller/field for the error message.
+func (c *Client) validateClmURL(u *url.URL, source string) error {
+	c.mutex.RLock()
+	clmBaseURI := c.clmBaseURI
+	c.mutex.RUnlock()
+	base, err := url.Parse(clmBaseURI)
+	if err != nil {
+		return fmt.Errorf("baton-docusign: invalid CLM base URL: %w", err)
+	}
+	if !strings.EqualFold(u.Scheme, base.Scheme) || !strings.EqualFold(u.Host, base.Host) {
+		return fmt.Errorf("baton-docusign: refusing to send CLM credentials to %s %q — expected host %q", source, u.String(), base.Host)
+	}
+	return nil
+}
+
 // doClmRequest executes an HTTP request against the CLM API and decodes the response.
 // Mirrors Client.doRequest but targets the CLM host/error envelope.
 func (c *Client) doClmRequest(ctx context.Context, method string, reqURL *url.URL, body any, response any, extraOpts ...uhttp.RequestOption) (annotations.Annotations, error) {
@@ -371,6 +393,16 @@ func (c *Client) SearchFolders(ctx context.Context, options PageOptions) ([]ClmF
 	if err != nil {
 		return nil, "", nil, err
 	}
+	// Page-1 unconfirmed live: FolderSearchTasks' create response embeds a page of
+	// results inline (see this func's doc), and every other paged CLM request controls
+	// its page size via pageSortParams.limit on the request URL — applying the same
+	// convention here on the POST, rather than leaving page 1 to whatever CLM's default
+	// happens to be, since options.PageSize should govern the first page like it does
+	// every continuation page (getClmFolderSearchResultPage).
+	createURL, requestedPage, err := appendClmPageQuery(createURL, options)
+	if err != nil {
+		return nil, "", nil, err
+	}
 
 	var task ClmFolderSearchTaskResponse
 	anno, err := c.doClmRequest(ctx, http.MethodPost, createURL, map[string]string{"Title": ""}, &task)
@@ -386,7 +418,6 @@ func (c *Client) SearchFolders(ctx context.Context, options PageOptions) ([]ClmF
 		return nil, "", anno, fmt.Errorf("baton-docusign: CLM folder search task %s succeeded with no Result", task.Href)
 	}
 
-	requestedPage := clmRequestedPage{Offset: 0, PageSize: task.Result.Limit}
 	nextToken, err := getClmNextToken(requestedPage, len(task.Result.Items), task.Result.Next != "", task.Result.Total, task.Result.Href)
 	if err != nil {
 		return nil, "", anno, err
@@ -407,6 +438,9 @@ func (c *Client) getClmFolderSearchResultPage(ctx context.Context, resultHref st
 	base, err := url.Parse(resultHref)
 	if err != nil {
 		return nil, "", nil, fmt.Errorf("baton-docusign: invalid CLM folder search result href %q: %w", resultHref, err)
+	}
+	if err := c.validateClmURL(base, "folder search result href"); err != nil {
+		return nil, "", nil, err
 	}
 	pageURL, requestedPage, err := appendClmPageQuery(base, options)
 	if err != nil {
@@ -444,6 +478,9 @@ func (c *Client) awaitClmFolderSearchTask(ctx context.Context, task ClmFolderSea
 		pollURL, err := url.Parse(task.Href)
 		if err != nil {
 			return task, fmt.Errorf("baton-docusign: invalid CLM folder search task href %q: %w", task.Href, err)
+		}
+		if err := c.validateClmURL(pollURL, "folder search task href"); err != nil {
+			return task, err
 		}
 		// WithNoCache: repeated GETs to the same task URL must observe its latest
 		// Status, not a memoized first response — see GetFolder's noCache param for the
@@ -599,6 +636,9 @@ func (c *Client) awaitClmChangeSecurityTask(ctx context.Context, task ClmChangeS
 		pollURL, err := url.Parse(task.Href)
 		if err != nil {
 			return task, fmt.Errorf("baton-docusign: invalid CLM change-security task href %q: %w", task.Href, err)
+		}
+		if err := c.validateClmURL(pollURL, "change-security task href"); err != nil {
+			return task, err
 		}
 		// WithNoCache: see awaitClmFolderSearchTask's identical comment — repeated polls
 		// of the same task URL must observe its latest Status, not a memoized first one.
