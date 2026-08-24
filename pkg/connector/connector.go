@@ -81,7 +81,7 @@ func (d *Connector) ResourceSyncers(_ context.Context) []connectorbuilder.Resour
 		newGroupBuilder(d.client),
 		newPermissionProfilesBuilder(d.client),
 		newClmMemberBuilder(d.client),
-		newClmRoleBuilder(d.client),
+		newClmRoleBuilder(),
 		newClmGroupBuilder(d.client),
 		newClmPermissionSetBuilder(d.client),
 		newClmFolderBuilder(d.client),

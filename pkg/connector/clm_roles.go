@@ -12,10 +12,10 @@ import (
 // backed by an API call — see resource_types.go for why this resource type exists.
 // CLM availability is checked once, up front, by Connector.Validate() rather than here
 // — see that method's doc for why centralizing it there is better than every opted-in
-// CLM builder repeating the same check on its own first page.
+// CLM builder repeating the same check on its own first page. Unlike every other CLM
+// builder, this one never calls the API at all, so it holds no *client.Client.
 type clmRoleBuilder struct {
 	resourceType *v2.ResourceType
-	client       *client.Client
 }
 
 func (b *clmRoleBuilder) ResourceType(_ context.Context) *v2.ResourceType {
@@ -55,9 +55,8 @@ func (b *clmRoleBuilder) Grants(_ context.Context, _ *v2.Resource, _ rs.SyncOpAt
 	return nil, nil, nil
 }
 
-func newClmRoleBuilder(c *client.Client) *clmRoleBuilder {
+func newClmRoleBuilder() *clmRoleBuilder {
 	return &clmRoleBuilder{
 		resourceType: clmRoleResourceType,
-		client:       c,
 	}
 }

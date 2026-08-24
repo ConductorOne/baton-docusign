@@ -5,16 +5,14 @@ import (
 	"testing"
 
 	"github.com/conductorone/baton-docusign/pkg/client"
-	"github.com/conductorone/baton-docusign/pkg/client/clmtest"
 	rs "github.com/conductorone/baton-sdk/pkg/types/resource"
 )
 
 func TestClmRoleBuilder_List(t *testing.T) {
 	// The role set isn't backed by an API call at all — CLM availability is checked
 	// once, up front, by Connector.Validate() (see connector_test.go), not here — so
-	// this only needs a client to satisfy the builder's field, never calls it.
-	_, c := clmtest.NewServer(t)
-	b := newClmRoleBuilder(c)
+	// this needs no client at all.
+	b := newClmRoleBuilder()
 	ctx := context.Background()
 
 	resources, res, err := b.List(ctx, nil, rs.SyncOpAttrs{})
@@ -35,7 +33,7 @@ func TestClmRoleBuilder_List(t *testing.T) {
 }
 
 func TestClmRoleBuilder_EntitlementsAndGrants_AreNoop(t *testing.T) {
-	b := newClmRoleBuilder(nil)
+	b := newClmRoleBuilder()
 	ctx := context.Background()
 
 	roleResource, err := rs.NewRoleResource("FullSubscriber", clmRoleResourceType, "FullSubscriber", nil)
