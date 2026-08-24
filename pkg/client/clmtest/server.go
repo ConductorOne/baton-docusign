@@ -130,6 +130,10 @@ type Server struct {
 	// successful folder-search task response — see SetOmitFolderSearchResultHref.
 	omitFolderSearchResultHref bool
 
+	// folderSearchTaskHrefOverride, when non-empty, replaces the Href on the next folder
+	// search task response — see SetFolderSearchTaskHrefOverride.
+	folderSearchTaskHrefOverride string
+
 	nextChangeSecurityTaskID int // incrementing counter for mock ChangeSecurityTasks task IDs
 
 	// pendingChangeSecurityPolls, when > 0, makes the next PatchFolderSecurity task
@@ -153,6 +157,15 @@ func (s *Server) SetPendingFolderSearchPolls(n int) {
 // SetOmitFolderSearchResultHref makes the next successful FolderSearchTasks response
 // leave Result.Href empty. Used to pin SearchFolders' guard against minting a
 // continuation token that would re-POST a new search (page-1 loop).
+// SetFolderSearchTaskHrefOverride makes the next folder search task response carry the
+// given Href instead of this server's own — used to pin the client's host-validation
+// guard (Client.validateClmURL) against a task Href pointing at an unexpected host.
+func (s *Server) SetFolderSearchTaskHrefOverride(href string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.folderSearchTaskHrefOverride = href
+}
+
 func (s *Server) SetOmitFolderSearchResultHref(omit bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
