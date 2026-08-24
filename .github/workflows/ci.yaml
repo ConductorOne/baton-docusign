@@ -15,6 +15,16 @@ on:
 concurrency:
   group: docusign-demo-account
   cancel-in-progress: false
+env:
+  # Forces the legacy v1/SQLite c1z format instead of baton-sdk v0.25.0's new default
+  # (Pebble/v3). The `baton` CLI these jobs download (ConductorOne/github-workflows'
+  # get-baton action, currently v0.4.5) is built against baton-sdk v0.8.24 — long before
+  # Pebble existed — and fails every read of a Pebble-format file with a bare
+  # "c1z: invalid file", no matter how the file was produced. Confirmed: syncing with
+  # this flag set produces a file `baton` v0.4.5 reads correctly; without it, the exact
+  # same sync fails at the very next step. Safe to drop once a `baton` CLI release built
+  # against a Pebble-aware baton-sdk ships and get-baton picks it up.
+  BATON_STORAGE_ENGINE: sqlite
 jobs:
   test-groups:
     runs-on: ubuntu-latest
