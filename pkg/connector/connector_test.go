@@ -212,15 +212,23 @@ func TestNonClmAllowlistMatchesCI(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reading ci.yaml: %v", err)
 	}
+	// map[string]any, not map[string]string: an unrelated non-string workflow-level env
+	// var (e.g. BATON_FOO: true) would otherwise fail the whole decode with a
+	// yaml.TypeError, failing this test somewhere unrelated to the one key it actually
+	// guards.
 	var workflow struct {
-		Env map[string]string `yaml:"env"`
+		Env map[string]any `yaml:"env"`
 	}
 	if err := yaml.Unmarshal(data, &workflow); err != nil {
 		t.Fatalf("parsing ci.yaml: %v", err)
 	}
-	raw, ok := workflow.Env["BATON_SYNC_RESOURCE_TYPES"]
+	value, ok := workflow.Env["BATON_SYNC_RESOURCE_TYPES"]
 	if !ok {
 		t.Fatal("ci.yaml's workflow-level env has no BATON_SYNC_RESOURCE_TYPES — did it move to a per-job env block?")
+	}
+	raw, ok := value.(string)
+	if !ok {
+		t.Fatalf("ci.yaml's BATON_SYNC_RESOURCE_TYPES decoded as %T, expected a string", value)
 	}
 
 	got := strings.Split(raw, ",")
