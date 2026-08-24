@@ -85,6 +85,34 @@ func TestClmUserSecurityEntry_UnmarshalJSON(t *testing.T) {
 			t.Errorf("got %+v", e)
 		}
 	})
+
+	for _, tt := range []struct {
+		name string
+		body string
+	}{
+		{"Item is null", `{"Item":null,"AccessType":"View"}`},
+		{"Item is an empty object", `{"Item":{},"AccessType":"View"}`},
+		{"member nested under an unrecognized key", `{"Member":{"Href":"https://clm.example.com/v2/acct/members/1"},"AccessType":"View"}`},
+	} {
+		t.Run("fails loud instead of silently blanking Href: "+tt.name, func(t *testing.T) {
+			var e ClmUserSecurityEntry
+			if err := json.Unmarshal([]byte(tt.body), &e); err == nil {
+				t.Fatalf("expected an error for an unrecognized wire shape, got %+v", e)
+			}
+		})
+	}
+}
+
+// TestClmGroupSecurityEntry_UnmarshalJSON_FailsLoudOnUnrecognizedShape mirrors
+// ClmUserSecurityEntry's identical fail-loud guard: Groups' nested shape is confirmed
+// live today, but if that ever regresses, an empty-Href entry silently round-tripped
+// into a PatchFolderSecurity body would drop that group's real folder access under
+// replace semantics.
+func TestClmGroupSecurityEntry_UnmarshalJSON_FailsLoudOnUnrecognizedShape(t *testing.T) {
+	var e ClmGroupSecurityEntry
+	if err := json.Unmarshal([]byte(`{"Item":{},"AccessType":"View"}`), &e); err == nil {
+		t.Fatalf("expected an error for an unrecognized wire shape, got %+v", e)
+	}
 }
 
 // TestClmRoleSecurityEntry_UnmarshalJSON is a regression test for a review finding:

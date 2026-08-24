@@ -170,6 +170,12 @@ func (e *ClmGroupSecurityEntry) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, &wire); err != nil {
 		return err
 	}
+	if wire.Item.Href == "" {
+		// Same reasoning as ClmUserSecurityEntry's identical check: an empty Href here
+		// would round-trip into a PatchFolderSecurity body and silently drop this
+		// group's real folder access under replace semantics.
+		return fmt.Errorf("baton-docusign: CLM group security entry has no Href — unrecognized wire shape: %s", data)
+	}
 	*e = ClmGroupSecurityEntry{
 		AccessType:  wire.AccessType,
 		Href:        wire.Item.Href,
@@ -295,6 +301,14 @@ func (e *ClmUserSecurityEntry) UnmarshalJSON(data []byte) error {
 		if err := json.Unmarshal(data, &item); err != nil {
 			return err
 		}
+	}
+	if item.Href == "" {
+		// Neither the nested nor the flat decode found a Href — an unrecognized wire
+		// shape (e.g. "Item":null, "Item":{}, or the member nested under some other
+		// key). Fail loud rather than let clmFolderSecurityToWrite round-trip an
+		// empty-Href entry into a PatchFolderSecurity body, which would silently drop
+		// this user's real folder access under replace semantics.
+		return fmt.Errorf("baton-docusign: CLM user security entry has no Href — unrecognized wire shape: %s", data)
 	}
 	*e = ClmUserSecurityEntry{
 		AccessType: wire.AccessType,
