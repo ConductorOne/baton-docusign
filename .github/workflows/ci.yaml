@@ -5,6 +5,19 @@ on:
   push:
     branches:
       - main
+env:
+  # Forces the legacy v1/SQLite c1z format instead of baton-sdk v0.25.0's new default
+  # (Pebble/v3). GitHub Actions tests this PR's merge-preview (this PR's head merged
+  # onto main), and main is already on baton-sdk v0.25.0 — since this PR doesn't touch
+  # go.mod's baton-sdk line, that merge picks up v0.25.0 even though this branch's own
+  # tip is still on v0.24.2. The `baton` CLI these jobs download
+  # (ConductorOne/github-workflows' get-baton action, currently v0.4.5) is built against
+  # baton-sdk v0.8.24 — long before Pebble existed — and fails every read of a
+  # Pebble-format file with a bare "c1z: invalid file", no matter how the file was
+  # produced. Safe to drop once a `baton` CLI release built against a Pebble-aware
+  # baton-sdk ships and get-baton picks it up, or once this branch merges and its own
+  # go.mod matches main again.
+  BATON_STORAGE_ENGINE: sqlite
 jobs:
   test-groups:
     runs-on: ubuntu-latest
