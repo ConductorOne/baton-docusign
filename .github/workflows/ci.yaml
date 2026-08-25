@@ -5,14 +5,10 @@ on:
   push:
     branches:
       - main
-# Workflow-level (not per-job): all three jobs below hit the same shared DocuSign demo
-# account, and running two runs' Grant/Revoke cycles concurrently races on that account's
-# real state (one run's mid-cycle Grant/Revoke can make another run's "should be zero
-# grants after Revoke" assertion fail). A per-job concurrency block only protects a
-# *running* job from cancellation — GitHub Actions still cancels a *pending* job in the
-# same group when a newer one queues, so two overlapping workflow runs could cancel each
-# other's pending jobs mid-chain. Declaring it once here instead makes the whole
-# needs-chained run (all three jobs) queue/cancel as one unit against the shared group.
+# Workflow-level, not per-job: all three jobs share the DocuSign demo account, and a
+# per-job block only protects a *running* job — GitHub Actions still cancels a *pending*
+# job in the same group when a newer run queues. Declaring it once here queues/cancels
+# all three jobs as one unit.
 concurrency:
   group: docusign-demo-account
   cancel-in-progress: false
