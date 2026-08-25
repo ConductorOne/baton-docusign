@@ -138,9 +138,9 @@ resource type IDs you actually want (e.g. `user,group,permission_profile`) to ex
 account run this way.
 
 One check does NOT see that platform filter in either deployment mode: `Connector.Validate()`'s
-upfront CLM-readiness check (see its doc comment in `pkg/connector/connector.go`) runs once,
-before any resource type's `List()` and before the platform filter is applied to anything —
-a known, reviewed, and deliberately accepted gap, not an oversight.
+upfront CLM-readiness check runs once, before any resource type's `List()` and before the
+platform filter is applied to anything — a known, reviewed, and deliberately accepted gap,
+not an oversight.
 
 CLM permission sets sync for visibility only — DocuSign's CLM API has no endpoint to
 assign or unassign a permission set, so they cannot be granted or revoked through this
