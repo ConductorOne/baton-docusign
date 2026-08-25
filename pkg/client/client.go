@@ -641,6 +641,11 @@ func (c *Client) GetUserByEmail(ctx context.Context, userEmail string) (*User, a
 // Typically, DocuSign accounts have a limited number of permission profiles (< 50), so this is acceptable.
 //
 // Returns: all permission profiles, annotations, error.
+// GetPermissionProfiles bypasses the shared HTTP GET cache: userBuilder calls this at
+// most once per sync (see its memoization fields' doc in pkg/connector/users.go), so by
+// the time this request fires, that caller has already decided a fresh call is needed —
+// a cached response here could only ever serve a stale snapshot left over from a
+// previous sync on the same long-lived connector process, never save a real call.
 func (c *Client) GetPermissionProfiles(ctx context.Context) ([]PermissionProfile, annotations.Annotations, error) {
 	if err := c.ensureInitialized(ctx); err != nil {
 		return nil, nil, err
@@ -655,7 +660,7 @@ func (c *Client) GetPermissionProfiles(ctx context.Context) ([]PermissionProfile
 
 	permissionProfilesURL = baseURL.ResolveReference(permissionProfilesURL)
 
-	_, annos, err := c.doRequest(ctx, http.MethodGet, permissionProfilesURL, nil, &permissionProfilesResponse)
+	_, annos, err := c.doRequest(ctx, http.MethodGet, permissionProfilesURL, nil, &permissionProfilesResponse, uhttp.WithNoCache())
 	if err != nil {
 		return nil, nil, err
 	}
@@ -791,6 +796,7 @@ func (c *Client) doRequest(
 	url *url.URL,
 	body any,
 	response any,
+	extraOpts ...uhttp.RequestOption,
 ) (http.Header, annotations.Annotations, error) {
 	token, err := c.tokenSource.Token()
 	if err != nil {
@@ -806,6 +812,7 @@ func (c *Client) doRequest(
 	if body != nil {
 		requestOptions = append(requestOptions, uhttp.WithJSONBody(body))
 	}
+	requestOptions = append(requestOptions, extraOpts...)
 
 	request, err := c.wrapper.NewRequest(ctx, method, url, requestOptions...)
 	if err != nil {
