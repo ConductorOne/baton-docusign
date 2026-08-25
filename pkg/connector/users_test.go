@@ -650,6 +650,43 @@ func TestUserBuilder_Grants_MemoizesPermissionProfilesFailureAcrossUsers(t *test
 	}
 }
 
+// TestUserBuilder_Grants_PermissionProfilesCacheIsPerSync is a regression test: this
+// builder is registered once via ResourceSyncers and reused for the connector process's
+// lifetime, not reconstructed per sync (see the memoization fields' doc on userBuilder),
+// so a cache that only ever checked "have I fetched permission profiles at all" would
+// keep serving the first sync's snapshot (or its cached failure) to every later sync on
+// a long-lived connector process — never noticing a profile renamed/added/removed, or a
+// prior persistent failure's underlying cause having been fixed. Two Grants() calls with
+// different SyncOpAttrs.SyncID values (same builder, same user) must each issue their
+// own GetPermissionProfiles call.
+func TestUserBuilder_Grants_PermissionProfilesCacheIsPerSync(t *testing.T) {
+	c, permissionProfilesCalls := newCountingPermissionProfilesClient(t, func(w http.ResponseWriter) {
+		_ = json.NewEncoder(w).Encode(client.PermissionProfilesResponse{
+			PermissionProfiles: []client.PermissionProfile{
+				{PermissionProfileId: "pp-1", PermissionProfileName: "DocuSign Admin"},
+			},
+		})
+	})
+
+	b := newUserBuilder(c, false)
+	resource := userResourceWithProfile(t, "user-1", userStatusActive, "DocuSign Admin")
+
+	for _, syncID := range []string{"sync-1", "sync-2"} {
+		grants, _, err := b.Grants(context.Background(), resource, rs.SyncOpAttrs{SyncID: syncID})
+		if err != nil {
+			t.Fatalf("Grants(syncID=%s): %v", syncID, err)
+		}
+		if len(grants) != 1 || grants[0].Entitlement.Resource.Id.Resource != "pp-1" {
+			t.Errorf("Grants(syncID=%s): expected the fast path to resolve pp-1, got %+v", syncID, grants)
+		}
+	}
+
+	if got := atomic.LoadInt32(permissionProfilesCalls); got != 2 {
+		t.Errorf("expected 1 GetPermissionProfiles call per distinct SyncID (2 total), got %d — "+
+			"the cache is leaking across syncs", got)
+	}
+}
+
 // TestUserBuilder_Grants_FallsBackOnServiceUnavailable: codes.Unavailable is broader
 // than "already rate-limited" — uhttp also maps a plain HTTP 503 to it. A 503 from
 // GetPermissionProfiles (no RateLimitDescription attached, unlike the reclassified

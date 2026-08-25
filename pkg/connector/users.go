@@ -32,17 +32,24 @@ type userBuilder struct {
 	// grants pass is skipped too, since it is this builder's only output.
 	skipPermissionProfileResourceType bool
 
-	// permissionProfilesMu/permissionProfilesCached/permissionProfiles/permissionProfilesErr/
-	// permissionProfilesTransientFails memoize the one account-wide
-	// GetPermissionProfiles call tryFastPathGrant's name-lookup branch needs, across
-	// every Active user's Grants() call in this sync (a *userBuilder is constructed once
-	// per sync and Grants() runs concurrently across users, so this must be shared and
-	// safe for concurrent access — hence a mutex, not a plain bool). uhttp's GET cache
-	// only ever caches a 200 response, never an error, so without this a persistent
-	// failure (e.g. a service user lacking permission_profiles read access) would re-hit
-	// the real API on every Active user instead of once per sync — doubling that user's
-	// calls (the failed lookup, then the GetUserDetails fallback) against the same
-	// hourly budget this fix exists to protect.
+	// permissionProfilesMu/permissionProfilesSyncID/permissionProfilesCached/
+	// permissionProfiles/permissionProfilesErr/permissionProfilesTransientFails memoize
+	// the one account-wide GetPermissionProfiles call tryFastPathGrant's name-lookup
+	// branch needs, across every Active user's Grants() call within a single sync. This
+	// builder is registered once via ResourceSyncers and reused for the lifetime of the
+	// connector process (baton-sdk's connectorbuilder.NewConnector stores the returned
+	// syncers once; see vendor/.../pkg/connectorbuilder/connectorbuilder.go) — in
+	// service/hosted mode that's many syncs, not one — so the cache is keyed on
+	// permissionProfilesSyncID (from SyncOpAttrs.SyncID, threaded through from Grants())
+	// rather than trusted for the process's whole lifetime: a mismatch means a new sync
+	// has started and the memo is stale, resetting both the cached result and the
+	// transient-failure counter below. Grants() runs concurrently across users within
+	// one sync, so this must stay safe for concurrent access — hence a mutex, not a
+	// plain bool. uhttp's GET cache only ever caches a 200 response, never an error, so
+	// without this a persistent failure (e.g. a service user lacking permission_profiles
+	// read access) would re-hit the real API on every Active user instead of once per
+	// sync — doubling that user's calls (the failed lookup, then the GetUserDetails
+	// fallback) against the same hourly budget this fix exists to protect.
 	//
 	// A genuinely persistent failure (see isCacheablePermissionProfilesError's doc) is
 	// cached immediately. A transient-shaped failure (a plain 5xx/network blip, or any
@@ -59,6 +66,7 @@ type userBuilder struct {
 	// getPermissionProfiles' doc for why counting either toward the threshold would be
 	// actively harmful, not just a missed optimization.
 	permissionProfilesMu             sync.Mutex
+	permissionProfilesSyncID         string
 	permissionProfilesCached         bool
 	permissionProfiles               []client.PermissionProfile
 	permissionProfilesErr            error
@@ -104,13 +112,14 @@ func isCacheablePermissionProfilesError(err error) bool {
 }
 
 // getPermissionProfiles returns the account's permission profiles, calling
-// client.GetPermissionProfiles at most once for the lifetime of this userBuilder unless
-// the call fails with a non-cacheable (transient) error — see the memoization fields'
-// doc on the struct above, and isCacheablePermissionProfilesError's doc, for why — and
-// even then, only up to permissionProfilesTransientFailureThreshold consecutive times
-// before that transient failure is cached too, bounding the worst-case call cost. Two
-// exceptions never count toward that threshold and are never cached no matter how many
-// times they recur:
+// client.GetPermissionProfiles at most once per sync (keyed by syncID — see the
+// memoization fields' doc on the struct above for why this builder can't just trust the
+// cache for its whole process lifetime) unless the call fails with a non-cacheable
+// (transient) error — see isCacheablePermissionProfilesError's doc — and even then, only
+// up to permissionProfilesTransientFailureThreshold consecutive times before that
+// transient failure is cached too, bounding the worst-case call cost. Two exceptions
+// never count toward that threshold and are never cached no matter how many times they
+// recur:
 //   - A reclassified rate-limit error: unlike an ordinary transient blip, this failure
 //     has a known, bounded resolution (the hourly window resetting), so it's always
 //     worth a real retry — caching it would replay the same stale codes.Unavailable on
@@ -122,12 +131,21 @@ func isCacheablePermissionProfilesError(err error) bool {
 //     attempt was already done, not that the endpoint is actually degraded. An unlucky
 //     run of cancellations shouldn't accumulate toward disabling the fast path on an
 //     otherwise-healthy account.
-func (b *userBuilder) getPermissionProfiles(ctx context.Context) ([]client.PermissionProfile, error) {
+func (b *userBuilder) getPermissionProfiles(ctx context.Context, syncID string) ([]client.PermissionProfile, error) {
 	b.permissionProfilesMu.Lock()
 	defer b.permissionProfilesMu.Unlock()
 
-	if b.permissionProfilesCached {
+	if b.permissionProfilesCached && b.permissionProfilesSyncID == syncID {
 		return b.permissionProfiles, b.permissionProfilesErr
+	}
+	if b.permissionProfilesSyncID != syncID {
+		// A new sync started (or this is the first call ever): the previous sync's
+		// cached result/error and transient-failure count no longer apply. Reset both
+		// so this sync gets its own full permissionProfilesTransientFailureThreshold
+		// chances rather than inheriting a count left over from a prior sync's outage.
+		b.permissionProfilesSyncID = syncID
+		b.permissionProfilesCached = false
+		b.permissionProfilesTransientFails = 0
 	}
 
 	profiles, _, err := b.client.GetPermissionProfiles(ctx)
@@ -226,10 +244,10 @@ func (b *userBuilder) Entitlements(_ context.Context, _ *v2.Resource, _ rs.SyncO
 // rate limit) and falls back to the always-correct per-user GetUserDetails path,
 // unchanged from before that fast path existed, whenever it declines to handle the
 // request (see tryFastPathGrant's own doc).
-func (b *userBuilder) Grants(ctx context.Context, resource *v2.Resource, _ rs.SyncOpAttrs) ([]*v2.Grant, *rs.SyncOpResults, error) {
+func (b *userBuilder) Grants(ctx context.Context, resource *v2.Resource, attrs rs.SyncOpAttrs) ([]*v2.Grant, *rs.SyncOpResults, error) {
 	userID := resource.Id
 
-	if newGrant, annos, err, handled := b.tryFastPathGrant(ctx, resource, userID); handled {
+	if newGrant, annos, err, handled := b.tryFastPathGrant(ctx, resource, userID, attrs.SyncID); handled {
 		if err != nil {
 			return nil, nil, err
 		}
@@ -301,7 +319,7 @@ func newPermissionProfileGrant(permissionProfileID string, userID *v2.ResourceId
 // user would feed the SDK's self-throttling rate limiter a frozen, increasingly stale
 // signal instead of the fresh per-request data GetUserDetails supplied before this fast
 // path existed.
-func (b *userBuilder) tryFastPathGrant(ctx context.Context, resource *v2.Resource, userID *v2.ResourceId) (*v2.Grant, annotations.Annotations, error, bool) {
+func (b *userBuilder) tryFastPathGrant(ctx context.Context, resource *v2.Resource, userID *v2.ResourceId, syncID string) (*v2.Grant, annotations.Annotations, error, bool) {
 	profile := rs.GetProfile(resource)
 
 	userStatus, ok := rs.GetProfileStringValue(profile, profileFieldStatus)
@@ -321,7 +339,7 @@ func (b *userBuilder) tryFastPathGrant(ctx context.Context, resource *v2.Resourc
 		return nil, nil, nil, false
 	}
 
-	profiles, err := b.getPermissionProfiles(ctx)
+	profiles, err := b.getPermissionProfiles(ctx, syncID)
 	if err != nil {
 		if isReclassifiedRateLimitError(err) {
 			return nil, nil, err, true
