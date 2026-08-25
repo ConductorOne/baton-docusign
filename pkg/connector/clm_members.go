@@ -83,7 +83,10 @@ func newClmMemberBuilder(c *client.Client) *clmMemberBuilder {
 	}
 }
 
-// parseIntoClmMemberResource maps a client.ClmMember to a Baton v2.Resource.
+// parseIntoClmMemberResource maps a client.ClmMember to a Baton v2.Resource. The Href is
+// kept in the profile both for display and as the preferred sample href for Grant;
+// Grant falls back to client.MemberHref when it's absent, since neither a profile nor
+// an annotation is guaranteed to survive to where it's needed.
 func parseIntoClmMemberResource(member *client.ClmMember) (*v2.Resource, error) {
 	profile := map[string]any{
 		profileFieldEmail:    member.Email,
@@ -91,7 +94,7 @@ func parseIntoClmMemberResource(member *client.ClmMember) (*v2.Resource, error) 
 		"role":               member.Role,
 		"exemptFromUserSync": member.ExemptFromUserSync,
 		"portalOnly":         member.PortalOnly,
-		"href":               member.Href,
+		profileFieldHref:     member.Href,
 	}
 
 	displayName := member.UserName

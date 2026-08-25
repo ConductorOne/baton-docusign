@@ -2,6 +2,7 @@ package client
 
 import (
 	"encoding/json"
+	"net/url"
 	"testing"
 )
 
@@ -50,7 +51,7 @@ func TestGetClmNextToken_ComputesFromRequestNotResponse(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := getClmNextToken(tt.requested, tt.itemCount, tt.hasNext, tt.total)
+			got, err := getClmNextToken(tt.requested, tt.itemCount, tt.hasNext, tt.total, "")
 			if err != nil {
 				t.Fatalf("getClmNextToken: %v", err)
 			}
@@ -78,7 +79,7 @@ func TestGetClmNextToken_ComputesFromRequestNotResponse(t *testing.T) {
 // multiple of the page size, a full page landing exactly on Total stops immediately —
 // no need to wait for an empty page in this case, since Total confirms it.
 func TestGetClmNextToken_ExactBoundaryDoesNotLoop(t *testing.T) {
-	got, err := getClmNextToken(clmRequestedPage{Offset: 100, PageSize: 100}, 100, false, 200)
+	got, err := getClmNextToken(clmRequestedPage{Offset: 100, PageSize: 100}, 100, false, 200, "")
 	if err != nil {
 		t.Fatalf("getClmNextToken: %v", err)
 	}
@@ -113,7 +114,7 @@ func TestGetClmNextToken_ExactBoundaryDoesNotLoop(t *testing.T) {
 func TestGetClmNextToken_CapsRunawayPagination(t *testing.T) {
 	t.Run("reaches the cap through normal advancement", func(t *testing.T) {
 		requested := clmRequestedPage{Offset: (maxClmListPages - 1) * 100, PageSize: 100}
-		_, err := getClmNextToken(requested, 100, false, 0)
+		_, err := getClmNextToken(requested, 100, false, 0, "")
 		if err == nil {
 			t.Fatal("expected an error once maxClmListPages is reached, got nil")
 		}
@@ -121,7 +122,7 @@ func TestGetClmNextToken_CapsRunawayPagination(t *testing.T) {
 
 	t.Run("does not fire just below the cap", func(t *testing.T) {
 		requested := clmRequestedPage{Offset: (maxClmListPages - 2) * 100, PageSize: 100}
-		got, err := getClmNextToken(requested, 100, false, 0)
+		got, err := getClmNextToken(requested, 100, false, 0, "")
 		if err != nil {
 			t.Fatalf("expected no error just below the cap, got: %v", err)
 		}
@@ -134,7 +135,7 @@ func TestGetClmNextToken_CapsRunawayPagination(t *testing.T) {
 		// Offset alone, with Requests at its zero value (as a pre-cap or
 		// round-tripped token would decode to), must still trigger the cap.
 		requested := clmRequestedPage{Offset: maxClmListPages * 100, PageSize: 100}
-		_, err := getClmNextToken(requested, 100, false, 0)
+		_, err := getClmNextToken(requested, 100, false, 0, "")
 		if err == nil {
 			t.Fatal("expected the cap to fire from Offset alone, got nil error")
 		}
@@ -147,7 +148,7 @@ func TestGetClmNextToken_CapsRunawayPagination(t *testing.T) {
 		// requested.Requests to reach the same cap. Set Requests to exactly one below
 		// the cap to isolate that it alone is what trips it here.
 		requested := clmRequestedPage{Offset: maxClmListPages - 1, PageSize: 100, Requests: maxClmListPages - 1}
-		_, err := getClmNextToken(requested, 1, true, 0)
+		_, err := getClmNextToken(requested, 1, true, 0, "")
 		if err == nil {
 			t.Fatal("expected the request-count estimate to trip the cap even though the offset floor would not have")
 		}
@@ -214,4 +215,54 @@ func TestClmExtractBaseURLField_FindsRecognizedFieldRegardlessOfShape(t *testing
 			}
 		})
 	}
+}
+
+// TestValidateClmURL is a regression test for a review finding: an exact-host check
+// against the discovered CLM base URL would hard-fail every Task API call the first
+// time CLM legitimately serves a task/result href from a sibling host — this package's
+// own confirmed base-URL-resolution flow already spans two unrelated domains
+// (*.clm.docusign.net for the Object API, auth.springcm.com for discovery), so
+// validateClmURL checks domain family instead of exact host equality.
+func TestValidateClmURL(t *testing.T) {
+	c := &Client{clmBaseURI: "https://api.na1.clm.docusign.net"}
+
+	tests := []struct {
+		name    string
+		rawURL  string
+		wantErr bool
+	}{
+		{"exact host match", "https://api.na1.clm.docusign.net/v2/acct/foldersearchtasks/1", false},
+		{"sibling docusign.net host", "https://tasks.na2.clm.docusign.net/v2/acct/foldersearchtasks/1", false},
+		{"springcm.com sibling (CLM's other confirmed domain)", "https://auth.springcm.com/v2/acct/foldersearchtasks/1", false},
+		{"unrelated host", "https://attacker.example.com/v2/acct/foldersearchtasks/1", true},
+		{"docusign.net as a suffix of an unrelated domain is not a match", "https://evil-docusign.net.attacker.com/x", true},
+		{"scheme mismatch", "http://api.na1.clm.docusign.net/v2/acct/foldersearchtasks/1", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			u, err := url.Parse(tt.rawURL)
+			if err != nil {
+				t.Fatalf("url.Parse: %v", err)
+			}
+			err = c.validateClmURL(u, "test href")
+			if (err != nil) != tt.wantErr {
+				t.Errorf("validateClmURL(%q) error = %v, wantErr %v", tt.rawURL, err, tt.wantErr)
+			}
+		})
+	}
+
+	// A --base-url/mock target has no domain of its own to fall back on, so the exact
+	// match must compare host+port, not just host: switching to Hostname() (which
+	// strips the port) for that branch would let a same-host, different-port href
+	// through.
+	t.Run("exact-match branch rejects a same-host different-port href", func(t *testing.T) {
+		mockClient := &Client{clmBaseURI: "http://127.0.0.1:5000"}
+		u, err := url.Parse("http://127.0.0.1:9999/v2/acct/foldersearchtasks/1")
+		if err != nil {
+			t.Fatalf("url.Parse: %v", err)
+		}
+		if err := mockClient.validateClmURL(u, "test href"); err == nil {
+			t.Fatal("expected a different port on a non-domain host to be rejected")
+		}
+	})
 }

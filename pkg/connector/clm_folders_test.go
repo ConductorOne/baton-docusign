@@ -2,6 +2,7 @@ package connector
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/conductorone/baton-docusign/pkg/client"
@@ -229,7 +230,7 @@ func TestClmFolderBuilder_GrantAndRevoke_Idempotent(t *testing.T) {
 	} else if hasAlreadyExists(annos) {
 		t.Error("first Grant should not report GrantAlreadyExists")
 	}
-	groups := srv.FolderSecurity("folder-templates").Groups.Items
+	groups := srv.FolderSecurity("folder-templates").Groups
 	if len(groups) != 1 || groups[0].AccessType != client.ClmAccessTypeViewEdit {
 		t.Fatalf("expected one ViewEdit group entry after Grant, got %+v", groups)
 	}
@@ -240,7 +241,7 @@ func TestClmFolderBuilder_GrantAndRevoke_Idempotent(t *testing.T) {
 	} else if !hasAlreadyExists(annos) {
 		t.Error("repeat Grant should report GrantAlreadyExists")
 	}
-	if groups := srv.FolderSecurity("folder-templates").Groups.Items; len(groups) != 1 {
+	if groups := srv.FolderSecurity("folder-templates").Groups; len(groups) != 1 {
 		t.Fatalf("expected still exactly one entry after a repeat Grant, got %d", len(groups))
 	}
 
@@ -251,7 +252,7 @@ func TestClmFolderBuilder_GrantAndRevoke_Idempotent(t *testing.T) {
 	} else if hasAlreadyRevoked(annos) {
 		t.Error("first Revoke should not report GrantAlreadyRevoked")
 	}
-	groups = srv.FolderSecurity("folder-templates").Groups.Items
+	groups = srv.FolderSecurity("folder-templates").Groups
 	if len(groups) != 1 || groups[0].AccessType != client.ClmAccessTypeNoAccess {
 		t.Fatalf("expected the entry's AccessType to become NoAccess after Revoke, got %+v", groups)
 	}
@@ -280,7 +281,7 @@ func TestClmFolderBuilder_GrantAndRevoke_PreservesOtherPrincipals(t *testing.T) 
 	ctx := context.Background()
 
 	before := srv.FolderSecurity("folder-contracts")
-	if total := len(before.Groups.Items) + len(before.Roles.Items) + len(before.Users.Items); total != 4 {
+	if total := len(before.Groups) + len(before.Roles) + len(before.Users); total != 4 {
 		t.Fatalf("expected folder-contracts seeded with 4 entries total, got %d: %+v", total, before)
 	}
 
@@ -301,12 +302,12 @@ func TestClmFolderBuilder_GrantAndRevoke_PreservesOtherPrincipals(t *testing.T) 
 	}
 
 	afterGrant := srv.FolderSecurity("folder-contracts")
-	if len(afterGrant.Groups.Items) != 3 { // group-legal, group-finance, + the new group-ops
-		t.Fatalf("expected 3 group entries after granting a new group principal, got %d: %+v", len(afterGrant.Groups.Items), afterGrant.Groups.Items)
+	if len(afterGrant.Groups) != 3 { // group-legal, group-finance, + the new group-ops
+		t.Fatalf("expected 3 group entries after granting a new group principal, got %d: %+v", len(afterGrant.Groups), afterGrant.Groups)
 	}
-	assertGroupsPreserved(t, before.Groups.Items, afterGrant.Groups.Items, "Grant")
-	assertRolesPreserved(t, before.Roles.Items, afterGrant.Roles.Items, "Grant")
-	assertUsersPreserved(t, before.Users.Items, afterGrant.Users.Items, "Grant")
+	assertGroupsPreserved(t, before.Groups, afterGrant.Groups, "Grant")
+	assertRolesPreserved(t, before.Roles, afterGrant.Roles, "Grant")
+	assertUsersPreserved(t, before.Users, afterGrant.Users, "Grant")
 
 	grantObj := &v2.Grant{Principal: groupResource, Entitlement: ent}
 	if annos, err := b.Revoke(ctx, grantObj); err != nil {
@@ -316,12 +317,12 @@ func TestClmFolderBuilder_GrantAndRevoke_PreservesOtherPrincipals(t *testing.T) 
 	}
 
 	afterRevoke := srv.FolderSecurity("folder-contracts")
-	if len(afterRevoke.Groups.Items) != 3 { // still 3 (NoAccess, not removed)
-		t.Fatalf("expected still 3 group entries after Revoke (NoAccess, not removed), got %d: %+v", len(afterRevoke.Groups.Items), afterRevoke.Groups.Items)
+	if len(afterRevoke.Groups) != 3 { // still 3 (NoAccess, not removed)
+		t.Fatalf("expected still 3 group entries after Revoke (NoAccess, not removed), got %d: %+v", len(afterRevoke.Groups), afterRevoke.Groups)
 	}
-	assertGroupsPreserved(t, before.Groups.Items, afterRevoke.Groups.Items, "Revoke")
-	assertRolesPreserved(t, before.Roles.Items, afterRevoke.Roles.Items, "Revoke")
-	assertUsersPreserved(t, before.Users.Items, afterRevoke.Users.Items, "Revoke")
+	assertGroupsPreserved(t, before.Groups, afterRevoke.Groups, "Revoke")
+	assertRolesPreserved(t, before.Roles, afterRevoke.Roles, "Revoke")
+	assertUsersPreserved(t, before.Users, afterRevoke.Users, "Revoke")
 }
 
 func assertGroupsPreserved(t *testing.T, before, after []client.ClmGroupSecurityEntry, when string) {
@@ -368,7 +369,7 @@ func assertUsersPreserved(t *testing.T, before, after []client.ClmUserSecurityEn
 
 // TestClmFolderBuilder_GrantAndRevoke_ToleratesBareIDOnRead is a regression test: the
 // CLM API's read-side Href representation isn't confirmed to always match the exact
-// Href shape clmGroupHrefFromResource constructs on the write side. Grant/Revoke's
+// Href shape client.GroupHref constructs on the write side. Grant/Revoke's
 // existence checks compare via clmIDFromHref (not raw equality) specifically so a bare
 // ID and a full Href ending in that ID are still treated as the same principal — if
 // the API ever returns Href as a bare ID, a raw-equality comparison would never match,
@@ -382,7 +383,7 @@ func TestClmFolderBuilder_GrantAndRevoke_ToleratesBareIDOnRead(t *testing.T) {
 	ctx := context.Background()
 
 	// Seed folder-templates' group Security entry with a bare group ID, not the full
-	// Href clmGroupHrefFromResource would construct.
+	// Href client.GroupHref would construct.
 	if _, err := c.PatchFolderSecurity(ctx, "folder-templates", client.ClmFolderSecurityWrite{
 		Groups: []client.ClmGroupSecurityEntry{{AccessType: client.ClmAccessTypeViewEdit, Href: "group-ops"}},
 	}); err != nil {
@@ -405,7 +406,7 @@ func TestClmFolderBuilder_GrantAndRevoke_ToleratesBareIDOnRead(t *testing.T) {
 	} else if !hasAlreadyExists(annos) {
 		t.Error("Grant should recognize a bare-ID entry.Href as already granted, not duplicate it")
 	}
-	if groups := srv.FolderSecurity("folder-templates").Groups.Items; len(groups) != 1 {
+	if groups := srv.FolderSecurity("folder-templates").Groups; len(groups) != 1 {
 		t.Fatalf("expected still exactly one entry, got %d: %+v", len(groups), groups)
 	}
 
@@ -416,10 +417,241 @@ func TestClmFolderBuilder_GrantAndRevoke_ToleratesBareIDOnRead(t *testing.T) {
 	} else if hasAlreadyRevoked(annos) {
 		t.Fatal("Revoke incorrectly reported GrantAlreadyRevoked for a bare-ID entry.Href — access was left in place instead of being revoked")
 	}
-	groups := srv.FolderSecurity("folder-templates").Groups.Items
+	groups := srv.FolderSecurity("folder-templates").Groups
 	if len(groups) != 1 || groups[0].AccessType != client.ClmAccessTypeNoAccess {
 		t.Fatalf("expected the entry's AccessType to become NoAccess after Revoke, got %+v", groups)
 	}
+}
+
+// clmIdentityOnlyResource builds a Resource with nothing but Id — the shape pebble's
+// V3EntitlementToV2 hands Grant/Revoke on every read.
+func clmIdentityOnlyResource(resourceType *v2.ResourceType, resourceID string) *v2.Resource {
+	return &v2.Resource{
+		Id: &v2.ResourceId{ResourceType: resourceType.Id, Resource: resourceID},
+	}
+}
+
+// TestClmFolderBuilder_GrantAndRevoke_SurvivesIdentityOnlyPrincipal is a regression
+// test: passes an identity-only principal (unlike every other test in this file, which
+// uses a fully-populated resource) to confirm Href is still derivable.
+func TestClmFolderBuilder_GrantAndRevoke_SurvivesIdentityOnlyPrincipal(t *testing.T) {
+	srv, c := clmtest.NewServer(t)
+	b := newClmFolderBuilder(c)
+	ctx := context.Background()
+
+	folderResource, err := rs.NewResource("Templates", clmFolderResourceType, "folder-templates")
+	if err != nil {
+		t.Fatalf("NewResource: %v", err)
+	}
+
+	t.Run("clm_group principal", func(t *testing.T) {
+		principal := clmIdentityOnlyResource(clmGroupResourceType, "group-ops")
+		ent := &v2.Entitlement{Slug: "view", Resource: folderResource}
+
+		if _, _, err := b.Grant(ctx, principal, ent); err != nil {
+			t.Fatalf("Grant with an identity-only principal: %v", err)
+		}
+		groups := srv.FolderSecurity("folder-templates").Groups
+		if len(groups) != 1 || groups[0].AccessType != client.ClmAccessTypeView {
+			t.Fatalf("expected one View group entry after Grant, got %+v", groups)
+		}
+		// folder-templates starts with no group entries (clmPreferredHref's fallback
+		// branch), so this is the specific Href client.GroupHref must have derived.
+		if want := srv.GroupHref("group-ops"); groups[0].Href != want {
+			t.Errorf("expected Grant to write Href %q, got %q", want, groups[0].Href)
+		}
+
+		grantObj := &v2.Grant{Principal: principal, Entitlement: ent}
+		annos, err := b.Revoke(ctx, grantObj)
+		if err != nil {
+			t.Fatalf("Revoke with an identity-only principal: %v", err)
+		}
+		// If the derived Href ever stopped matching the entry Grant wrote,
+		// clmFindGroupSecurityIndex would return -1 and Revoke would report
+		// GrantAlreadyRevoked with a nil error instead of actually revoking — asserting
+		// only err == nil would still pass while access was silently left in place.
+		if hasAlreadyRevoked(annos) {
+			t.Fatal("Revoke incorrectly reported GrantAlreadyRevoked — the derived Href didn't match the entry Grant wrote")
+		}
+		groups = srv.FolderSecurity("folder-templates").Groups
+		if len(groups) != 1 || groups[0].AccessType != client.ClmAccessTypeNoAccess {
+			t.Fatalf("expected the entry's AccessType to become NoAccess after Revoke, got %+v", groups)
+		}
+	})
+
+	t.Run("clm_member principal", func(t *testing.T) {
+		principal := clmIdentityOnlyResource(clmMemberResourceType, "member-dave")
+		ent := &v2.Entitlement{Slug: "view", Resource: folderResource}
+
+		if _, _, err := b.Grant(ctx, principal, ent); err != nil {
+			t.Fatalf("Grant with an identity-only principal: %v", err)
+		}
+		users := srv.FolderSecurity("folder-templates").Users
+		if len(users) != 1 || users[0].AccessType != client.ClmAccessTypeView {
+			t.Fatalf("expected one View user entry after Grant, got %+v", users)
+		}
+		// folder-templates starts with no user entries (clmPreferredHref's fallback
+		// branch), so this is the specific Href client.MemberHref must have derived.
+		if want := srv.MemberHref("member-dave"); users[0].Href != want {
+			t.Errorf("expected Grant to write Href %q, got %q", want, users[0].Href)
+		}
+
+		grantObj := &v2.Grant{Principal: principal, Entitlement: ent}
+		annos, err := b.Revoke(ctx, grantObj)
+		if err != nil {
+			t.Fatalf("Revoke with an identity-only principal: %v", err)
+		}
+		// Same rationale as the clm_group subtest above.
+		if hasAlreadyRevoked(annos) {
+			t.Fatal("Revoke incorrectly reported GrantAlreadyRevoked — the derived Href didn't match the entry Grant wrote")
+		}
+		users = srv.FolderSecurity("folder-templates").Users
+		if len(users) != 1 || users[0].AccessType != client.ClmAccessTypeNoAccess {
+			t.Fatalf("expected the entry's AccessType to become NoAccess after Revoke, got %+v", users)
+		}
+	})
+}
+
+// TestClmFolderBuilder_GrantAndRevoke_RejectEmptyPrincipalID is a regression test for
+// both bot-flagged findings on this file: an empty principal.Id.Resource must be
+// rejected before Grant or Revoke touch write.Groups/Roles/Users, for all three
+// principal kinds — the role branch has no other guard (roleName is compared/written
+// directly), and the group/member branches' own guard (inside clmPreferredHref, or
+// clmIDFromHref's reduction of "" to "") must not be bypassed by this earlier check
+// firing instead of it.
+func TestClmFolderBuilder_GrantAndRevoke_RejectEmptyPrincipalID(t *testing.T) {
+	_, c := clmtest.NewServer(t)
+	b := newClmFolderBuilder(c)
+	ctx := context.Background()
+
+	folderResource, err := rs.NewResource("Templates", clmFolderResourceType, "folder-templates")
+	if err != nil {
+		t.Fatalf("NewResource: %v", err)
+	}
+	ent := &v2.Entitlement{Slug: "view", Resource: folderResource}
+
+	for _, resourceType := range []*v2.ResourceType{clmGroupResourceType, clmRoleResourceType, clmMemberResourceType} {
+		t.Run(resourceType.Id, func(t *testing.T) {
+			principal := clmIdentityOnlyResource(resourceType, "")
+
+			if _, _, err := b.Grant(ctx, principal, ent); err == nil {
+				t.Error("expected Grant to reject an empty principal ID, got nil error")
+			}
+
+			grantObj := &v2.Grant{Principal: principal, Entitlement: ent}
+			if _, err := b.Revoke(ctx, grantObj); err == nil {
+				t.Error("expected Revoke to reject an empty principal ID, got nil error")
+			}
+		})
+	}
+}
+
+// TestClmFolderBuilder_GrantAndRevoke_RejectEmptyFolderID is a regression test for the
+// same class of bug as the principal-ID guard above, applied to the folder itself:
+// parseIntoClmFolderResource derives a clm_folder's ID via clmIDFromHref(folder.Href)
+// with no non-empty check, so an empty folderID must be rejected before it reaches
+// GetFolderFresh/PatchFolderSecurity — otherwise it would build a URL hitting the
+// folders collection root instead of failing clearly client-side.
+func TestClmFolderBuilder_GrantAndRevoke_RejectEmptyFolderID(t *testing.T) {
+	_, c := clmtest.NewServer(t)
+	b := newClmFolderBuilder(c)
+	ctx := context.Background()
+
+	principal := clmIdentityOnlyResource(clmMemberResourceType, "member-dave")
+	emptyFolder := clmIdentityOnlyResource(clmFolderResourceType, "")
+	ent := &v2.Entitlement{Slug: "view", Resource: emptyFolder}
+
+	if _, _, err := b.Grant(ctx, principal, ent); err == nil {
+		t.Error("expected Grant to reject an empty folder ID, got nil error")
+	}
+
+	grantObj := &v2.Grant{Principal: principal, Entitlement: ent}
+	if _, err := b.Revoke(ctx, grantObj); err == nil {
+		t.Error("expected Revoke to reject an empty folder ID, got nil error")
+	}
+}
+
+// TestClmFolderBuilder_Grant_SurvivesIdentityOnlyPrincipal_SampleBranch covers the
+// clmPreferredHref branch TestClmFolderBuilder_GrantAndRevoke_SurvivesIdentityOnlyPrincipal
+// doesn't: folder-templates always starts with no security entries, so every Grant
+// there hits clmPreferredHref's fallback (client.GroupHref/MemberHref) — the newer,
+// riskier sample branch (deriving a written Href from an existing folder-security
+// entry) never runs. folder-contracts is already seeded with real group/user security
+// entries (clmtest/seed.go), so granting a DIFFERENT group/member there exercises the
+// sample branch. Both existing samples are moved onto an alternate host first —
+// otherwise the sample-derived Href and the fallback-derived one (both built from the
+// same base URL and ID shape) would be byte-identical, and this test would pass whether
+// or not the sample branch actually ran.
+func TestClmFolderBuilder_Grant_SurvivesIdentityOnlyPrincipal_SampleBranch(t *testing.T) {
+	srv, c := clmtest.NewServer(t)
+	b := newClmFolderBuilder(c)
+	ctx := context.Background()
+
+	const sampleHost = "https://other.example.com"
+	altGroupLegalHref := fmt.Sprintf("%s/v2/%s/groups/group-legal", sampleHost, clmtest.AccountID)
+	srv.SetFolderGroupSecurityHref("folder-contracts", "group-legal", altGroupLegalHref)
+	altGroupFinanceHref := fmt.Sprintf("%s/v2/%s/groups/group-finance", sampleHost, clmtest.AccountID)
+	srv.SetFolderGroupSecurityHref("folder-contracts", "group-finance", altGroupFinanceHref)
+	altMemberBobHref := fmt.Sprintf("%s/v2/%s/members/%s", sampleHost, clmtest.AccountID, "member-bob")
+	srv.SetFolderUserSecurityHref("folder-contracts", "member-bob", altMemberBobHref)
+
+	folderResource, err := rs.NewResource("Contracts", clmFolderResourceType, "folder-contracts")
+	if err != nil {
+		t.Fatalf("NewResource: %v", err)
+	}
+
+	t.Run("clm_group principal", func(t *testing.T) {
+		// group-ops is not among folder-contracts' existing entries (group-legal,
+		// group-finance), so clmPreferredHref must derive group-ops' Href from one of
+		// those samples via clmHrefWithID, not just echo a pre-existing entry.
+		principal := clmIdentityOnlyResource(clmGroupResourceType, "group-ops")
+		ent := &v2.Entitlement{Slug: "view", Resource: folderResource}
+
+		if _, _, err := b.Grant(ctx, principal, ent); err != nil {
+			t.Fatalf("Grant with an identity-only principal: %v", err)
+		}
+		groups := srv.FolderSecurity("folder-contracts").Groups
+		wantHref := fmt.Sprintf("%s/v2/%s/groups/group-ops", sampleHost, clmtest.AccountID)
+		var found *client.ClmGroupSecurityEntry
+		for i := range groups {
+			if groups[i].Href == wantHref {
+				found = &groups[i]
+			}
+		}
+		if found == nil {
+			t.Fatalf("expected a group-ops entry with the sample-derived Href %q, got %+v", wantHref, groups)
+			return
+		}
+		if found.AccessType != client.ClmAccessTypeView {
+			t.Errorf("expected View AccessType, got %q", found.AccessType)
+		}
+	})
+
+	t.Run("clm_member principal", func(t *testing.T) {
+		// member-dave is not folder-contracts' existing member entry (member-bob), so
+		// clmPreferredHref must derive member-dave's Href from that sample.
+		principal := clmIdentityOnlyResource(clmMemberResourceType, "member-dave")
+		ent := &v2.Entitlement{Slug: "view", Resource: folderResource}
+
+		if _, _, err := b.Grant(ctx, principal, ent); err != nil {
+			t.Fatalf("Grant with an identity-only principal: %v", err)
+		}
+		users := srv.FolderSecurity("folder-contracts").Users
+		wantHref := fmt.Sprintf("%s/v2/%s/members/member-dave", sampleHost, clmtest.AccountID)
+		var found *client.ClmUserSecurityEntry
+		for i := range users {
+			if users[i].Href == wantHref {
+				found = &users[i]
+			}
+		}
+		if found == nil {
+			t.Fatalf("expected a member-dave entry with the sample-derived Href %q, got %+v", wantHref, users)
+			return
+		}
+		if found.AccessType != client.ClmAccessTypeView {
+			t.Errorf("expected View AccessType, got %q", found.AccessType)
+		}
+	})
 }
 
 func hasAlreadyExists(annos annotations.Annotations) bool {

@@ -2,7 +2,9 @@ package client_test
 
 import (
 	"context"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/conductorone/baton-docusign/pkg/client"
 	"github.com/conductorone/baton-docusign/pkg/client/clmtest"
@@ -13,12 +15,14 @@ func TestSearchFolders_Pagination(t *testing.T) {
 	ctx := context.Background()
 
 	var all []client.ClmFolder
+	pages := 0
 	pageToken := ""
 	for i := 0; i < 10; i++ { // safety bound for the test loop itself
 		folders, next, _, err := c.SearchFolders(ctx, client.PageOptions{PageSize: 2, PageToken: pageToken})
 		if err != nil {
 			t.Fatalf("SearchFolders page %d: %v", i, err)
 		}
+		pages++
 		all = append(all, folders...)
 		if next == "" {
 			break
@@ -26,14 +30,116 @@ func TestSearchFolders_Pagination(t *testing.T) {
 		pageToken = next
 	}
 
+	// Pins the requested PageSize actually reaching the create-task POST (not just
+	// continuation pages): with PageSize 2 and 3 seeded folders, a real second page is
+	// the only way this test exercises getClmFolderSearchResultPage and the ResultHref
+	// token round-trip at all.
+	if pages < 2 {
+		t.Fatalf("expected SearchFolders to paginate across at least 2 pages with PageSize 2 and 3 folders, got %d page(s)", pages)
+	}
 	if len(all) != 3 {
 		t.Fatalf("expected 3 folders across all pages, got %d", len(all))
 	}
 	// Search results are summaries — no Security field.
 	for _, f := range all {
-		if len(f.Security.Groups.Items) != 0 || len(f.Security.Roles.Items) != 0 || len(f.Security.Users.Items) != 0 {
+		if len(f.Security.Groups) != 0 || len(f.Security.Roles) != 0 || len(f.Security.Users) != 0 {
 			t.Errorf("folder %s: expected Search to omit Security, got %+v", f.Name, f.Security)
 		}
+	}
+}
+
+// TestSearchFolders_EmptyResultHrefFailsLoud is a regression for the page-1 loop that
+// happens when Result.Href is empty but more pages remain: getClmNextToken would mint a
+// token with ResultHref:"", and the next SearchFolders call would re-POST a new search
+// (resetting Requests) forever. SearchFolders must error instead of emitting that token.
+func TestSearchFolders_EmptyResultHrefFailsLoud(t *testing.T) {
+	srv, c := clmtest.NewServer(t)
+	ctx := context.Background()
+	srv.SetOmitFolderSearchResultHref(true)
+
+	folders, next, _, err := c.SearchFolders(ctx, client.PageOptions{PageSize: 2})
+	if err == nil {
+		t.Fatalf("expected error when Result.Href is empty and more pages remain, got folders=%d next=%q", len(folders), next)
+	}
+	if next != "" {
+		t.Errorf("expected empty next token on failure, got %q", next)
+	}
+	if !strings.Contains(err.Error(), "Result has no Href") {
+		t.Errorf("expected Result-Href error, got: %v", err)
+	}
+}
+
+// TestSearchFolders_PollsUntilSuccess is a regression test for SearchFolders'
+// awaitClmFolderSearchTask branch: every live test against a real CLM tenant resolved
+// the task inline (Status "Success" already in the POST response), leaving the polling
+// branch itself unexercised until now.
+func TestSearchFolders_PollsUntilSuccess(t *testing.T) {
+	original := client.ClmFolderSearchTaskPollInterval
+	client.ClmFolderSearchTaskPollInterval = time.Millisecond
+	defer func() { client.ClmFolderSearchTaskPollInterval = original }()
+
+	srv, c := clmtest.NewServer(t)
+	ctx := context.Background()
+
+	srv.SetPendingFolderSearchPolls(2)
+
+	folders, _, _, err := c.SearchFolders(ctx, client.PageOptions{PageSize: 10})
+	if err != nil {
+		t.Fatalf("SearchFolders: %v", err)
+	}
+	if len(folders) != 3 {
+		t.Fatalf("expected all 3 seeded folders once the task resolves, got %d", len(folders))
+	}
+}
+
+// TestPatchFolderSecurity_PollsUntilSuccess is a regression test for
+// PatchFolderSecurity's awaitClmChangeSecurityTask branch — unverified against a live
+// tenant (see PatchFolderSecurity's doc in clm_client.go), so this mock-driven test is
+// this branch's only coverage.
+func TestPatchFolderSecurity_PollsUntilSuccess(t *testing.T) {
+	original := client.ClmFolderSearchTaskPollInterval
+	client.ClmFolderSearchTaskPollInterval = time.Millisecond
+	defer func() { client.ClmFolderSearchTaskPollInterval = original }()
+
+	srv, c := clmtest.NewServer(t)
+	ctx := context.Background()
+
+	groupHref := srv.GroupHref("group-ops")
+	srv.SetPendingChangeSecurityPolls(2)
+
+	if _, err := c.PatchFolderSecurity(ctx, "folder-templates", client.ClmFolderSecurityWrite{
+		Groups: []client.ClmGroupSecurityEntry{{AccessType: client.ClmAccessTypeView, Href: groupHref}},
+	}); err != nil {
+		t.Fatalf("PatchFolderSecurity: %v", err)
+	}
+
+	sec := srv.FolderSecurity("folder-templates")
+	if len(sec.Groups) != 1 || sec.Groups[0].AccessType != client.ClmAccessTypeView || sec.Groups[0].Href != groupHref {
+		t.Fatalf("expected one View entry for %s once the task resolves, got %+v", groupHref, sec.Groups)
+	}
+}
+
+// TestSearchFolders_RejectsTaskHrefOnUnexpectedHost is a regression test for
+// Client.validateClmURL: doClmRequest attaches the bearer token to whatever URL it's
+// given, so a task Href pointing at a host other than the discovered CLM base URL must
+// be rejected before it's ever dispatched, not just parsed.
+func TestSearchFolders_RejectsTaskHrefOnUnexpectedHost(t *testing.T) {
+	original := client.ClmFolderSearchTaskPollInterval
+	client.ClmFolderSearchTaskPollInterval = time.Millisecond
+	defer func() { client.ClmFolderSearchTaskPollInterval = original }()
+
+	srv, c := clmtest.NewServer(t)
+	ctx := context.Background()
+
+	srv.SetPendingFolderSearchPolls(1)
+	srv.SetFolderSearchTaskHrefOverride("http://attacker.example.com/v2/acct-clm-test/foldersearchtasks/1")
+
+	_, _, _, err := c.SearchFolders(ctx, client.PageOptions{PageSize: 10})
+	if err == nil {
+		t.Fatal("expected SearchFolders to reject a task href on an unexpected host, got nil error")
+	}
+	if !strings.Contains(err.Error(), "refusing to send CLM credentials") {
+		t.Fatalf("expected a host-validation error, got: %v", err)
 	}
 }
 
@@ -46,7 +152,7 @@ func TestGetFolder_ExpandSecurity(t *testing.T) {
 		if err != nil {
 			t.Fatalf("GetFolder: %v", err)
 		}
-		if len(folder.Security.Groups.Items) != 0 || len(folder.Security.Roles.Items) != 0 || len(folder.Security.Users.Items) != 0 {
+		if len(folder.Security.Groups) != 0 || len(folder.Security.Roles) != 0 || len(folder.Security.Users) != 0 {
 			t.Errorf("expected no Security without ?expand=Security, got %+v", folder.Security)
 		}
 	})
@@ -56,14 +162,14 @@ func TestGetFolder_ExpandSecurity(t *testing.T) {
 		if err != nil {
 			t.Fatalf("GetFolder: %v", err)
 		}
-		if len(folder.Security.Groups.Items) != 2 {
-			t.Fatalf("expected 2 seeded group security entries, got %d: %+v", len(folder.Security.Groups.Items), folder.Security.Groups.Items)
+		if len(folder.Security.Groups) != 2 {
+			t.Fatalf("expected 2 seeded group security entries, got %d: %+v", len(folder.Security.Groups), folder.Security.Groups)
 		}
-		if len(folder.Security.Roles.Items) != 1 {
-			t.Fatalf("expected 1 seeded role security entry, got %d: %+v", len(folder.Security.Roles.Items), folder.Security.Roles.Items)
+		if len(folder.Security.Roles) != 1 {
+			t.Fatalf("expected 1 seeded role security entry, got %d: %+v", len(folder.Security.Roles), folder.Security.Roles)
 		}
-		if len(folder.Security.Users.Items) != 1 {
-			t.Fatalf("expected 1 seeded user security entry, got %d: %+v", len(folder.Security.Users.Items), folder.Security.Users.Items)
+		if len(folder.Security.Users) != 1 {
+			t.Fatalf("expected 1 seeded user security entry, got %d: %+v", len(folder.Security.Users), folder.Security.Users)
 		}
 	})
 
@@ -93,8 +199,8 @@ func TestPatchFolderSecurity_SendsExactEntries(t *testing.T) {
 	}
 
 	sec := srv.FolderSecurity("folder-templates")
-	if len(sec.Groups.Items) != 1 || sec.Groups.Items[0].AccessType != client.ClmAccessTypeView || sec.Groups.Items[0].Href != groupHref {
-		t.Fatalf("expected one View entry for %s, got %+v", groupHref, sec.Groups.Items)
+	if len(sec.Groups) != 1 || sec.Groups[0].AccessType != client.ClmAccessTypeView || sec.Groups[0].Href != groupHref {
+		t.Fatalf("expected one View entry for %s, got %+v", groupHref, sec.Groups)
 	}
 
 	// Sending a single-entry Groups list for the same Href again replaces the prior entry.
@@ -105,11 +211,11 @@ func TestPatchFolderSecurity_SendsExactEntries(t *testing.T) {
 	}
 
 	sec = srv.FolderSecurity("folder-templates")
-	if len(sec.Groups.Items) != 1 {
-		t.Fatalf("expected the existing entry to be updated in place, not duplicated: %+v", sec.Groups.Items)
+	if len(sec.Groups) != 1 {
+		t.Fatalf("expected the existing entry to be updated in place, not duplicated: %+v", sec.Groups)
 	}
-	if sec.Groups.Items[0].AccessType != client.ClmAccessTypeNoAccess {
-		t.Errorf("expected AccessType NoAccess after revoke, got %q", sec.Groups.Items[0].AccessType)
+	if sec.Groups[0].AccessType != client.ClmAccessTypeNoAccess {
+		t.Errorf("expected AccessType NoAccess after revoke, got %q", sec.Groups[0].AccessType)
 	}
 }
 

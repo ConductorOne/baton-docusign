@@ -17,21 +17,19 @@ var (
 	authURLProd  = "https://account.docusign.com/oauth/auth"
 	tokenURLProd = "https://account.docusign.com/oauth/token" //nolint:gosec // token URL does not contain sensitive credentials.
 	defaultScope = "signature"
-	// clmScopes are additional OAuth scopes required to call the DocuSign CLM API.
-	// "spring_read"/"spring_write" are confirmed via the CLM Authentication Overview
-	// docs (combine with eSignature's "signature" scope on the same authorization
-	// request); "springcm_read"/"springcm_write" are ALSO requested defensively
-	// because a separate DocuSign docs page (for the account-discovery endpoint
-	// ensureClmInitialized calls, auth.springcm.com/api/v2/{accountId}/account) lists
-	// the required scope as "springcm_read" instead — possibly a docs typo, possibly
-	// a genuinely distinct scope given CLM/SpringCM's inconsistent legacy naming, and
-	// unconfirmed against a real CLM tenant either way. Requesting all 4 covers both
-	// possibilities at once: an unrecognized/unauthorized scope name is expected to be
-	// dropped by DocuSign's OAuth consent rather than rejecting the whole
-	// authorization (standard OAuth2 behavior), so this is a low-risk hedge, not a
-	// confirmed-safe one — the same "check every plausible candidate" pattern
-	// ensureClmInitialized uses for the base-URL response field name.
-	clmScopes = []string{"spring_read", "spring_write", "springcm_read", "springcm_write"}
+	// clmScopes are the OAuth scopes required to call the DocuSign CLM API, per
+	// DocuSign's own CLM Authentication Overview docs (pasted live, since the site is
+	// JS-rendered and unreachable by automated tools): the "Required scopes" section's
+	// Authorization Code Grant example is exactly signature+spring_read+spring_write,
+	// with an explicit note that "impersonation" is a JWT-Grant-only requirement — NOT
+	// needed here. An earlier version of this code added "impersonation" and
+	// "springcm_read"/"springcm_write" based on a live 401 ("Access Denied", CLM
+	// ErrorCode 103) against a real CLM tenant plus unreliable secondary docs sources;
+	// that live tenant already had exactly this scope set granted when it failed, so
+	// the 401 is not a scope problem — see clm_client.go's package doc for the current
+	// working theory (demo/UAT environment limitation, per CLM's docs requiring a
+	// production account).
+	clmScopes = []string{"spring_read", "spring_write"}
 )
 
 // buildScopes returns the OAuth scopes to request, adding CLM scopes when includeClm is set.

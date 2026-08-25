@@ -27,9 +27,12 @@
 //
 //	GET   /oauth/userinfo                              — eSignature account discovery (ensureInitialized)
 //	GET   /api/v2/{accountId}/account                   — CLM account discovery (ensureClmInitialized)
-//	POST  /v2/{accountId}/folders/search                — SearchFolders
+//	POST  /v2/{accountId}/foldersearchtasks             — SearchFolders (create task; resolves inline)
+//	GET   /v2/{accountId}/foldersearchtasks/{id}        — SearchFolders (poll a task — see PendingFolderSearchPolls)
+//	GET   /v2/{accountId}/foldersearchtasks/{id}/result — SearchFolders (continuation pages)
 //	GET   /v2/{accountId}/folders/{id}                  — GetFolder (supports ?expand=Security)
-//	PATCH /v2/{accountId}/folders/{id}                  — PatchFolderSecurity
+//	POST  /v2/{accountId}/changesecuritytasks           — PatchFolderSecurity (create task; resolves inline)
+//	GET   /v2/{accountId}/changesecuritytasks/{id}      — PatchFolderSecurity (poll a task — see PendingChangeSecurityPolls)
 //	GET   /v2/{accountId}/groups                        — ListGroups
 //	GET   /v2/{accountId}/groups/{id}/groupmembers       — GetGroupMembers
 //	GET   /v2/{accountId}/members                       — ListMembers
@@ -113,6 +116,70 @@ type Server struct {
 	permissionSetOrder []string
 
 	memberGroupsRequests int // count of GET .../members/{id}/groups calls, for pagination assertions
+
+	lastPatchedMemberGroupHrefs map[string][]string // memberID -> the raw Href strings the last PATCH request body carried, for tests
+
+	nextFolderSearchTaskID int // incrementing counter for mock FolderSearchTasks task IDs
+
+	// pendingFolderSearchPolls, when > 0, makes the next SearchFolders task created via
+	// POST /foldersearchtasks come back "Processing" this many times before resolving to
+	// "Success" on poll — see SetPendingFolderSearchPolls. Decremented on each poll.
+	pendingFolderSearchPolls int
+
+	// omitFolderSearchResultHref, when true, leaves Result.Href empty on the next
+	// successful folder-search task response — see SetOmitFolderSearchResultHref.
+	omitFolderSearchResultHref bool
+
+	// folderSearchTaskHrefOverride, when non-empty, replaces the Href on the next folder
+	// search task response — see SetFolderSearchTaskHrefOverride.
+	folderSearchTaskHrefOverride string
+
+	nextChangeSecurityTaskID int // incrementing counter for mock ChangeSecurityTasks task IDs
+
+	// pendingChangeSecurityPolls, when > 0, makes the next PatchFolderSecurity task
+	// created via POST /changesecuritytasks come back "waiting" this many times before
+	// resolving to "success" on poll — see SetPendingChangeSecurityPolls. Decremented on
+	// each poll.
+	pendingChangeSecurityPolls int
+}
+
+// SetPendingFolderSearchPolls makes the next folder search task created by this server
+// require n polls of GET .../foldersearchtasks/{id} before resolving to "Success" —
+// exercises SearchFolders' awaitClmFolderSearchTask polling loop, which every live test
+// against a real CLM tenant resolved past on the first try (inline in the POST
+// response), leaving that branch otherwise untested.
+func (s *Server) SetPendingFolderSearchPolls(n int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pendingFolderSearchPolls = n
+}
+
+// SetFolderSearchTaskHrefOverride makes the next folder search task response carry the
+// given Href instead of this server's own — used to pin the client's host-validation
+// guard (Client.validateClmURL) against a task Href pointing at an unexpected host.
+func (s *Server) SetFolderSearchTaskHrefOverride(href string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.folderSearchTaskHrefOverride = href
+}
+
+// SetOmitFolderSearchResultHref makes the next successful FolderSearchTasks response
+// leave Result.Href empty. Used to pin SearchFolders' guard against minting a
+// continuation token that would re-POST a new search (page-1 loop).
+func (s *Server) SetOmitFolderSearchResultHref(omit bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.omitFolderSearchResultHref = omit
+}
+
+// SetPendingChangeSecurityPolls makes the next change-security task created by this
+// server require n polls of GET .../changesecuritytasks/{id} before resolving to
+// "success" — exercises PatchFolderSecurity's awaitClmChangeSecurityTask polling loop,
+// unverified against a live tenant (see PatchFolderSecurity's doc in clm_client.go).
+func (s *Server) SetPendingChangeSecurityPolls(n int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pendingChangeSecurityPolls = n
 }
 
 // MemberGroupsRequestCount returns how many times GET .../members/{id}/groups has been
@@ -123,6 +190,20 @@ func (s *Server) MemberGroupsRequestCount() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.memberGroupsRequests
+}
+
+// LastPatchedMemberGroupHrefs returns the raw Href strings the most recent PATCH
+// .../members/{id} request body carried for memberID — unlike MemberGroups (which
+// reduces everything to the trailing ID via idFromHref, the same as the real API's own
+// comparison semantics), this exposes the exact Href the connector sent, so a test can
+// tell a sample-derived Href from a base-URL-derived one even when the two mock helpers
+// that build them happen to produce byte-identical strings.
+func (s *Server) LastPatchedMemberGroupHrefs(memberID string) []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]string, len(s.lastPatchedMemberGroupHrefs[memberID]))
+	copy(out, s.lastPatchedMemberGroupHrefs[memberID])
+	return out
 }
 
 // URL returns the mock server's base URL — also what handleClmAccountDiscovery
@@ -137,6 +218,66 @@ func (s *Server) FolderHref(id string) string {
 
 func (s *Server) GroupHref(id string) string {
 	return fmt.Sprintf("%s/v2/%s/groups/%s", s.baseURL, AccountID, id)
+}
+
+// SetGroupHref overrides the Href a seeded group reports on GetMemberGroups, letting a
+// test make it observably different from what GroupHref (and so client.GroupHref's
+// fallback derivation, which builds the same shape from the discovered base URL) would
+// produce — needed to distinguish a sample-derived Href from a fallback-derived one when
+// both would otherwise be byte-identical.
+func (s *Server) SetGroupHref(id, href string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if g, ok := s.groups[id]; ok {
+		g.Href = href
+		return
+	}
+	if s.t != nil {
+		//nolint:gocritic // s.t is testing.TB; ruleguard only exempts concrete *testing.T/B/F, not the interface
+		s.t.Fatalf("SetGroupHref: no seeded group %q", id)
+	}
+}
+
+// SetFolderGroupSecurityHref and SetFolderUserSecurityHref override the Href of an
+// existing group/user security entry on a seeded folder (matched by ID via idFromHref),
+// letting a test make it observably different from what client.GroupHref/MemberHref's
+// fallback would produce for a different, derived ID — the same lever SetGroupHref gives
+// GetMemberGroups-based tests, needed here because folder security entries carry no
+// separate ID field of their own.
+func (s *Server) SetFolderGroupSecurityHref(folderID, groupID, href string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	folder, ok := s.folders[folderID]
+	if ok {
+		for i := range folder.Security.Groups {
+			if idFromHref(folder.Security.Groups[i].Href) == groupID {
+				folder.Security.Groups[i].Href = href
+				return
+			}
+		}
+	}
+	if s.t != nil {
+		//nolint:gocritic // s.t is testing.TB; ruleguard only exempts concrete *testing.T/B/F, not the interface
+		s.t.Fatalf("SetFolderGroupSecurityHref: no group %q security entry on folder %q", groupID, folderID)
+	}
+}
+
+func (s *Server) SetFolderUserSecurityHref(folderID, memberID, href string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	folder, ok := s.folders[folderID]
+	if ok {
+		for i := range folder.Security.Users {
+			if idFromHref(folder.Security.Users[i].Href) == memberID {
+				folder.Security.Users[i].Href = href
+				return
+			}
+		}
+	}
+	if s.t != nil {
+		//nolint:gocritic // s.t is testing.TB; ruleguard only exempts concrete *testing.T/B/F, not the interface
+		s.t.Fatalf("SetFolderUserSecurityHref: no member %q security entry on folder %q", memberID, folderID)
+	}
 }
 
 func (s *Server) MemberHref(id string) string {
@@ -163,16 +304,16 @@ func (s *Server) FolderSecurity(folderID string) client.ClmFolderSecurity {
 	if !ok {
 		return client.ClmFolderSecurity{}
 	}
-	groups := make([]client.ClmGroupSecurityEntry, len(f.Security.Groups.Items))
-	copy(groups, f.Security.Groups.Items)
-	roles := make([]client.ClmRoleSecurityEntry, len(f.Security.Roles.Items))
-	copy(roles, f.Security.Roles.Items)
-	users := make([]client.ClmUserSecurityEntry, len(f.Security.Users.Items))
-	copy(users, f.Security.Users.Items)
+	groups := make([]client.ClmGroupSecurityEntry, len(f.Security.Groups))
+	copy(groups, f.Security.Groups)
+	roles := make([]client.ClmRoleSecurityEntry, len(f.Security.Roles))
+	copy(roles, f.Security.Roles)
+	users := make([]client.ClmUserSecurityEntry, len(f.Security.Users))
+	copy(users, f.Security.Users)
 	return client.ClmFolderSecurity{
-		Groups: client.ClmGroupSecurityPage{Items: groups},
-		Roles:  client.ClmRoleSecurityPage{Items: roles},
-		Users:  client.ClmUserSecurityPage{Items: users},
+		Groups: groups,
+		Roles:  roles,
+		Users:  users,
 	}
 }
 
@@ -180,12 +321,13 @@ func (s *Server) FolderSecurity(folderID string) client.ClmFolderSecurity {
 // RunStandalone so both construct exactly the same seeded state.
 func newState() *Server {
 	return &Server{
-		folders:        make(map[string]*client.ClmFolder),
-		groups:         make(map[string]*client.ClmGroup),
-		groupMembers:   make(map[string][]string),
-		members:        make(map[string]*client.ClmMember),
-		memberGroups:   make(map[string][]string),
-		permissionSets: make(map[string]*client.ClmPermissionSet),
+		folders:                     make(map[string]*client.ClmFolder),
+		groups:                      make(map[string]*client.ClmGroup),
+		groupMembers:                make(map[string][]string),
+		members:                     make(map[string]*client.ClmMember),
+		memberGroups:                make(map[string][]string),
+		permissionSets:              make(map[string]*client.ClmPermissionSet),
+		lastPatchedMemberGroupHrefs: make(map[string][]string),
 	}
 }
 
@@ -195,9 +337,12 @@ func newMux(s *Server) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /oauth/userinfo", s.handleUserInfo)
 	mux.HandleFunc("GET /api/v2/{accountId}/account", s.requireAuth(s.handleClmAccountDiscovery))
-	mux.HandleFunc("POST /v2/{accountId}/folders/search", s.requireAuth(s.handleSearchFolders))
+	mux.HandleFunc("POST /v2/{accountId}/foldersearchtasks", s.requireAuth(s.handleCreateFolderSearchTask))
+	mux.HandleFunc("GET /v2/{accountId}/foldersearchtasks/{id}", s.requireAuth(s.handlePollFolderSearchTask))
+	mux.HandleFunc("GET /v2/{accountId}/foldersearchtasks/{id}/result", s.requireAuth(s.handleFolderSearchTaskResult))
 	mux.HandleFunc("GET /v2/{accountId}/folders/{id}", s.requireAuth(s.handleGetFolder))
-	mux.HandleFunc("PATCH /v2/{accountId}/folders/{id}", s.requireAuth(s.handlePatchFolder))
+	mux.HandleFunc("POST /v2/{accountId}/changesecuritytasks", s.requireAuth(s.handleCreateChangeSecurityTask))
+	mux.HandleFunc("GET /v2/{accountId}/changesecuritytasks/{id}", s.requireAuth(s.handlePollChangeSecurityTask))
 	mux.HandleFunc("GET /v2/{accountId}/groups", s.requireAuth(s.handleListGroups))
 	mux.HandleFunc("GET /v2/{accountId}/groups/{id}/groupmembers", s.requireAuth(s.handleGroupMembers))
 	mux.HandleFunc("GET /v2/{accountId}/members", s.requireAuth(s.handleListMembers))

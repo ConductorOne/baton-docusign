@@ -2,37 +2,102 @@ package clmtest
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
-	"strings"
+	"strconv"
 
 	"github.com/conductorone/baton-docusign/pkg/client"
 )
 
-// idFromHref extracts the trailing path segment of a Href — mirrors
-// pkg/connector/helper.go's clmIDFromHref, reimplemented locally so this test package
-// has no dependency on the connector package.
+// idFromHref extracts the trailing path segment of a Href — see client.IDFromHref's doc.
 func idFromHref(href string) string {
-	href = strings.TrimSuffix(href, "/")
-	if idx := strings.LastIndex(href, "/"); idx != -1 {
-		return href[idx+1:]
-	}
-	return href
+	return client.IDFromHref(href)
 }
 
-// Doc URL: https://developers.docusign.com/docs/clm-api/reference/objects/folders/ (Search).
-func (s *Server) handleSearchFolders(w http.ResponseWriter, r *http.Request) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
+// folderSearchResults builds the flat, paginated ClmFolderPage for a folder search —
+// shared by the create/poll (wrapped in {Status, Href, Result}) and continuation
+// (bare) responses. Search results are summaries; Security only comes via ?expand on
+// Get, mirroring the real API.
+func (s *Server) folderSearchResults(r *http.Request) client.ClmFolderPage {
 	page, meta := pageSlice(r, s.folderOrder)
 	items := make([]client.ClmFolder, 0, len(page))
 	for _, id := range page {
 		f := *s.folders[id]
-		f.Security = client.ClmFolderSecurity{} // Search results are summaries; Security only comes via ?expand on Get
+		f.Security = client.ClmFolderSecurity{}
 		items = append(items, f)
 	}
-	writeJSON(w, client.ClmFolderPage{ClmPage: meta, Items: items})
+	return client.ClmFolderPage{ClmPage: meta, Items: items}
+}
+
+// Doc URL: https://developers.docusign.com/docs/clm-api/reference/tasks/foldersearchtasks/
+// (Post). Real CLM requires a recognized search parameter in the body (confirmed live:
+// {"Title": ""} matches every folder) — this mock doesn't replicate that validation,
+// since every real client call already sends the confirmed-working body.
+func (s *Server) handleCreateFolderSearchTask(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.nextFolderSearchTaskID++
+	taskID := strconv.Itoa(s.nextFolderSearchTaskID)
+	taskHref := fmt.Sprintf("%s/v2/%s/foldersearchtasks/%s", s.baseURL, AccountID, taskID)
+	if s.folderSearchTaskHrefOverride != "" {
+		taskHref = s.folderSearchTaskHrefOverride
+	}
+
+	status := "Success"
+	if s.pendingFolderSearchPolls > 0 {
+		status = "Processing"
+	}
+	resp := client.ClmFolderSearchTaskResponse{Status: status, Href: taskHref}
+	if status == "Success" {
+		result := s.folderSearchResults(r)
+		if s.omitFolderSearchResultHref {
+			// Leave Href empty and force a "more pages remain" shape so SearchFolders'
+			// empty-Href continuation guard is reachable, regardless of what page size the
+			// caller requested.
+			if len(result.Items) > 1 {
+				result.Items = result.Items[:1]
+			}
+			result.Limit = 1
+			result.Total = len(s.folderOrder)
+			result.Next = "more"
+			result.Offset = 0
+		} else {
+			result.Href = taskHref + "/result"
+		}
+		resp.Result = &result
+	}
+	writeJSON(w, resp)
+}
+
+// Doc URL: https://developers.docusign.com/docs/clm-api/reference/tasks/foldersearchtasks/get/
+func (s *Server) handlePollFolderSearchTask(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	taskID := r.PathValue("id")
+	taskHref := fmt.Sprintf("%s/v2/%s/foldersearchtasks/%s", s.baseURL, AccountID, taskID)
+
+	if s.pendingFolderSearchPolls > 0 {
+		s.pendingFolderSearchPolls--
+		writeJSON(w, client.ClmFolderSearchTaskResponse{Status: "Processing", Href: taskHref})
+		return
+	}
+
+	result := s.folderSearchResults(r)
+	if !s.omitFolderSearchResultHref {
+		result.Href = taskHref + "/result"
+	}
+	writeJSON(w, client.ClmFolderSearchTaskResponse{Status: "Success", Href: taskHref, Result: &result})
+}
+
+// Doc URL: https://developers.docusign.com/docs/clm-api/reference/tasks/foldersearchtasks/getsearchresult/
+func (s *Server) handleFolderSearchTaskResult(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	writeJSON(w, s.folderSearchResults(r))
 }
 
 // Doc URL: https://developers.docusign.com/docs/clm-api/reference/objects/folders/get/
@@ -64,16 +129,12 @@ func (s *Server) handleGetFolder(w http.ResponseWriter, r *http.Request) {
 // because it's safe under replace semantics too. Modeling this endpoint as a merge
 // would hide a regression to sending just the one changed entry — replace surfaces it
 // immediately as other principals' entries disappearing.
-func (s *Server) handlePatchFolder(w http.ResponseWriter, r *http.Request) {
+// Doc URL: https://developers.docusign.com/docs/clm-api/reference/tasks/changesecuritytasks/post/
+// Simulates PatchFolderSecurity's real endpoint (ChangeSecurityTasks), not the generic
+// Folders Patch this replaced — see clm_client.go's PatchFolderSecurity doc for why.
+func (s *Server) handleCreateChangeSecurityTask(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
-	id := r.PathValue("id")
-	f, ok := s.folders[id]
-	if !ok {
-		writeNotFound(w)
-		return
-	}
 
 	bodyBytes, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -88,14 +149,16 @@ func (s *Server) handlePatchFolder(w http.ResponseWriter, r *http.Request) {
 	// representation here is the only way this mock can actually catch a regression
 	// to sending it, across all three of Groups/Roles/Users.
 	var rawBody struct {
-		Security struct {
-			Groups []map[string]any `json:"Groups"`
-			Roles  []map[string]any `json:"Roles"`
-			Users  []map[string]any `json:"Users"`
-		} `json:"Security"`
+		Folder struct {
+			Security struct {
+				Groups []map[string]any `json:"Groups"`
+				Roles  []map[string]any `json:"Roles"`
+				Users  []map[string]any `json:"Users"`
+			} `json:"Security"`
+		} `json:"Folder"`
 	}
 	if json.Unmarshal(bodyBytes, &rawBody) == nil {
-		for _, entries := range [][]map[string]any{rawBody.Security.Groups, rawBody.Security.Roles, rawBody.Security.Users} {
+		for _, entries := range [][]map[string]any{rawBody.Folder.Security.Groups, rawBody.Folder.Security.Roles, rawBody.Folder.Security.Users} {
 			for _, entry := range entries {
 				if v, present := entry["AccessType"]; present {
 					if str, ok := v.(string); ok && str == "" {
@@ -108,19 +171,49 @@ func (s *Server) handlePatchFolder(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	var body client.ClmFolderSecurityPatch
+	var body client.ClmChangeSecurityTaskRequest
 	if err := json.Unmarshal(bodyBytes, &body); err != nil {
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
 
-	f.Security = client.ClmFolderSecurity{
-		Groups: client.ClmGroupSecurityPage{Items: body.Security.Groups},
-		Roles:  client.ClmRoleSecurityPage{Items: body.Security.Roles},
-		Users:  client.ClmUserSecurityPage{Items: body.Security.Users},
+	folderID := idFromHref(body.Folder.Href)
+	f, ok := s.folders[folderID]
+	if !ok {
+		writeNotFound(w)
+		return
 	}
 
-	writeJSON(w, *f)
+	f.Security = client.ClmFolderSecurity{
+		Groups: body.Folder.Security.Groups,
+		Roles:  body.Folder.Security.Roles,
+		Users:  body.Folder.Security.Users,
+	}
+
+	s.nextChangeSecurityTaskID++
+	taskHref := fmt.Sprintf("%s/v2/%s/changesecuritytasks/%d", s.baseURL, AccountID, s.nextChangeSecurityTaskID)
+	status := client.ClmChangeSecurityStatusSuccess
+	if s.pendingChangeSecurityPolls > 0 {
+		status = client.ClmChangeSecurityStatusWaiting
+	}
+	writeJSON(w, client.ClmChangeSecurityTaskResponse{Href: taskHref, Status: status})
+}
+
+// Doc URL: https://developers.docusign.com/docs/clm-api/reference/tasks/changesecuritytasks/get/
+func (s *Server) handlePollChangeSecurityTask(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	taskID := r.PathValue("id")
+	taskHref := fmt.Sprintf("%s/v2/%s/changesecuritytasks/%s", s.baseURL, AccountID, taskID)
+
+	if s.pendingChangeSecurityPolls > 0 {
+		s.pendingChangeSecurityPolls--
+		writeJSON(w, client.ClmChangeSecurityTaskResponse{Href: taskHref, Status: client.ClmChangeSecurityStatusWaiting})
+		return
+	}
+
+	writeJSON(w, client.ClmChangeSecurityTaskResponse{Href: taskHref, Status: client.ClmChangeSecurityStatusSuccess})
 }
 
 // Doc URL: https://developers.docusign.com/docs/clm-api/reference/objects/groups/
@@ -209,13 +302,16 @@ func (s *Server) handlePatchMember(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	hrefs := make([]string, 0, len(body.Groups.Items))
 	for _, g := range body.Groups.Items {
+		hrefs = append(hrefs, g.Href)
 		gid := idFromHref(g.Href)
 		if !containsString(s.memberGroups[id], gid) {
 			s.memberGroups[id] = append(s.memberGroups[id], gid)
 			s.groupMembers[gid] = append(s.groupMembers[gid], id)
 		}
 	}
+	s.lastPatchedMemberGroupHrefs[id] = hrefs
 
 	writeJSON(w, *m)
 }

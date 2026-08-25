@@ -12,6 +12,8 @@ import (
 	rs "github.com/conductorone/baton-sdk/pkg/types/resource"
 	"github.com/grpc-ecosystem/go-grpc-middleware/logging/zap/ctxzap"
 	"go.uber.org/zap"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 var _ connectorbuilder.StaticEntitlementSyncerV2 = (*clmFolderBuilder)(nil)
@@ -131,12 +133,12 @@ func (f *clmFolderBuilder) StaticEntitlements(_ context.Context, _ rs.SyncOpAttr
 func (f *clmFolderBuilder) Grants(ctx context.Context, folderResource *v2.Resource, _ rs.SyncOpAttrs) ([]*v2.Grant, *rs.SyncOpResults, error) {
 	folder, annos, err := f.client.GetFolder(ctx, folderResource.Id.Resource, "Security")
 	if err != nil {
-		return nil, nil, fmt.Errorf("getting security for CLM folder %s: %w", folderResource.Id.Resource, err)
+		return nil, nil, fmt.Errorf("baton-docusign: getting security for CLM folder %s: %w", folderResource.Id.Resource, err)
 	}
 
 	var grants []*v2.Grant
 
-	for _, entry := range folder.Security.Groups.Items {
+	for _, entry := range folder.Security.Groups {
 		slug, ok := clmSlugForAccessType(entry.AccessType)
 		if !ok {
 			continue
@@ -151,7 +153,7 @@ func (f *clmFolderBuilder) Grants(ctx context.Context, folderResource *v2.Resour
 		grants = append(grants, grant.NewGrant(folderResource, slug, principalID, grantOpts...))
 	}
 
-	for _, entry := range folder.Security.Roles.Items {
+	for _, entry := range folder.Security.Roles {
 		slug, ok := clmSlugForAccessType(entry.AccessType)
 		if !ok {
 			continue
@@ -166,7 +168,7 @@ func (f *clmFolderBuilder) Grants(ctx context.Context, folderResource *v2.Resour
 		grants = append(grants, grant.NewGrant(folderResource, slug, principalID))
 	}
 
-	for _, entry := range folder.Security.Users.Items {
+	for _, entry := range folder.Security.Users {
 		slug, ok := clmSlugForAccessType(entry.AccessType)
 		if !ok {
 			continue
@@ -188,21 +190,48 @@ func (f *clmFolderBuilder) Grants(ctx context.Context, folderResource *v2.Resour
 func (f *clmFolderBuilder) Grant(ctx context.Context, principal *v2.Resource, ent *v2.Entitlement) ([]*v2.Grant, annotations.Annotations, error) {
 	accessType, ok := clmAccessTypeForSlug(ent.Slug)
 	if !ok {
-		return nil, nil, fmt.Errorf("baton-docusign: unknown CLM folder entitlement slug %q", ent.Slug)
+		return nil, nil, status.Errorf(codes.InvalidArgument, "baton-docusign: unknown CLM folder entitlement slug %q", ent.Slug)
 	}
 	folderID := ent.Resource.Id.Resource
 
+	// Same guard as Revoke, and for the same reason: the group/member branches below are
+	// only incidentally covered by clmPreferredHref's own empty-id check, but the role
+	// branch compares principal.Id.Resource to Item by exact string with nothing else
+	// upstream to reject an empty value — this catches all three uniformly.
+	if principal.Id.Resource == "" {
+		return nil, nil, status.Errorf(codes.InvalidArgument, "baton-docusign: granting CLM folder security: principal missing native ID")
+	}
+	// folderID has the same theoretical gap: parseIntoClmFolderResource derives it via
+	// clmIDFromHref(folder.Href) with no non-empty check, so an empty Href would produce
+	// a folder resource with an empty ID. An empty folderID here would hit the
+	// collection-root path (buildClmClientURL's "/v2/%s/folders/%s" with an empty last
+	// segment) instead of failing clearly client-side.
+	if folderID == "" {
+		return nil, nil, status.Errorf(codes.InvalidArgument, "baton-docusign: granting CLM folder security: folder missing native ID")
+	}
+
 	folder, getAnnos, err := f.client.GetFolderFresh(ctx, folderID, "Security")
 	if err != nil {
-		return nil, getAnnos, fmt.Errorf("getting security for CLM folder %s: %w", folderID, err)
+		return nil, getAnnos, fmt.Errorf("baton-docusign: getting security for CLM folder %s: %w", folderID, err)
 	}
 	write := clmFolderSecurityToWrite(folder.Security)
 
 	switch principal.Id.ResourceType {
 	case clmGroupResourceType.Id:
-		groupHref, err := clmGroupHrefFromResource(principal)
+		// Prefer a real, server-issued Href already on hand over one derived from the
+		// discovered CLM base URL — see clmPreferredHref's doc. The principal's own
+		// profile href (parseIntoClmGroupResource still populates it for display) comes
+		// first: it's this exact group's own recorded Href, not a sibling's to derive
+		// from, so it's the most direct sample available when the resource happens to
+		// carry one — only ever a sample, never required, so an identity-only principal
+		// (no profile at all) still falls through to the other-entries/fallback path
+		// unchanged.
+		groupSampleHrefs := clmSampleHrefsFrom(principal, write.Groups, func(e client.ClmGroupSecurityEntry) string { return e.Href })
+		groupHref, err := clmPreferredHref(ctx, principal.Id.Resource, groupSampleHrefs, func() (string, error) {
+			return f.client.GroupHref(ctx, principal.Id.Resource)
+		})
 		if err != nil {
-			return nil, nil, err
+			return nil, getAnnos, fmt.Errorf("baton-docusign: resolving href for CLM group %s: %w", principal.Id.Resource, err)
 		}
 		if i := clmFindGroupSecurityIndex(write.Groups, groupHref); i >= 0 {
 			if slug, ok := clmSlugForAccessType(write.Groups[i].AccessType); ok && slug == ent.Slug {
@@ -223,9 +252,13 @@ func (f *clmFolderBuilder) Grant(ctx context.Context, principal *v2.Resource, en
 			write.Roles = append(write.Roles, client.ClmRoleSecurityEntry{AccessType: accessType, Item: roleName})
 		}
 	case clmMemberResourceType.Id:
-		memberHref, err := clmMemberHrefFromResource(principal)
+		// Same rationale as the group case above.
+		userSampleHrefs := clmSampleHrefsFrom(principal, write.Users, func(e client.ClmUserSecurityEntry) string { return e.Href })
+		memberHref, err := clmPreferredHref(ctx, principal.Id.Resource, userSampleHrefs, func() (string, error) {
+			return f.client.MemberHref(ctx, principal.Id.Resource)
+		})
 		if err != nil {
-			return nil, nil, err
+			return nil, getAnnos, fmt.Errorf("baton-docusign: resolving href for CLM member %s: %w", principal.Id.Resource, err)
 		}
 		if i := clmFindUserSecurityIndex(write.Users, memberHref); i >= 0 {
 			if slug, ok := clmSlugForAccessType(write.Users[i].AccessType); ok && slug == ent.Slug {
@@ -236,12 +269,12 @@ func (f *clmFolderBuilder) Grant(ctx context.Context, principal *v2.Resource, en
 			write.Users = append(write.Users, client.ClmUserSecurityEntry{AccessType: accessType, Href: memberHref})
 		}
 	default:
-		return nil, nil, fmt.Errorf("baton-docusign: invalid principal type for CLM folder security: %s", principal.Id.ResourceType)
+		return nil, getAnnos, status.Errorf(codes.InvalidArgument, "baton-docusign: invalid principal type for CLM folder security: %s", principal.Id.ResourceType)
 	}
 
 	patchAnnos, err := f.client.PatchFolderSecurity(ctx, folderID, write)
 	if err != nil {
-		return nil, patchAnnos, fmt.Errorf("granting CLM folder security: %w", err)
+		return nil, patchAnnos, fmt.Errorf("baton-docusign: granting CLM folder security: %w", err)
 	}
 
 	return nil, patchAnnos, nil
@@ -252,25 +285,32 @@ func (f *clmFolderBuilder) Grant(ctx context.Context, principal *v2.Resource, en
 // back to PatchFolderSecurity, taking a defensive copy of each collection so callers
 // can mutate the result without aliasing the original read.
 func clmFolderSecurityToWrite(sec client.ClmFolderSecurity) client.ClmFolderSecurityWrite {
-	groups := make([]client.ClmGroupSecurityEntry, len(sec.Groups.Items))
-	copy(groups, sec.Groups.Items)
-	roles := make([]client.ClmRoleSecurityEntry, len(sec.Roles.Items))
-	copy(roles, sec.Roles.Items)
-	users := make([]client.ClmUserSecurityEntry, len(sec.Users.Items))
-	copy(users, sec.Users.Items)
+	groups := make([]client.ClmGroupSecurityEntry, len(sec.Groups))
+	copy(groups, sec.Groups)
+	roles := make([]client.ClmRoleSecurityEntry, len(sec.Roles))
+	copy(roles, sec.Roles)
+	users := make([]client.ClmUserSecurityEntry, len(sec.Users))
+	copy(users, sec.Users)
 	return client.ClmFolderSecurityWrite{Groups: groups, Roles: roles, Users: users}
 }
 
-// clmFindGroupSecurityIndex returns the index of entries whose Href identifies
-// groupHref (compared via clmIDFromHref, since the read-side Href shape isn't
-// guaranteed to match exactly — see clmGroupHrefFromResource), or -1 if not found.
-func clmFindGroupSecurityIndex(entries []client.ClmGroupSecurityEntry, groupHref string) int {
+// clmFindSecurityIndexByHref returns the index of the entry whose Href identifies
+// targetHref (compared via clmIDFromHref, since the read-side Href shape isn't
+// guaranteed to match exactly — see client.GroupHref/MemberHref), or -1 if not found.
+// Shared by clmFindGroupSecurityIndex and clmFindUserSecurityIndex, which differ only in
+// entry type.
+func clmFindSecurityIndexByHref[T any](entries []T, hrefOf func(T) string, targetHref string) int {
+	targetID := clmIDFromHref(targetHref)
 	for i, e := range entries {
-		if clmIDFromHref(e.Href) == clmIDFromHref(groupHref) {
+		if clmIDFromHref(hrefOf(e)) == targetID {
 			return i
 		}
 	}
 	return -1
+}
+
+func clmFindGroupSecurityIndex(entries []client.ClmGroupSecurityEntry, groupHref string) int {
+	return clmFindSecurityIndexByHref(entries, func(e client.ClmGroupSecurityEntry) string { return e.Href }, groupHref)
 }
 
 // clmFindRoleSecurityIndex returns the index of the entry for roleName, or -1 if not
@@ -285,15 +325,8 @@ func clmFindRoleSecurityIndex(entries []client.ClmRoleSecurityEntry, roleName st
 	return -1
 }
 
-// clmFindUserSecurityIndex returns the index of the entry whose Href identifies
-// memberHref (see clmFindGroupSecurityIndex's identical rationale), or -1 if not found.
 func clmFindUserSecurityIndex(entries []client.ClmUserSecurityEntry, memberHref string) int {
-	for i, e := range entries {
-		if clmIDFromHref(e.Href) == clmIDFromHref(memberHref) {
-			return i
-		}
-	}
-	return -1
+	return clmFindSecurityIndexByHref(entries, func(e client.ClmUserSecurityEntry) string { return e.Href }, memberHref)
 }
 
 // Revoke sets the principal's folder-security entry to NoAccess (not removed — same
@@ -303,19 +336,33 @@ func (f *clmFolderBuilder) Revoke(ctx context.Context, grantObj *v2.Grant) (anno
 	folderID := grantObj.Entitlement.Resource.Id.Resource
 	principal := grantObj.Principal
 
+	// Guards all three branches below in one place: clmFindGroupSecurityIndex and
+	// clmFindUserSecurityIndex reduce an empty ID to "" via clmIDFromHref, which would
+	// match any security entry whose Href is empty or ends in a trailing slash; the role
+	// branch compares principal.Id.Resource to Item by exact string, so an empty ID would
+	// just as wrongly match an entry with an empty Item. Grant carries the identical
+	// guard for the identical reason — keep the two in sync.
+	if principal.Id.Resource == "" {
+		return nil, status.Errorf(codes.InvalidArgument, "baton-docusign: revoking CLM folder security: principal missing native ID")
+	}
+	// Same reasoning as Grant's identical guard: an empty folderID would hit the CLM
+	// API's folders collection root instead of failing clearly client-side.
+	if folderID == "" {
+		return nil, status.Errorf(codes.InvalidArgument, "baton-docusign: revoking CLM folder security: folder missing native ID")
+	}
+
 	folder, getAnnos, err := f.client.GetFolderFresh(ctx, folderID, "Security")
 	if err != nil {
-		return getAnnos, fmt.Errorf("getting security for CLM folder %s: %w", folderID, err)
+		return getAnnos, fmt.Errorf("baton-docusign: getting security for CLM folder %s: %w", folderID, err)
 	}
 	write := clmFolderSecurityToWrite(folder.Security)
 
 	switch principal.Id.ResourceType {
 	case clmGroupResourceType.Id:
-		groupHref, err := clmGroupHrefFromResource(principal)
-		if err != nil {
-			return nil, err
-		}
-		i := clmFindGroupSecurityIndex(write.Groups, groupHref)
+		// No need to build a real Href via client.GroupHref here: clmFindGroupSecurityIndex
+		// only ever compares by clmIDFromHref, so principal.Id.Resource (already a bare ID)
+		// works directly and this skips a needless ensureClmReady round trip.
+		i := clmFindGroupSecurityIndex(write.Groups, principal.Id.Resource)
 		if i < 0 || write.Groups[i].AccessType == client.ClmAccessTypeNoAccess {
 			return annotations.New(&v2.GrantAlreadyRevoked{}), nil
 		}
@@ -328,22 +375,20 @@ func (f *clmFolderBuilder) Revoke(ctx context.Context, grantObj *v2.Grant) (anno
 		}
 		write.Roles[i].AccessType = client.ClmAccessTypeNoAccess
 	case clmMemberResourceType.Id:
-		memberHref, err := clmMemberHrefFromResource(principal)
-		if err != nil {
-			return nil, err
-		}
-		i := clmFindUserSecurityIndex(write.Users, memberHref)
+		// Same reasoning as the group case above: clmFindUserSecurityIndex only compares
+		// by clmIDFromHref, so no need to build a real Href via client.MemberHref.
+		i := clmFindUserSecurityIndex(write.Users, principal.Id.Resource)
 		if i < 0 || write.Users[i].AccessType == client.ClmAccessTypeNoAccess {
 			return annotations.New(&v2.GrantAlreadyRevoked{}), nil
 		}
 		write.Users[i].AccessType = client.ClmAccessTypeNoAccess
 	default:
-		return nil, fmt.Errorf("baton-docusign: invalid principal type for CLM folder security: %s", principal.Id.ResourceType)
+		return getAnnos, status.Errorf(codes.InvalidArgument, "baton-docusign: invalid principal type for CLM folder security: %s", principal.Id.ResourceType)
 	}
 
 	patchAnnos, err := f.client.PatchFolderSecurity(ctx, folderID, write)
 	if err != nil {
-		return patchAnnos, fmt.Errorf("revoking CLM folder security: %w", err)
+		return patchAnnos, fmt.Errorf("baton-docusign: revoking CLM folder security: %w", err)
 	}
 
 	return patchAnnos, nil
@@ -400,15 +445,4 @@ func clmIsKnownRole(name string) bool {
 		}
 	}
 	return false
-}
-
-// clmMemberHrefFromResource reads back the Href stashed in a CLM member resource's
-// profile (see parseIntoClmMemberResource) — needed to reference the member in a
-// folder-security grant body.
-func clmMemberHrefFromResource(principal *v2.Resource) (string, error) {
-	href, ok := rs.GetProfileStringValue(rs.GetProfile(principal), "href")
-	if !ok || href == "" {
-		return "", fmt.Errorf("baton-docusign: CLM member resource %s is missing its href profile field", principal.Id.Resource)
-	}
-	return href, nil
 }
