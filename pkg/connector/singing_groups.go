@@ -38,10 +38,6 @@ func (g *signingGroupBuilder) List(ctx context.Context, _ *v2.ResourceId, attr r
 		PageToken: pageToken,
 	})
 	if err != nil {
-		if attr.PageToken.Token == "" && isOptInFeatureUnavailableError(err) {
-			ctxzap.Extract(ctx).Info("baton-docusign: signing groups are not available for this account, skipping signing_group sync", zap.Error(err))
-			return nil, &rs.SyncOpResults{}, nil
-		}
 		return nil, nil, err
 	}
 

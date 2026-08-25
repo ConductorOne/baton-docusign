@@ -37,26 +37,23 @@ func TestClmMemberBuilder_List_Pagination(t *testing.T) {
 	}
 }
 
-func TestClmMemberBuilder_List_SkipsGracefullyWhenClmUnavailable(t *testing.T) {
-	// Regression test for the wipe-risk fix: clm_member (and the other CLM/signing_group
-	// builders) is now registered unconditionally in ResourceSyncers() rather than
-	// gated by a config flag, so an account/token that genuinely can't use CLM must
-	// have its List() tolerate the resulting auth error and skip gracefully instead of
-	// failing the whole sync — see isOptInFeatureUnavailableError in helper.go.
+func TestClmMemberBuilder_List_FailsWhenClmUnavailable(t *testing.T) {
+	// clm_member (like every OptInRequired CLM/signing_group resource type) only ever
+	// syncs once a customer has explicitly opted it in, and C1's opt-in toggle has no
+	// upstream check against DocuSign — so an account/token that can't use CLM at that
+	// point is a real misconfiguration, not an expected state. List() must fail loudly
+	// rather than silently succeed with zero resources — see clm_roles.go's doc comment.
 	s, _ := clmtest.NewServer(t)
 	badClient := s.NewClientWithToken("wrong-token")
 	b := newClmMemberBuilder(badClient)
 	ctx := context.Background()
 
-	resources, res, err := b.List(ctx, nil, rs.SyncOpAttrs{PageToken: pagination.Token{Size: 10}})
-	if err != nil {
-		t.Fatalf("expected List to tolerate an unavailable CLM account and skip gracefully, got error: %v", err)
+	resources, _, err := b.List(ctx, nil, rs.SyncOpAttrs{PageToken: pagination.Token{Size: 10}})
+	if err == nil {
+		t.Fatal("expected List to fail when CLM is unavailable, got nil error")
 	}
 	if len(resources) != 0 {
-		t.Errorf("expected zero resources when CLM is unavailable, got %d", len(resources))
-	}
-	if res == nil || res.NextPageToken != "" {
-		t.Errorf("expected an empty (non-paginating) result, got %+v", res)
+		t.Errorf("expected zero resources on a hard failure, got %d", len(resources))
 	}
 }
 

@@ -3,6 +3,7 @@ package connector
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/conductorone/baton-docusign/pkg/client"
@@ -11,6 +12,10 @@ import (
 	"github.com/conductorone/baton-sdk/pkg/annotations"
 	"github.com/conductorone/baton-sdk/pkg/pagination"
 	rs "github.com/conductorone/baton-sdk/pkg/types/resource"
+	"github.com/grpc-ecosystem/go-grpc-middleware/logging/zap/ctxzap"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+	"go.uber.org/zap/zaptest/observer"
 )
 
 // --- Pure-function tests: clmSlugForAccessType / clmAccessTypeForSlug ---
@@ -58,22 +63,19 @@ func TestClmAccessTypeForSlug_RoundTrips(t *testing.T) {
 
 // --- Integration tests against the clmtest mock server ---
 
-func TestClmFolderBuilder_List_SkipsGracefullyWhenClmUnavailable(t *testing.T) {
+func TestClmFolderBuilder_List_FailsWhenClmUnavailable(t *testing.T) {
 	// See clm_members_test.go's identical test for the full rationale.
 	s, _ := clmtest.NewServer(t)
 	badClient := s.NewClientWithToken("wrong-token")
 	b := newClmFolderBuilder(badClient)
 	ctx := context.Background()
 
-	resources, res, err := b.List(ctx, nil, rs.SyncOpAttrs{PageToken: pagination.Token{Size: 10}})
-	if err != nil {
-		t.Fatalf("expected List to tolerate an unavailable CLM account and skip gracefully, got error: %v", err)
+	resources, _, err := b.List(ctx, nil, rs.SyncOpAttrs{PageToken: pagination.Token{Size: 10}})
+	if err == nil {
+		t.Fatal("expected List to fail when CLM is unavailable, got nil error")
 	}
 	if len(resources) != 0 {
-		t.Errorf("expected zero resources when CLM is unavailable, got %d", len(resources))
-	}
-	if res == nil || res.NextPageToken != "" {
-		t.Errorf("expected an empty (non-paginating) result, got %+v", res)
+		t.Errorf("expected zero resources on a hard failure, got %d", len(resources))
 	}
 }
 
@@ -204,6 +206,179 @@ func TestClmFolderBuilder_Grants_SkipsUnknownRoleName(t *testing.T) {
 	}
 	if len(grants) != 0 {
 		t.Errorf("expected the unknown role entry to be skipped, got %d grants: %+v", len(grants), grants)
+	}
+}
+
+func TestClmIsBenignUnmappedAccessType(t *testing.T) {
+	tests := []struct {
+		accessType string
+		want       bool
+	}{
+		{client.ClmAccessTypeNoAccess, true},
+		// Custom is deliberately excluded — it's a real, active grant this connector
+		// can't round-trip, so logSkippedFolderSecurityEntry gives it its own distinct
+		// Debug log instead of silencing it like the truly-inert values here.
+		{client.ClmAccessTypeCustom, false},
+		{client.ClmAccessTypeInherit, true},
+		{client.ClmAccessTypeView, false},
+		{"SomethingUnrecognized", false},
+		{"", false},
+	}
+	for _, tt := range tests {
+		if got := clmIsBenignUnmappedAccessType(tt.accessType); got != tt.want {
+			t.Errorf("clmIsBenignUnmappedAccessType(%q) = %v, want %v", tt.accessType, got, tt.want)
+		}
+	}
+}
+
+// TestClmFolderBuilder_Grants_LogsOnlyForGenuinelyUnrecognizedAccessType tests the
+// observable behavior Grants() ships, not just the clmIsBenignUnmappedAccessType
+// predicate in isolation: a genuinely unrecognized AccessType must still log (at
+// Debug), while a benign one (NoAccess here) must stay silent even at Debug.
+func TestClmFolderBuilder_Grants_LogsOnlyForGenuinelyUnrecognizedAccessType(t *testing.T) {
+	_, c := clmtest.NewServer(t)
+	ctx := context.Background()
+
+	// Seeds all three principal-type collections, not just Groups: that's what makes the
+	// principal_kind-to-distinguishing-field binding assertion below meaningful, rather
+	// than only ever exercising the Groups branch.
+	if _, err := c.PatchFolderSecurity(ctx, "folder-templates", client.ClmFolderSecurityWrite{
+		Groups: []client.ClmGroupSecurityEntry{
+			{AccessType: "SomethingUnrecognized", Href: "https://example.com/groups/group-x"},
+			{AccessType: client.ClmAccessTypeNoAccess, Href: "https://example.com/groups/group-y"},
+		},
+		Roles: []client.ClmRoleSecurityEntry{
+			{AccessType: "SomethingUnrecognized", Item: "FullSubscriber"},
+			{AccessType: client.ClmAccessTypeNoAccess, Item: "Guest"},
+		},
+		Users: []client.ClmUserSecurityEntry{
+			{AccessType: "SomethingUnrecognized", Href: "https://example.com/members/member-x"},
+			{AccessType: client.ClmAccessTypeNoAccess, Href: "https://example.com/members/member-y"},
+		},
+	}); err != nil {
+		t.Fatalf("PatchFolderSecurity (seed): %v", err)
+	}
+
+	core, logs := observer.New(zapcore.DebugLevel)
+	observedCtx := ctxzap.ToContext(ctx, zap.New(core))
+
+	b := newClmFolderBuilder(c)
+	folderResource, err := rs.NewResource("Templates", clmFolderResourceType, "folder-templates")
+	if err != nil {
+		t.Fatalf("NewResource: %v", err)
+	}
+
+	grants, _, err := b.Grants(observedCtx, folderResource, rs.SyncOpAttrs{})
+	if err != nil {
+		t.Fatalf("Grants: %v", err)
+	}
+	if len(grants) != 0 {
+		t.Fatalf("expected all 6 entries to be skipped (none map to a grantable tier), got %d grants: %+v", len(grants), grants)
+	}
+
+	// Scoped to the access_type field so this only counts the three skip-log lines
+	// Grants() emits, not any unrelated log traffic from the HTTP/cache layer
+	// underneath GetFolder.
+	entries := logs.FilterFieldKey("access_type").All()
+	if len(entries) != 3 {
+		t.Fatalf("expected exactly 3 log entries (one per Groups/Roles/Users branch, for the genuinely unrecognized AccessType only), got %d: %+v", len(entries), entries)
+	}
+	// The three branches share one constant message (no per-kind fmt.Sprintf — see
+	// logSkippedFolderSecurityEntry's doc) and instead distinguish themselves via a
+	// principal_kind field. Binding principal_kind to its distinguishing field (not just
+	// checking each field appears SOMEWHERE across the 3 entries) catches a copy-paste
+	// slip that swaps them between branches, e.g. the Users loop emitting group_href
+	// under principal_kind "user".
+	const wantMessage = "baton-docusign: skipping CLM folder security entry with an unmapped AccessType"
+	wantFieldForKind := map[string]string{
+		clmFolderPrincipalKindGroup: "group_href",
+		clmFolderPrincipalKindRole:  "role",
+		clmFolderPrincipalKindUser:  "member_href",
+	}
+	seenKind := map[string]bool{}
+	for _, e := range entries {
+		if e.Level != zapcore.DebugLevel {
+			t.Errorf("expected the unmapped-AccessType log to be at Debug, got %v", e.Level)
+		}
+		if e.Message != wantMessage {
+			t.Errorf("expected message %q, got %q", wantMessage, e.Message)
+		}
+		// Pins WHICH entry logged, not just how many: an inverted clmIsBenignUnmappedAccessType
+		// check (silencing SomethingUnrecognized and logging NoAccess instead) would still
+		// produce exactly 3 Debug entries, passing the assertions above on the exact bug this
+		// test exists to catch.
+		fields := e.ContextMap()
+		if got := fields["access_type"]; got != "SomethingUnrecognized" {
+			t.Errorf("expected the logged entry's access_type to be %q, got %q", "SomethingUnrecognized", got)
+		}
+		kind, _ := fields["principal_kind"].(string)
+		wantField, ok := wantFieldForKind[kind]
+		if !ok {
+			t.Errorf("unexpected principal_kind %q", kind)
+			continue
+		}
+		seenKind[kind] = true
+		if _, ok := fields[wantField]; !ok {
+			t.Errorf("expected principal_kind %q to carry the %q field, got fields %v", kind, wantField, fields)
+		}
+	}
+	for kind := range wantFieldForKind {
+		if !seenKind[kind] {
+			t.Errorf("expected one log entry with principal_kind %q (the branch that never fired)", kind)
+		}
+	}
+}
+
+// TestClmFolderBuilder_Grants_LogsDistinctlyForCustomAccessType confirms Custom gets its
+// own distinct Debug line, not silence like NoAccess/InheritFromParentFolder: unlike
+// those two, Custom represents a real, active grant this connector can't round-trip to
+// a single tier, so silencing it the same way would hide an actual access-visibility
+// gap rather than just an expected inert state.
+func TestClmFolderBuilder_Grants_LogsDistinctlyForCustomAccessType(t *testing.T) {
+	_, c := clmtest.NewServer(t)
+	ctx := context.Background()
+
+	if _, err := c.PatchFolderSecurity(ctx, "folder-templates", client.ClmFolderSecurityWrite{
+		Groups: []client.ClmGroupSecurityEntry{
+			{AccessType: client.ClmAccessTypeCustom, Href: "https://example.com/groups/group-x"},
+			{AccessType: client.ClmAccessTypeNoAccess, Href: "https://example.com/groups/group-y"},
+		},
+	}); err != nil {
+		t.Fatalf("PatchFolderSecurity (seed): %v", err)
+	}
+
+	core, logs := observer.New(zapcore.DebugLevel)
+	observedCtx := ctxzap.ToContext(ctx, zap.New(core))
+
+	b := newClmFolderBuilder(c)
+	folderResource, err := rs.NewResource("Templates", clmFolderResourceType, "folder-templates")
+	if err != nil {
+		t.Fatalf("NewResource: %v", err)
+	}
+
+	grants, _, err := b.Grants(observedCtx, folderResource, rs.SyncOpAttrs{})
+	if err != nil {
+		t.Fatalf("Grants: %v", err)
+	}
+	if len(grants) != 0 {
+		t.Fatalf("expected both entries to be skipped, got %d grants: %+v", len(grants), grants)
+	}
+
+	// Scoped to access_type-carrying entries only, like the sibling test above, so
+	// unrelated log traffic from the HTTP/cache layer underneath GetFolder can't leak
+	// into the count.
+	entries := logs.FilterFieldKey("access_type").All()
+	if len(entries) != 1 {
+		t.Fatalf("expected exactly 1 log entry (Custom; NoAccess should stay silent), got %d: %+v", len(entries), entries)
+	}
+	if entries[0].Level != zapcore.DebugLevel {
+		t.Errorf("expected the Custom-AccessType log to be at Debug, got %v", entries[0].Level)
+	}
+	if !strings.Contains(entries[0].Message, "Custom") {
+		t.Errorf("expected the log message to distinctly mention Custom, got %q", entries[0].Message)
+	}
+	if got := entries[0].ContextMap()["access_type"]; got != client.ClmAccessTypeCustom {
+		t.Errorf("expected access_type field to be %q, got %q", client.ClmAccessTypeCustom, got)
 	}
 }
 

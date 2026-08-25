@@ -9,9 +9,10 @@ import (
 )
 
 func TestClmRoleBuilder_List(t *testing.T) {
-	// Not backed by an API call — the mock server isn't even needed here, unlike every
-	// other CLM builder's List test.
-	b := newClmRoleBuilder(nil)
+	// The role set isn't backed by an API call at all — CLM availability is checked
+	// once, up front, by Connector.Validate() (see connector_test.go), not here — so
+	// this needs no client at all.
+	b := newClmRoleBuilder()
 	ctx := context.Background()
 
 	resources, res, err := b.List(ctx, nil, rs.SyncOpAttrs{})
@@ -32,7 +33,7 @@ func TestClmRoleBuilder_List(t *testing.T) {
 }
 
 func TestClmRoleBuilder_EntitlementsAndGrants_AreNoop(t *testing.T) {
-	b := newClmRoleBuilder(nil)
+	b := newClmRoleBuilder()
 	ctx := context.Background()
 
 	roleResource, err := rs.NewRoleResource("FullSubscriber", clmRoleResourceType, "FullSubscriber", nil)

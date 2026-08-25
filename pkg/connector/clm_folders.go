@@ -18,6 +18,14 @@ import (
 
 var _ connectorbuilder.StaticEntitlementSyncerV2 = (*clmFolderBuilder)(nil)
 
+// The three folder-security principal kinds, as passed to logSkippedFolderSecurityEntry
+// and (via the principal_kind field) queryable in logs.
+const (
+	clmFolderPrincipalKindGroup = "group"
+	clmFolderPrincipalKindRole  = "role"
+	clmFolderPrincipalKindUser  = "user"
+)
+
 // The 5 grantable Baton entitlement slugs for CLM folder security, in ascending order
 // of access.
 const (
@@ -74,10 +82,6 @@ func (f *clmFolderBuilder) List(ctx context.Context, _ *v2.ResourceId, attr rs.S
 		PageToken: pageToken,
 	})
 	if err != nil {
-		if attr.PageToken.Token == "" && isOptInFeatureUnavailableError(err) {
-			ctxzap.Extract(ctx).Info("baton-docusign: CLM is not available for this account or token, skipping clm_folder sync", zap.Error(err))
-			return nil, &rs.SyncOpResults{}, nil
-		}
 		return nil, nil, err
 	}
 
@@ -141,6 +145,8 @@ func (f *clmFolderBuilder) Grants(ctx context.Context, folderResource *v2.Resour
 	for _, entry := range folder.Security.Groups {
 		slug, ok := clmSlugForAccessType(entry.AccessType)
 		if !ok {
+			logSkippedFolderSecurityEntry(ctx, clmFolderPrincipalKindGroup, entry.AccessType,
+				zap.String("folder_id", folderResource.Id.Resource), zap.String("group_href", entry.Href))
 			continue
 		}
 		principalID := &v2.ResourceId{ResourceType: clmGroupResourceType.Id, Resource: clmIDFromHref(entry.Href)}
@@ -156,12 +162,17 @@ func (f *clmFolderBuilder) Grants(ctx context.Context, folderResource *v2.Resour
 	for _, entry := range folder.Security.Roles {
 		slug, ok := clmSlugForAccessType(entry.AccessType)
 		if !ok {
+			logSkippedFolderSecurityEntry(ctx, clmFolderPrincipalKindRole, entry.AccessType,
+				zap.String("folder_id", folderResource.Id.Resource), zap.String("role", entry.Item))
 			continue
 		}
 		if !clmIsKnownRole(entry.Item) {
 			// clm_role is a fixed, hardcoded 5-role list (clmRoleBuilder.List) — a role
 			// name outside that set has no synced principal to grant against. Skip
 			// rather than emit a grant to a dangling/unsynced resource.
+			ctxzap.Extract(ctx).Debug("baton-docusign: skipping CLM folder role-security entry for an unrecognized role",
+				zap.String("folder_id", folderResource.Id.Resource), zap.String("role", entry.Item), zap.String("access_type", entry.AccessType),
+				zap.String("principal_kind", clmFolderPrincipalKindRole))
 			continue
 		}
 		principalID := &v2.ResourceId{ResourceType: clmRoleResourceType.Id, Resource: entry.Item}
@@ -171,6 +182,8 @@ func (f *clmFolderBuilder) Grants(ctx context.Context, folderResource *v2.Resour
 	for _, entry := range folder.Security.Users {
 		slug, ok := clmSlugForAccessType(entry.AccessType)
 		if !ok {
+			logSkippedFolderSecurityEntry(ctx, clmFolderPrincipalKindUser, entry.AccessType,
+				zap.String("folder_id", folderResource.Id.Resource), zap.String("member_href", entry.Href))
 			continue
 		}
 		principalID := &v2.ResourceId{ResourceType: clmMemberResourceType.Id, Resource: clmIDFromHref(entry.Href)}
@@ -178,6 +191,28 @@ func (f *clmFolderBuilder) Grants(ctx context.Context, folderResource *v2.Resour
 	}
 
 	return grants, &rs.SyncOpResults{Annotations: annos}, nil
+}
+
+// logSkippedFolderSecurityEntry Debug-logs an unmapped folder-security AccessType.
+// Benign values (NoAccess / Inherit) return without logging; Custom logs as an
+// unrepresentable active grant. kind is "group"|"role"|"user".
+func logSkippedFolderSecurityEntry(ctx context.Context, kind, accessType string, fields ...zap.Field) {
+	if clmIsBenignUnmappedAccessType(accessType) {
+		// The common steady-state case (NoAccess/InheritFromParentFolder, on every
+		// folder of every sync) — return before this function's own append/log call.
+		// The caller's fields are already built by this point regardless.
+		return
+	}
+	fields = append(fields, zap.String("principal_kind", kind), zap.String("access_type", accessType))
+	if accessType == client.ClmAccessTypeCustom {
+		ctxzap.Extract(ctx).Debug(
+			"baton-docusign: skipping CLM folder security entry with an unrepresentable Custom AccessType — a real, active grant C1 won't see",
+			fields...)
+		return
+	}
+	ctxzap.Extract(ctx).Debug(
+		"baton-docusign: skipping CLM folder security entry with an unmapped AccessType",
+		fields...)
 }
 
 // Grant sets a folder-security entry for the principal at the entitlement's tier.
@@ -431,6 +466,17 @@ func clmSlugForAccessType(accessType string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// clmIsBenignUnmappedAccessType is true for NoAccess and InheritFromParentFolder —
+// inert AccessTypes Grants() skips without logging. Custom is not benign.
+func clmIsBenignUnmappedAccessType(accessType string) bool {
+	switch accessType {
+	case client.ClmAccessTypeNoAccess, client.ClmAccessTypeInherit:
+		return true
+	default:
+		return false
+	}
 }
 
 // clmIsKnownRole reports whether name is one of the 5 fixed CLM account-level roles

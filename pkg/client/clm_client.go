@@ -208,12 +208,6 @@ func (c *Client) ensureClmInitialized(ctx context.Context) error {
 		for k := range raw {
 			keys = append(keys, k)
 		}
-		// codes.FailedPrecondition (not a bare error, which status.Code() would read as
-		// codes.Unknown): a non-CLM account's discovery response plausibly has a
-		// different shape entirely (e.g. a bare account object with none of the
-		// candidate fields), so isOptInFeatureUnavailableError needs a recognizable
-		// code to tolerate this specific failure the same way it tolerates 401/403 —
-		// see that function's doc in helper.go.
 		return status.Errorf(codes.FailedPrecondition, "baton-docusign: CLM account discovery response at %s did not contain a recognized "+
 			"base-URL field (checked %v); response contained these fields instead: %v", discoveryURL, clmBaseURLCandidateFields, keys)
 	}
@@ -221,6 +215,16 @@ func (c *Client) ensureClmInitialized(ctx context.Context) error {
 	c.clmBaseURI = baseURL
 	c.clmBaseURIReady = true
 	return nil
+}
+
+// EnsureClmReady exposes the CLM-readiness check every other CLM client method runs
+// internally before its real request, for callers with no CLM endpoint of their own
+// that still need to detect CLM availability — namely Connector.Validate() (see
+// pkg/connector/connector.go), which runs this once, up front, before any CLM
+// builder's List() executes. Memoized after the first successful call, same as every
+// other CLM method — see ensureClmInitialized.
+func (c *Client) EnsureClmReady(ctx context.Context) error {
+	return c.ensureClmReady(ctx)
 }
 
 // clmExtractBaseURLField scans a CLM account discovery response for the first
