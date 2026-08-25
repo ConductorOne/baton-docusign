@@ -148,7 +148,7 @@ func (b *userBuilder) getPermissionProfiles(ctx context.Context, syncID string) 
 		b.permissionProfilesTransientFails = 0
 	}
 
-	profiles, _, err := b.client.GetPermissionProfiles(ctx)
+	profiles, _, err := b.client.GetPermissionProfilesFresh(ctx)
 	if err != nil && !isCacheablePermissionProfilesError(err) {
 		if isReclassifiedRateLimitError(err) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return nil, err
@@ -313,12 +313,12 @@ func newPermissionProfileGrant(permissionProfileID string, userID *v2.ResourceId
 // over budget — exactly the amplification this fix exists to reduce. handled=true with a
 // nil err means the grant was resolved.
 //
-// Never forwards GetPermissionProfiles' annotations: after the first real call in a
-// sync, repeat calls are served from uhttp's GET cache, which replays that first
-// response's rate-limit snapshot verbatim — forwarding it on every subsequent active
-// user would feed the SDK's self-throttling rate limiter a frozen, increasingly stale
-// signal instead of the fresh per-request data GetUserDetails supplied before this fast
-// path existed.
+// Never forwards GetPermissionProfilesFresh's annotations: getPermissionProfiles'
+// memoization (see its doc) already limits this builder to exactly one real call per
+// sync, so its rate-limit snapshot is one sample from one point in the sync, not
+// representative of per-user request pacing — forwarding it on every active user would
+// feed the SDK's self-throttling rate limiter that single frozen signal instead of the
+// fresh per-request data GetUserDetails supplied before this fast path existed.
 func (b *userBuilder) tryFastPathGrant(ctx context.Context, resource *v2.Resource, userID *v2.ResourceId, syncID string) (*v2.Grant, annotations.Annotations, error, bool) {
 	profile := rs.GetProfile(resource)
 

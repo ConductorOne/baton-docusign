@@ -635,18 +635,32 @@ func (c *Client) GetUserByEmail(ctx context.Context, userEmail string) (*User, a
 	return &user, annos, nil
 }
 
-// GetPermissionProfiles fetches all permission profiles from the DocuSign account.
+// GetPermissionProfiles fetches all permission profiles from the DocuSign account. The
+// response may be served from the shared HTTP GET cache — fine for List/Revoke, neither
+// of which memoizes across syncs the way userBuilder does (see GetPermissionProfilesFresh).
 //
 // Pagination: This endpoint does NOT support pagination. It returns all permission profiles in a single request.
 // Typically, DocuSign accounts have a limited number of permission profiles (< 50), so this is acceptable.
 //
 // Returns: all permission profiles, annotations, error.
-// GetPermissionProfiles bypasses the shared HTTP GET cache: userBuilder calls this at
-// most once per sync (see its memoization fields' doc in pkg/connector/users.go), so by
-// the time this request fires, that caller has already decided a fresh call is needed —
-// a cached response here could only ever serve a stale snapshot left over from a
-// previous sync on the same long-lived connector process, never save a real call.
 func (c *Client) GetPermissionProfiles(ctx context.Context) ([]PermissionProfile, annotations.Annotations, error) {
+	return c.getPermissionProfiles(ctx, false)
+}
+
+// GetPermissionProfilesFresh is identical to GetPermissionProfiles but bypasses the
+// shared HTTP GET cache. userBuilder calls this at most once per sync (see its
+// memoization fields' doc in pkg/connector/users.go), so by the time this request
+// fires, that caller has already decided a fresh call is needed — a cached response
+// here could only ever serve a stale snapshot left over from a previous sync on the
+// same long-lived connector process, never save a real call. List and Revoke don't
+// share that risk (neither memoizes this call across syncs), and sharing uhttp's cache
+// with them when both fire in the same sync saves a real network call — so only this
+// path opts out of it, not GetPermissionProfiles itself.
+func (c *Client) GetPermissionProfilesFresh(ctx context.Context) ([]PermissionProfile, annotations.Annotations, error) {
+	return c.getPermissionProfiles(ctx, true)
+}
+
+func (c *Client) getPermissionProfiles(ctx context.Context, noCache bool) ([]PermissionProfile, annotations.Annotations, error) {
 	if err := c.ensureInitialized(ctx); err != nil {
 		return nil, nil, err
 	}
@@ -660,7 +674,11 @@ func (c *Client) GetPermissionProfiles(ctx context.Context) ([]PermissionProfile
 
 	permissionProfilesURL = baseURL.ResolveReference(permissionProfilesURL)
 
-	_, annos, err := c.doRequest(ctx, http.MethodGet, permissionProfilesURL, nil, &permissionProfilesResponse, uhttp.WithNoCache())
+	var extraOpts []uhttp.RequestOption
+	if noCache {
+		extraOpts = append(extraOpts, uhttp.WithNoCache())
+	}
+	_, annos, err := c.doRequest(ctx, http.MethodGet, permissionProfilesURL, nil, &permissionProfilesResponse, extraOpts...)
 	if err != nil {
 		return nil, nil, err
 	}

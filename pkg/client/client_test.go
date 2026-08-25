@@ -273,3 +273,74 @@ func TestMultiAccountResourceIsolation(t *testing.T) {
 		}
 	}
 }
+
+// newCountingPermissionProfilesClient wires a Client to a mock server that counts real
+// GET /permission_profiles hits, to distinguish a real network call from one served by
+// uhttp's shared GET cache.
+func newCountingPermissionProfilesClient(t *testing.T) (*Client, *int) {
+	t.Helper()
+	calls := 0
+
+	mockServer := httptest.NewServer(nil)
+	t.Cleanup(mockServer.Close)
+	mockServer.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == "/oauth/userinfo":
+			_ = json.NewEncoder(w).Encode(UserInfoResponse{
+				Sub: "service-account-user-id",
+				Accounts: []AccountInfo{
+					{AccountId: "acct-1", AccountName: "Acme", BaseURI: mockServer.URL, IsDefault: true},
+				},
+			})
+		case strings.HasSuffix(r.URL.Path, "/permission_profiles"):
+			calls++
+			_ = json.NewEncoder(w).Encode(PermissionProfilesResponse{
+				PermissionProfiles: []PermissionProfile{{PermissionProfileId: "pp-1", PermissionProfileName: "DocuSign Admin"}},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	})
+
+	mockServerURL, _ := url.Parse(mockServer.URL)
+	transport := &rewriteTransport{target: mockServerURL, base: http.DefaultTransport}
+	wrapper := uhttp.NewBaseHttpClient(&http.Client{Transport: transport})
+	tokenSource := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "test-token"})
+	return NewClient(context.Background(), false, tokenSource, "", "", wrapper), &calls
+}
+
+// TestGetPermissionProfiles_CachingSplitByCaller is a regression test for a review
+// finding: GetPermissionProfiles used to unconditionally bypass uhttp's GET cache for
+// every caller, but List and Revoke (unlike userBuilder) don't memoize this call across
+// syncs — sharing the cache between them when both fire in the same sync saves a real
+// network call, and unconditional WithNoCache() silently turned that 1 call into 2.
+// GetPermissionProfiles must still be cacheable; only GetPermissionProfilesFresh (the
+// dedicated variant for userBuilder's cross-sync-safe memoization) bypasses the cache.
+func TestGetPermissionProfiles_CachingSplitByCaller(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("GetPermissionProfiles is cacheable: two calls, one real request", func(t *testing.T) {
+		c, calls := newCountingPermissionProfilesClient(t)
+		for i := 0; i < 2; i++ {
+			if _, _, err := c.GetPermissionProfiles(ctx); err != nil {
+				t.Fatalf("call %d: %v", i, err)
+			}
+		}
+		if *calls != 1 {
+			t.Errorf("expected 1 real request across 2 GetPermissionProfiles calls (cache should serve the second), got %d", *calls)
+		}
+	})
+
+	t.Run("GetPermissionProfilesFresh always issues a real request", func(t *testing.T) {
+		c, calls := newCountingPermissionProfilesClient(t)
+		for i := 0; i < 2; i++ {
+			if _, _, err := c.GetPermissionProfilesFresh(ctx); err != nil {
+				t.Fatalf("call %d: %v", i, err)
+			}
+		}
+		if *calls != 2 {
+			t.Errorf("expected 2 real requests across 2 GetPermissionProfilesFresh calls (no caching), got %d", *calls)
+		}
+	})
+}
