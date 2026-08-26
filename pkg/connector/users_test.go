@@ -483,7 +483,7 @@ func TestUserBuilder_Grants_CollapsesRateLimitBurstWithinTTL(t *testing.T) {
 
 	const attempts = 5
 	for i := 0; i < attempts; i++ {
-		_, _, err := b.Grants(context.Background(), resource, rs.SyncOpAttrs{})
+		_, _, err := b.Grants(context.Background(), resource, rs.SyncOpAttrs{SyncID: "sync-1"})
 		if err == nil {
 			t.Fatalf("call %d: expected Grants to propagate the rate-limit error, got nil", i)
 		}
@@ -517,7 +517,7 @@ func TestUserBuilder_Grants_RateLimitTTLExpiryAllowsFreshRetry(t *testing.T) {
 	b := newUserBuilder(c, false)
 	resource := userResourceWithProfile(t, "user-1", userStatusActive, "DocuSign Admin")
 
-	if _, _, err := b.Grants(context.Background(), resource, rs.SyncOpAttrs{}); err == nil {
+	if _, _, err := b.Grants(context.Background(), resource, rs.SyncOpAttrs{SyncID: "sync-1"}); err == nil {
 		t.Fatal("expected the first call to propagate the rate-limit error, got nil")
 	}
 	if got := atomic.LoadInt32(permissionProfilesCalls); got != 1 {
@@ -528,7 +528,7 @@ func TestUserBuilder_Grants_RateLimitTTLExpiryAllowsFreshRetry(t *testing.T) {
 	b.permissionProfilesRateLimitedUntil = time.Now().Add(-time.Second)
 	b.permissionProfilesMu.Unlock()
 
-	if _, _, err := b.Grants(context.Background(), resource, rs.SyncOpAttrs{}); err == nil {
+	if _, _, err := b.Grants(context.Background(), resource, rs.SyncOpAttrs{SyncID: "sync-1"}); err == nil {
 		t.Fatal("expected the post-TTL call to still propagate the rate-limit error, got nil")
 	}
 	if got := atomic.LoadInt32(permissionProfilesCalls); got != 2 {
@@ -567,6 +567,41 @@ func TestUserBuilder_Grants_DoesNotMemoizeServiceUnavailableFailure(t *testing.T
 	}
 }
 
+// TestUserBuilder_Grants_EmptySyncIDDisablesCache is a regression test: SyncOpAttrs.SyncID
+// is only threaded through when baton-sdk's own version check passes (see the
+// memoization fields' doc on userBuilder). If it doesn't, every Grants() call arrives with
+// syncID == "", and permissionProfilesSyncID's zero value is also "" — so, without an
+// explicit guard, the cache's own mismatch check would never distinguish sync boundaries
+// again after the first write, silently reverting to the exact process-lifetime
+// memoization bug this SyncID-keying exists to fix. Even with a normally-cacheable
+// (successful) response, every call with syncID == "" must still reach the real endpoint.
+func TestUserBuilder_Grants_EmptySyncIDDisablesCache(t *testing.T) {
+	c, permissionProfilesCalls := newCountingPermissionProfilesClient(t, func(w http.ResponseWriter) {
+		_ = json.NewEncoder(w).Encode(client.PermissionProfilesResponse{
+			PermissionProfiles: []client.PermissionProfile{
+				{PermissionProfileId: "pp-1", PermissionProfileName: "DocuSign Admin"},
+			},
+		})
+	})
+
+	b := newUserBuilder(c, false)
+	resource := userResourceWithProfile(t, "user-1", userStatusActive, "DocuSign Admin")
+
+	for i := 0; i < 3; i++ {
+		grants, _, err := b.Grants(context.Background(), resource, rs.SyncOpAttrs{})
+		if err != nil {
+			t.Fatalf("call %d: Grants: %v", i, err)
+		}
+		if len(grants) != 1 || grants[0].Entitlement.Resource.Id.Resource != "pp-1" {
+			t.Errorf("call %d: expected the fast path to resolve pp-1, got %+v", i, grants)
+		}
+	}
+
+	if got := atomic.LoadInt32(permissionProfilesCalls); got != 3 {
+		t.Errorf("expected GetPermissionProfiles to be called on every Grants call (3 calls) when SyncID is empty, got %d — the per-sync cache must be disabled, not silently keyed on \"\"", got)
+	}
+}
+
 // TestUserBuilder_Grants_BoundsTransientFailureRetries is a regression test for the
 // worst case of leaving transient failures uncached: without a cap, a *sustained*
 // outage (not just a blip) would cost every Active user in the sync two calls (the
@@ -586,7 +621,7 @@ func TestUserBuilder_Grants_BoundsTransientFailureRetries(t *testing.T) {
 
 	const totalUsers = permissionProfilesTransientFailureThreshold + 2
 	for i := 0; i < totalUsers; i++ {
-		grants, _, err := b.Grants(context.Background(), resource, rs.SyncOpAttrs{})
+		grants, _, err := b.Grants(context.Background(), resource, rs.SyncOpAttrs{SyncID: "sync-1"})
 		if err != nil {
 			t.Fatalf("call %d: Grants: %v", i, err)
 		}
@@ -723,7 +758,7 @@ func TestUserBuilder_Grants_MemoizesPermissionProfilesFailureAcrossUsers(t *test
 	b := newUserBuilder(c, false)
 	for _, userID := range []string{"user-1", "user-2"} {
 		resource := userResourceWithProfile(t, userID, userStatusActive, "DocuSign Admin")
-		grants, _, err := b.Grants(context.Background(), resource, rs.SyncOpAttrs{})
+		grants, _, err := b.Grants(context.Background(), resource, rs.SyncOpAttrs{SyncID: "sync-1"})
 		if err != nil {
 			t.Fatalf("Grants(%s): %v", userID, err)
 		}

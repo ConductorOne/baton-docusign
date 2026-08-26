@@ -80,14 +80,15 @@ type userBuilder struct {
 	// collapses a same-instant concurrent burst into a single real call while still
 	// expiring well before the SDK's own ~60s per-action retry cadence, so a genuine later
 	// retry always gets a fresh check rather than being blocked by a stale cached failure.
-	permissionProfilesMu               sync.Mutex
-	permissionProfilesSyncID           string
-	permissionProfilesCached           bool
-	permissionProfiles                 []client.PermissionProfile
-	permissionProfilesErr              error
-	permissionProfilesTransientFails   int
-	permissionProfilesRateLimitedUntil time.Time
-	permissionProfilesRateLimitedErr   error
+	permissionProfilesMu                sync.Mutex
+	permissionProfilesSyncID            string
+	permissionProfilesCached            bool
+	permissionProfiles                  []client.PermissionProfile
+	permissionProfilesErr               error
+	permissionProfilesTransientFails    int
+	permissionProfilesRateLimitedUntil  time.Time
+	permissionProfilesRateLimitedErr    error
+	permissionProfilesEmptySyncIDLogged bool
 }
 
 // permissionProfilesTransientFailureThreshold is how many consecutive transient
@@ -193,6 +194,24 @@ func (b *userBuilder) getPermissionProfiles(ctx context.Context, syncID string) 
 	}
 	b.permissionProfilesMu.Lock()
 	defer b.permissionProfilesMu.Unlock()
+
+	if syncID == "" {
+		// baton-sdk only threads a real SyncID through when its own version check
+		// passes (see the struct doc above); when it doesn't, every call arrives with
+		// syncID == "" and permissionProfilesSyncID's zero value is also "" — so the
+		// mismatch check below would never fire again after the first cache write,
+		// silently reverting to the exact process-lifetime memoization bug this
+		// SyncID-keying was added to fix, just without ever saying so. Refuse to
+		// memoize at all in that case instead: every call is a real one (the
+		// pre-fast-path cost), which is correct if slower, and log it once per
+		// process so the condition is observable rather than a silent regression.
+		if !b.permissionProfilesEmptySyncIDLogged {
+			b.permissionProfilesEmptySyncIDLogged = true
+			ctxzap.Extract(ctx).Debug("baton-docusign: SyncOpAttrs.SyncID is empty, disabling the permission-profiles per-sync cache",
+				zap.String("effect", "falls back to one real call per Active user instead of one per sync"))
+		}
+		return b.client.GetPermissionProfilesFresh(ctx)
+	}
 
 	if b.permissionProfilesCached && b.permissionProfilesSyncID == syncID {
 		return b.permissionProfiles, nil, b.permissionProfilesErr
