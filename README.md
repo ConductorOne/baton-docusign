@@ -144,16 +144,18 @@ upfront CLM-readiness check runs once, before any resource type's `List()` and b
 platform filter is applied to anything — a known, reviewed, and deliberately accepted gap,
 not an oversight.
 
-Within `List()` itself (once `Validate()` has passed and a sync is actually running), CLM
-unavailability is tolerated differently across the 6 types: `clm_member`, `clm_group`,
-`clm_permission_set`, and `clm_folder` skip gracefully on the first page if the account
-can't reach CLM; `clm_role` makes no API call at all (a hardcoded set), so the question
-doesn't arise; and **`clm_workflow_queue` is the deliberate exception that encounters the
-same error but does not tolerate it** — it fails the sync loudly instead, since C1's
-opt-in toggle for it doesn't validate the underlying DocuSign account first, so an
-account that opted in but can't reach CLM is a misconfiguration to surface, not a state
-to tolerate silently. See `pkg/connector/helper.go`'s `isOptInFeatureUnavailableError`
-doc for the full reasoning.
+Within `List()` itself (once `Validate()` has passed and a sync is actually running), none
+of the 6 CLM resource types carry their own CLM-availability tolerance logic anymore —
+that responsibility now lives entirely in `Connector.Validate()`'s upfront
+`EnsureClmReady()` gate (see above), which runs once, before any CLM builder's `List()`
+executes. `clm_member`, `clm_group`, `clm_permission_set`, `clm_folder`, and
+`clm_workflow_queue` all behave identically here: if `Validate()` passed, their `List()`
+bodies just call the API and propagate whatever error comes back, same as any other
+resource type; `clm_role` still makes no API call at all (a hardcoded set). An earlier
+version of this connector had each CLM builder run its own per-type tolerance check
+instead (with `clm_workflow_queue` as a deliberate exception that failed loud where the
+others didn't) — that logic has been removed now that `Validate()` covers it once, upfront,
+for all 6 types uniformly.
 
 CLM permission sets sync for visibility only — DocuSign's CLM API has no endpoint to
 assign or unassign a permission set, so they cannot be granted or revoked through this
@@ -163,10 +165,15 @@ CLM workflow queues (`clm_workflow_queue`) map to what the CLM admin console rep
 calls "Task Groups" — that equivalence is an unconfirmed assumption, not a documented
 fact, since no live CLM admin console was available to check it against. The CLM API has
 no list-all endpoint for workflow queues and no reverse lookup from a queue to its
-members, so this connector discovers them by scanning every `clm_member`'s own workflow
-queues and deduping — one `GET .../members/{id}/workflowqueues` call per CLM member on
-every sync, on top of the member sync itself, which is meaningful request volume on
-large accounts. Workflow queue
+members, so `clm_workflow_queue` is modeled as `clm_member`'s `ChildResourceType`
+(`pkg/connector/resource_types.go`) rather than syncing independently: the SDK calls
+`clmWorkflowQueueBuilder.List()` once per synced CLM member automatically, and that call
+does one `GET .../members/{id}/workflowqueues` for that member — no session store, no
+independent pagination, and no member-scanning/deduping logic of its own. Membership
+grants are emitted from the member side (`clmMemberBuilder.Grants()`) rather than from
+`clm_workflow_queue` itself, since CLM only exposes this relationship per member. That
+means `GetMemberWorkflowQueues` runs twice per member per sync (once in child-resource
+`List()`, once in `Grants()`) — an accepted tradeoff of this design. Workflow queue
 membership syncs for visibility only — the API supports work-item assign/unassign,
 not queue-membership grant/revoke, so it cannot be granted or revoked through this
 connector.

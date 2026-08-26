@@ -11,6 +11,8 @@ import (
 
 	"github.com/conductorone/baton-docusign/pkg/client/clmtest"
 	cfg "github.com/conductorone/baton-docusign/pkg/config"
+	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
+	"github.com/conductorone/baton-sdk/pkg/annotations"
 	"github.com/conductorone/baton-sdk/pkg/cli"
 	"golang.org/x/oauth2"
 	"gopkg.in/yaml.v3"
@@ -34,6 +36,28 @@ var alwaysRegisteredTypeIDs = []string{
 	"clm_permission_set",
 	"clm_folder",
 	"clm_workflow_queue",
+}
+
+// TestClmMemberResourceType_HasWorkflowQueueChildResourceType pins the annotation that
+// drives clm_workflow_queue's whole redesign: clm_workflow_queue is modeled as
+// clmMemberResourceType's ChildResourceType (see resource_types.go's doc and
+// clm_workflow_queues.go) rather than syncing independently, so the SDK's child-resource
+// scheduling can call clmWorkflowQueueBuilder.List() once per synced clm_member. A
+// missing or misconfigured annotation here would silently stop that scheduling from ever
+// firing, with no compile-time signal.
+func TestClmMemberResourceType_HasWorkflowQueueChildResourceType(t *testing.T) {
+	annos := annotations.Annotations(clmMemberResourceType.Annotations)
+	var child v2.ChildResourceType
+	ok, err := annos.Pick(&child)
+	if err != nil {
+		t.Fatalf("Pick(ChildResourceType): %v", err)
+	}
+	if !ok {
+		t.Fatal("expected clmMemberResourceType to carry a ChildResourceType annotation")
+	}
+	if child.ResourceTypeId != clmWorkflowQueueResourceType.Id {
+		t.Errorf("expected ChildResourceType.ResourceTypeId %q, got %q", clmWorkflowQueueResourceType.Id, child.ResourceTypeId)
+	}
 }
 
 func registeredTypeIDs(ctx context.Context, d *Connector) map[string]bool {

@@ -256,6 +256,26 @@ func (s *Server) AddMemberWithoutHref(memberID string) {
 	s.memberOrder = append(s.memberOrder, memberID)
 }
 
+// AddMemberWorkflowQueueWithEmptyHref seeds a new member (not part of the default seed)
+// with a single workflow-queue membership whose Href is empty — clmIDFromHref then
+// reports an empty ID for it, exercising clm_workflow_queue.List()'s skip-unusable-ID
+// guard for one queue within an otherwise normal member scan. Mirrors
+// AddMemberWithoutHref's equivalent case at the member level. Call after NewServer
+// returns.
+func (s *Server) AddMemberWorkflowQueueWithEmptyHref(memberID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	member := &client.ClmMember{Email: memberID + "@example.com", UserName: memberID}
+	member.Href = s.MemberHref(memberID)
+	s.members[memberID] = member
+	s.memberOrder = append(s.memberOrder, memberID)
+
+	const queueID = "queue-no-href"
+	s.workflowQueues[queueID] = &client.ClmWorkflowQueue{Name: "No Href Queue"} // Href intentionally empty
+	s.memberWorkflowQueues[memberID] = []string{queueID}
+}
+
 // LastPatchedMemberGroupHrefs returns the raw Href strings the most recent PATCH
 // .../members/{id} request body carried for memberID — unlike MemberGroups (which
 // reduces everything to the trailing ID via idFromHref, the same as the real API's own

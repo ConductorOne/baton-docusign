@@ -2,15 +2,18 @@ package connector
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/conductorone/baton-docusign/pkg/client"
 	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
+	"github.com/conductorone/baton-sdk/pkg/types/grant"
 	rs "github.com/conductorone/baton-sdk/pkg/types/resource"
 )
 
 // clmMemberBuilder syncs CLM Members — CLM's own principal object. Synced as its own
 // resource type rather than reused as the existing `user` resource: identity between
-// the two could not be confirmed 1:1.
+// the two could not be confirmed 1:1. Also emits clm_workflow_queue membership grants
+// from Grants() — see that method's doc comment for why the principal side owns them.
 type clmMemberBuilder struct {
 	resourceType *v2.ResourceType
 	client       *client.Client
@@ -63,11 +66,34 @@ func (b *clmMemberBuilder) Entitlements(_ context.Context, _ *v2.Resource, _ rs.
 	return nil, nil, nil
 }
 
-// Grants: membership/permission grants are emitted from the entitlement-holder's side
-// (clm_group, clm_folder) rather than here, per this project's own validated pattern
-// for emitting grants from whichever side is cheapest.
-func (b *clmMemberBuilder) Grants(_ context.Context, _ *v2.Resource, _ rs.SyncOpAttrs) ([]*v2.Grant, *rs.SyncOpResults, error) {
-	return nil, nil, nil
+// Grants emits this member's clm_workflow_queue membership — the one exception to this
+// project's usual "emit from the entitlement-holder's side" pattern (clm_group,
+// clm_folder do that instead). CLM's API only exposes workflow-queue membership per
+// member (GetMemberWorkflowQueues), not per-queue, so the principal side is the only
+// side that can produce this. clmWorkflowQueueBuilder.List() (this member's child-resource
+// sync) makes the same GetMemberWorkflowQueues call earlier in the sync to discover queue
+// resources; this Grants() call repeats it once per member — an accepted 2x tradeoff of
+// the ChildResourceType design (no session store between List and Grants phases).
+func (b *clmMemberBuilder) Grants(ctx context.Context, resource *v2.Resource, _ rs.SyncOpAttrs) ([]*v2.Grant, *rs.SyncOpResults, error) {
+	memberID := resource.Id.Resource
+
+	queues, annos, err := b.client.GetMemberWorkflowQueues(ctx, memberID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("baton-docusign: getting CLM workflow queues for member %s: %w", memberID, err)
+	}
+
+	grants := make([]*v2.Grant, 0, len(queues))
+	for _, q := range queues {
+		queueID := clmIDFromHref(q.Href)
+		if queueID == "" {
+			logSkippedClmWorkflowQueueWithEmptyHref(ctx, memberID, q.Href)
+			continue
+		}
+		queueResourceID := &v2.ResourceId{ResourceType: clmWorkflowQueueResourceType.Id, Resource: queueID}
+		grants = append(grants, grant.NewGrant(&v2.Resource{Id: queueResourceID}, entitlementClmWorkflowQueueMember, resource.Id))
+	}
+
+	return grants, &rs.SyncOpResults{Annotations: annos}, nil
 }
 
 func newClmMemberBuilder(c *client.Client) *clmMemberBuilder {
@@ -81,6 +107,12 @@ func newClmMemberBuilder(c *client.Client) *clmMemberBuilder {
 // kept in the profile both for display and as the preferred sample href for Grant;
 // Grant falls back to client.MemberHref when it's absent, since neither a profile nor
 // an annotation is guaranteed to survive to where it's needed.
+//
+// Stamps the ChildResourceType annotation on every instance, mirroring the one declared
+// on clmMemberResourceType itself — the SDK's child-resource scheduling
+// (childResourceTypeIDs, pkg/sync/syncer.go) reads it off each resource instance, not
+// the type declaration, so this is what actually triggers a clm_workflow_queue.List()
+// call per member.
 func parseIntoClmMemberResource(member *client.ClmMember) (*v2.Resource, error) {
 	profile := map[string]any{
 		profileFieldEmail:    member.Email,
@@ -106,5 +138,6 @@ func parseIntoClmMemberResource(member *client.ClmMember) (*v2.Resource, error) 
 		clmIDFromHref(member.Href),
 		userTraits,
 		rs.WithResourceProfile(profile),
+		rs.WithAnnotation(&v2.ChildResourceType{ResourceTypeId: clmWorkflowQueueResourceType.Id}),
 	)
 }

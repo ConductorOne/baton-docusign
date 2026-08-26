@@ -41,52 +41,6 @@ func parsePageToken(i string, resourceID *v2.ResourceId) (*pagination.Bag, strin
 	return b, b.PageToken(), nil
 }
 
-// isOptInFeatureUnavailableError reports whether err indicates this account/token
-// simply can't use an optional DocuSign feature — no subscription (CLM), the feature
-// isn't enabled on the account (signing groups), or the OAuth token lacks the scopes it
-// needs (CLM's spring_read/spring_write — see oauth.go) — rather than an unexpected
-// failure.
-//
-// All 6 CLM resource types (and signing_group's List() has the same shape of check)
-// are registered unconditionally in ResourceSyncers() and their List() bodies always
-// run, with no config flag gating them, specifically so that a resource type never
-// disappears from a later sync and gets treated as fully deleted. Four of them
-// (clm_member, clm_group, clm_permission_set, clm_folder) tolerate this error on the
-// first page of List() (see call sites), which is what makes unconditional
-// registration safe for those four: the sync skips that one resource type gracefully
-// instead of failing outright. clm_role makes no API call at all in List() (a
-// hardcoded set, see clm_roles.go), so it can't encounter this error either way.
-// clm_workflow_queue is the deliberate exception that does encounter it but does not
-// tolerate it — see clm_workflow_queues.go's List() doc for why it fails loud instead.
-//
-// Covers four codes, each tied to a specific confirmed failure mode of
-// ensureClmInitialized's CLM base-URL discovery call (clm_client.go) — the first thing
-// every CLM builder's List() does, now unconditionally:
-//   - PermissionDenied/Unauthenticated: the account/token lacks the CLM subscription
-//     or OAuth scope — the expected case for most eSignature-only accounts.
-//   - NotFound: the discovery endpoint 404s for an account that was never provisioned
-//     in the legacy SpringCM system CLM discovery still runs through.
-//   - FailedPrecondition: ensureClmInitialized wraps its "response didn't contain a
-//     recognized base-URL field" error with this code specifically — a non-CLM
-//     account's discovery response plausibly has a different shape entirely (no CLM
-//     fields at all), which would otherwise surface as an unrecognized codes.Unknown
-//     and fail the whole sync.
-//
-// Deliberately still doesn't cover codes.Unknown itself (an un-coded, unwrapped error)
-// or 5xx/transport failures (codes.Unavailable/DeadlineExceeded/etc.) — those stay
-// loud, since they're as likely to indicate a real outage or bug as a no-CLM account,
-// and swallowing them broadly would hide genuine failures. Every other resource type
-// (user, group, permission_profile) is always attempted and does not tolerate this
-// error at all, so a truly broken token still fails the sync via those.
-func isOptInFeatureUnavailableError(err error) bool {
-	switch status.Code(err) {
-	case codes.PermissionDenied, codes.Unauthenticated, codes.NotFound, codes.FailedPrecondition:
-		return true
-	default:
-		return false
-	}
-}
-
 // clmIDFromHref extracts the trailing path segment from a CLM object's Href — see
 // client.IDFromHref's doc. pkg/client/clmtest can't import pkg/connector, so the single
 // definition lives in pkg/client and both packages delegate to it instead of
@@ -213,4 +167,12 @@ func clmSampleHrefsFrom[T any](principal *v2.Resource, entries []T, hrefOf func(
 		}
 	}
 	return sampleHrefs
+}
+
+// logSkippedClmWorkflowQueueWithEmptyHref Debug-logs a workflow-queue entry whose Href
+// does not resolve to a usable native ID — the queue is skipped rather than synced/granted
+// with an empty resource ID.
+func logSkippedClmWorkflowQueueWithEmptyHref(ctx context.Context, memberID, queueHref string) {
+	ctxzap.Extract(ctx).Debug("baton-docusign: skipping CLM workflow queue with an empty Href-derived ID",
+		zap.String("member_id", memberID), zap.String("queue_href", queueHref))
 }

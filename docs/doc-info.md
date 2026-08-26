@@ -50,7 +50,7 @@
    - When using ConductorOne's managed OAuth app (the default cloud-hosted authentication method), CLM also requires that managed app to be granted the CLM API scope on ConductorOne's platform side — this is outside the connector's own configuration. Self-hosted or demo-environment setups using a customer-supplied DocuSign app do not have this extra requirement.
    - CLM permission sets sync for visibility only; DocuSign's CLM API has no endpoint to assign or unassign one, so they cannot be granted or revoked.
    - CLM members are synced as their own resource type rather than merged into the existing eSignature "Users" resource, since the two could not be confirmed to represent the same identity.
-   - CLM workflow queues also sync for visibility only — the API supports work-item assign/unassign, not queue-membership grant/revoke. There's no list-all endpoint for queues, so the connector discovers them by checking every CLM member's own queue membership — one extra API call per member on top of the member sync itself.
+   - CLM workflow queues also sync for visibility only — the API supports work-item assign/unassign, not queue-membership grant/revoke. There's no list-all endpoint for queues, so they're modeled as a child resource of CLM members: the SDK calls `clmWorkflowQueueBuilder.List()` once per synced member automatically, and membership grants are emitted from `clmMemberBuilder.Grants()`. Each member therefore triggers two `GetMemberWorkflowQueues` calls per sync (child-resource List + Grants) — an accepted tradeoff of this design.
 
 ---
 
