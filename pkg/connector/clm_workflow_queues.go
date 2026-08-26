@@ -65,7 +65,7 @@ func (b *clmWorkflowQueueBuilder) List(ctx context.Context, parentResourceID *v2
 			logSkippedClmWorkflowQueueWithEmptyHref(ctx, parentResourceID.Resource, q.Href)
 			continue
 		}
-		queueResource, err := parseIntoClmWorkflowQueueResource(&q, parentResourceID)
+		queueResource, err := parseIntoClmWorkflowQueueResource(&q)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -108,10 +108,10 @@ func newClmWorkflowQueueBuilder(c *client.Client) *clmWorkflowQueueBuilder {
 }
 
 // parseIntoClmWorkflowQueueResource maps a client.ClmWorkflowQueue to a Baton v2.Resource.
-// parentResourceID is the member whose List() call discovered this queue — used only for
-// logging context in callers; it is not stamped as ParentResourceId because a queue can
-// belong to several members and the parent would be last-writer-wins across syncs.
-func parseIntoClmWorkflowQueueResource(q *client.ClmWorkflowQueue, _ *v2.ResourceId) (*v2.Resource, error) {
+// No ParentResourceId is stamped: a queue can belong to several members, so the
+// discovering member's ID would be last-writer-wins across syncs rather than a stable
+// canonical parent.
+func parseIntoClmWorkflowQueueResource(q *client.ClmWorkflowQueue) (*v2.Resource, error) {
 	return rs.NewGroupResource(
 		q.Name,
 		clmWorkflowQueueResourceType,
