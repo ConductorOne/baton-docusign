@@ -235,7 +235,7 @@ func New(ctx context.Context, docusignCfg *cfg.Docusign, opts *cli.ConnectorOpts
 	includeWorkflowQueues := opts.WillSyncResourceType(clmWorkflowQueueResourceType.Id)
 
 	if includeWorkflowQueues && !opts.WillSyncResourceType(clmMemberResourceType.Id) {
-		l.Warn("clm_workflow_queue is enabled but clm_member is not — workflow queues are discovered per member, so this sync will produce zero queues and zero grants")
+		l.Debug("baton-docusign: clm_workflow_queue is enabled but clm_member is not — workflow queues are discovered per member, so this sync will produce zero queues and zero grants")
 	}
 
 	if opts.TokenSource != nil {
