@@ -10,8 +10,8 @@ import (
 	"github.com/conductorone/baton-sdk/pkg/connectorbuilder"
 	"github.com/conductorone/baton-sdk/pkg/types/grant"
 	rs "github.com/conductorone/baton-sdk/pkg/types/resource"
-	"github.com/grpc-ecosystem/go-grpc-middleware/logging/zap/ctxzap"
-	"go.uber.org/zap"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 var _ connectorbuilder.StaticEntitlementSyncerV2 = (*clmGroupBuilder)(nil)
@@ -51,10 +51,6 @@ func (g *clmGroupBuilder) List(ctx context.Context, _ *v2.ResourceId, attr rs.Sy
 		PageToken: pageToken,
 	})
 	if err != nil {
-		if attr.PageToken.Token == "" && isOptInFeatureUnavailableError(err) {
-			ctxzap.Extract(ctx).Info("baton-docusign: CLM is not available for this account or token, skipping clm_group sync", zap.Error(err))
-			return nil, &rs.SyncOpResults{}, nil
-		}
 		return nil, nil, err
 	}
 
@@ -110,7 +106,7 @@ func (g *clmGroupBuilder) Grants(ctx context.Context, groupResource *v2.Resource
 		PageToken: pageToken,
 	})
 	if err != nil {
-		return nil, nil, fmt.Errorf("getting members for CLM group %s: %w", groupResource.Id.Resource, err)
+		return nil, nil, fmt.Errorf("baton-docusign: getting members for CLM group %s: %w", groupResource.Id.Resource, err)
 	}
 
 	grants := make([]*v2.Grant, 0, len(members))
@@ -145,19 +141,28 @@ func (g *clmGroupBuilder) Grants(ctx context.Context, groupResource *v2.Resource
 // group appended (additive per the confirmed Members.Patch semantics).
 func (g *clmGroupBuilder) Grant(ctx context.Context, principal *v2.Resource, ent *v2.Entitlement) ([]*v2.Grant, annotations.Annotations, error) {
 	if principal.Id.ResourceType != clmMemberResourceType.Id {
-		return nil, nil, fmt.Errorf("baton-docusign: invalid principal type: expected %s, got %s", clmMemberResourceType.Id, principal.Id.ResourceType)
+		return nil, nil, status.Errorf(codes.InvalidArgument, "baton-docusign: invalid principal type: expected %s, got %s", clmMemberResourceType.Id, principal.Id.ResourceType)
 	}
 
 	memberID := principal.Id.Resource
 	groupID := ent.Resource.Id.Resource
-	groupHref, err := clmGroupHrefFromResource(ent.Resource)
-	if err != nil {
-		return nil, nil, err
+
+	// clmIDFromHref reduces an empty Href to "" too, so an empty groupID or memberID
+	// would falsely match a degenerate currentGroups entry below (empty groupID hits the
+	// "already a member" check before clmPreferredHref's own empty-id guard ever runs) —
+	// same class of bug as clm_folders.go's Grant/Revoke, guarded the same way.
+	if memberID == "" || groupID == "" {
+		return nil, nil, status.Errorf(codes.InvalidArgument, "baton-docusign: granting CLM group membership: member or group missing native ID")
 	}
 
+	// Don't require the group's Href off ent.Resource: the pebble storage engine hydrates
+	// an entitlement's Resource as an identity-only stub (no profile, no annotations), so
+	// it isn't always available. The groupHref this Grant actually writes below is
+	// resolved via clmPreferredHref, preferring (in order): ent.Resource's own profile
+	// Href if present, then a real sample Href from currentGroups, else client.GroupHref.
 	currentGroups, annos, err := g.client.GetMemberGroups(ctx, memberID)
 	if err != nil {
-		return nil, annos, fmt.Errorf("getting current groups for CLM member %s: %w", memberID, err)
+		return nil, annos, fmt.Errorf("baton-docusign: getting current groups for CLM member %s: %w", memberID, err)
 	}
 
 	for _, current := range currentGroups {
@@ -167,12 +172,27 @@ func (g *clmGroupBuilder) Grant(ctx context.Context, principal *v2.Resource, ent
 		}
 	}
 
+	// Prefer a real, server-issued Href already on hand over one derived from the
+	// discovered CLM base URL — see clmPreferredHref's doc. The target group's own
+	// profile href (parseIntoClmGroupResource still populates it for display) comes
+	// first: it's this exact group's own recorded Href, not a sibling's (one of this
+	// member's OTHER current groups) to derive from — only ever a sample, never
+	// required, so an identity-only ent.Resource (the pebble-hydrated case this fix
+	// exists for) still falls through to the other-groups/fallback path unchanged.
+	sampleHrefs := clmSampleHrefsFrom(ent.Resource, currentGroups, func(g client.ClmGroup) string { return g.Href })
+	groupHref, err := clmPreferredHref(ctx, groupID, sampleHrefs, func() (string, error) {
+		return g.client.GroupHref(ctx, groupID)
+	})
+	if err != nil {
+		return nil, annos, fmt.Errorf("baton-docusign: resolving href for CLM group %s: %w", groupID, err)
+	}
+
 	newGroups := make([]client.ClmGroup, 0, len(currentGroups)+1)
 	newGroups = append(newGroups, currentGroups...)
 	newGroups = append(newGroups, client.ClmGroup{Href: groupHref})
 	patchAnnos, err := g.client.PatchMemberGroups(ctx, memberID, newGroups)
 	if err != nil {
-		return nil, patchAnnos, fmt.Errorf("granting CLM group membership: %w", err)
+		return nil, patchAnnos, fmt.Errorf("baton-docusign: granting CLM group membership: %w", err)
 	}
 
 	return nil, patchAnnos, nil
@@ -186,9 +206,17 @@ func (g *clmGroupBuilder) Revoke(ctx context.Context, grantObj *v2.Grant) (annot
 	memberID := grantObj.Principal.Id.Resource
 	groupID := grantObj.Entitlement.Resource.Id.Resource
 
+	// Same guard as Grant, and for the same reason: an empty groupID would falsely match
+	// a currentGroups entry with an empty Href (clmIDFromHref("") == ""), excluding it
+	// from remainingGroups — and PutMemberGroups is a full-replace, so that unrelated
+	// membership would actually be removed from the real account.
+	if memberID == "" || groupID == "" {
+		return nil, status.Errorf(codes.InvalidArgument, "baton-docusign: revoking CLM group membership: member or group missing native ID")
+	}
+
 	currentGroups, annos, err := g.client.GetMemberGroups(ctx, memberID)
 	if err != nil {
-		return annos, fmt.Errorf("getting current groups for CLM member %s: %w", memberID, err)
+		return annos, fmt.Errorf("baton-docusign: getting current groups for CLM member %s: %w", memberID, err)
 	}
 
 	remainingGroups := make([]client.ClmGroup, 0, len(currentGroups))
@@ -207,7 +235,7 @@ func (g *clmGroupBuilder) Revoke(ctx context.Context, grantObj *v2.Grant) (annot
 
 	putAnnos, err := g.client.PutMemberGroups(ctx, memberID, remainingGroups)
 	if err != nil {
-		return putAnnos, fmt.Errorf("revoking CLM group membership: %w", err)
+		return putAnnos, fmt.Errorf("baton-docusign: revoking CLM group membership: %w", err)
 	}
 
 	return putAnnos, nil
@@ -221,14 +249,14 @@ func newClmGroupBuilder(c *client.Client) *clmGroupBuilder {
 }
 
 // parseIntoClmGroupResource maps a client.ClmGroup to a Baton v2.Resource. The Href is
-// carried in the profile (not just used to derive the ResourceId) so Grant() can
-// reconstruct a reference to this group without needing to guess a URL — see
-// clmGroupHrefFromResource.
+// kept in the profile both for display and as the preferred sample href for Grant;
+// Grant falls back to client.GroupHref when it's absent, since neither a profile nor an
+// annotation is guaranteed to survive to where it's needed.
 func parseIntoClmGroupResource(group *client.ClmGroup) (*v2.Resource, error) {
 	profile := map[string]any{
-		"name":      group.Name,
-		"groupType": group.GroupType,
-		"href":      group.Href,
+		"name":           group.Name,
+		"groupType":      group.GroupType,
+		profileFieldHref: group.Href,
 	}
 
 	return rs.NewGroupResource(
@@ -238,15 +266,4 @@ func parseIntoClmGroupResource(group *client.ClmGroup) (*v2.Resource, error) {
 		nil,
 		rs.WithResourceProfile(profile),
 	)
-}
-
-// clmGroupHrefFromResource reads back the Href stashed in a CLM group resource's
-// profile (see parseIntoClmGroupResource) — needed to reference the group in a
-// Members.Patch grant body.
-func clmGroupHrefFromResource(groupResource *v2.Resource) (string, error) {
-	href, ok := rs.GetProfileStringValue(rs.GetProfile(groupResource), "href")
-	if !ok || href == "" {
-		return "", fmt.Errorf("baton-docusign: CLM group resource %s is missing its href profile field", groupResource.Id.Resource)
-	}
-	return href, nil
 }

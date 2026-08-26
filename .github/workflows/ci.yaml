@@ -5,6 +5,49 @@ on:
   push:
     branches:
       - main
+# Workflow-level, not per-job: all three jobs share the DocuSign demo account, and a
+# per-job block only protects a *running* job — GitHub Actions still cancels a *pending*
+# job in the same group when a newer run queues. Declaring it once here queues/cancels
+# all three jobs as one unit.
+concurrency:
+  group: docusign-demo-account
+  cancel-in-progress: false
+env:
+  # This CI account has no CLM subscription, and (unlike a C1-hosted sync) nothing here
+  # filters resource types by OptInRequired — every registered resource type is attempted
+  # by default. Every clm_* type must stay excluded here, not just clm_workflow_queue:
+  # Connector.Validate() now runs an upfront CLM-readiness check (EnsureClmReady) whenever
+  # ANY clm_* type is in this allowlist, and it fails the whole sync loudly — before any
+  # resource type's List() runs — rather than tolerating a no-subscription account (see
+  # connector.go's Validate doc comment). That upfront gate applies uniformly regardless
+  # of which individual CLM types tolerate an unavailable-CLM error inside their own
+  # List() (isOptInFeatureUnavailableError, pkg/connector/helper.go) — so including even
+  # one clm_* type here would fail these jobs' group/signing-group/permission-profile
+  # coverage too, not just skip CLM. TestNonClmAllowlistMatchesCI
+  # (pkg/connector/connector_test.go) pins this list against nonClmAllowlist() as a drift
+  # guard.
+  # This is an allowlist, not a CLM-only exclusion: if you register a new non-CLM
+  # resource type in pkg/connector/connector.go, add it here too — otherwise it silently
+  # gets zero CI sync-test coverage. Declared once at the workflow level (all three jobs
+  # inherit it) so there's no per-job copy to keep in sync.
+  #
+  # signing_group specifically only works here because every job below also sets
+  # BATON_INCLUDE_SIGNING_GROUPS: "true" — the connector only advertises signing_group
+  # via ListResourceTypes() when that flag is set (pkg/connector/connector.go), and the
+  # SDK hard-errors on any filter entry the connector doesn't advertise
+  # ("invalid resource type 'signing_group' in filter"). If a future job drops that
+  # per-job env var, it fails with that confusing filter error instead of just skipping
+  # signing groups.
+  BATON_SYNC_RESOURCE_TYPES: user,group,permission_profile,signing_group
+  # Forces the legacy v1/SQLite c1z format instead of baton-sdk v0.25.0's new default
+  # (Pebble/v3). The `baton` CLI these jobs download (ConductorOne/github-workflows'
+  # get-baton action, currently v0.4.5) is built against baton-sdk v0.8.24 — long before
+  # Pebble existed — and fails every read of a Pebble-format file with a bare
+  # "c1z: invalid file", no matter how the file was produced. Confirmed: syncing with
+  # this flag set produces a file `baton` v0.4.5 reads correctly; without it, the exact
+  # same sync fails at the very next step. Safe to drop once a `baton` CLI release built
+  # against a Pebble-aware baton-sdk ships and get-baton picks it up.
+  BATON_STORAGE_ENGINE: sqlite
 jobs:
   test-groups:
     runs-on: ubuntu-latest
@@ -16,17 +59,6 @@ jobs:
       BATON_REFRESH_TOKEN: ${{ secrets.REFRESHTOKEN }}
       BATON_DEMO: "true"
       BATON_INCLUDE_SIGNING_GROUPS: "true"
-      # This CI account has no CLM subscription, and this job runs the connector
-      # directly with no resource-type filter otherwise. clm_workflow_queue now fails
-      # the whole sync rather than skipping gracefully when CLM isn't available (see
-      # pkg/connector/clm_workflow_queues.go's List()), so it must be excluded here —
-      # but sync-resource-types is an allowlist, so the other 5 CLM types are listed back
-      # in explicitly to keep exercising them end-to-end against this no-CLM account.
-      # Only 4 of those 5 (clm_member, clm_group, clm_permission_set, clm_folder)
-      # actually go through isOptInFeatureUnavailableError's graceful skip; clm_role
-      # makes no API call at all in List() (a hardcoded set), so it's exercised here for
-      # coverage of its own List(), not of the graceful-skip path.
-      BATON_SYNC_RESOURCE_TYPES: user,group,permission_profile,signing_group,clm_member,clm_role,clm_group,clm_permission_set,clm_folder
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -56,17 +88,6 @@ jobs:
       BATON_REFRESH_TOKEN: ${{ secrets.REFRESHTOKEN }}
       BATON_DEMO: "true"
       BATON_INCLUDE_SIGNING_GROUPS: "true"
-      # This CI account has no CLM subscription, and this job runs the connector
-      # directly with no resource-type filter otherwise. clm_workflow_queue now fails
-      # the whole sync rather than skipping gracefully when CLM isn't available (see
-      # pkg/connector/clm_workflow_queues.go's List()), so it must be excluded here —
-      # but sync-resource-types is an allowlist, so the other 5 CLM types are listed back
-      # in explicitly to keep exercising them end-to-end against this no-CLM account.
-      # Only 4 of those 5 (clm_member, clm_group, clm_permission_set, clm_folder)
-      # actually go through isOptInFeatureUnavailableError's graceful skip; clm_role
-      # makes no API call at all in List() (a hardcoded set), so it's exercised here for
-      # coverage of its own List(), not of the graceful-skip path.
-      BATON_SYNC_RESOURCE_TYPES: user,group,permission_profile,signing_group,clm_member,clm_role,clm_group,clm_permission_set,clm_folder
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -96,17 +117,6 @@ jobs:
       BATON_REFRESH_TOKEN: ${{ secrets.REFRESHTOKEN }}
       BATON_DEMO: "true"
       BATON_INCLUDE_SIGNING_GROUPS: "true"
-      # This CI account has no CLM subscription, and this job runs the connector
-      # directly with no resource-type filter otherwise. clm_workflow_queue now fails
-      # the whole sync rather than skipping gracefully when CLM isn't available (see
-      # pkg/connector/clm_workflow_queues.go's List()), so it must be excluded here —
-      # but sync-resource-types is an allowlist, so the other 5 CLM types are listed back
-      # in explicitly to keep exercising them end-to-end against this no-CLM account.
-      # Only 4 of those 5 (clm_member, clm_group, clm_permission_set, clm_folder)
-      # actually go through isOptInFeatureUnavailableError's graceful skip; clm_role
-      # makes no API call at all in List() (a hardcoded set), so it's exercised here for
-      # coverage of its own List(), not of the graceful-skip path.
-      BATON_SYNC_RESOURCE_TYPES: user,group,permission_profile,signing_group,clm_member,clm_role,clm_group,clm_permission_set,clm_folder
     steps:
       - name: Checkout code
         uses: actions/checkout@v4

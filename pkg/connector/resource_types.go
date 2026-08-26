@@ -5,6 +5,12 @@ import (
 	"github.com/conductorone/baton-sdk/pkg/annotations"
 )
 
+// PermissionProfileResourceTypeID is the resource type ID for permission profiles.
+// Exported so other packages (e.g. connector.go) can check whether it is
+// selected for sync via cli.ConnectorOpts.WillSyncResourceType without
+// depending on an unexported literal drifting out of sync.
+const PermissionProfileResourceTypeID = "permission_profile"
+
 var (
 	userResourceType = &v2.ResourceType{
 		Id:          "user",
@@ -19,13 +25,16 @@ var (
 	}
 
 	permissionProfilesResourceType = &v2.ResourceType{
-		Id:          "permission_profile",
+		Id:          PermissionProfileResourceTypeID,
 		DisplayName: "Permission Profile",
 	}
 
-	// signingGroupResourceType is registered unconditionally (see connector.go's
-	// ResourceSyncers) — OptInRequired is the gate, not a config flag, matching the
-	// CLM types below.
+	// signingGroupResourceType is registered only when includeSigningGroups is set (see
+	// connector.go's ResourceSyncers) — unlike the CLM types below, which are always
+	// registered and rely on OptInRequired alone. That means ListResourceTypes()
+	// advertises a different set depending on the flag; see
+	// TestResourceSyncers_SigningGroupRegistrationFollowsFlag for the tradeoff this
+	// carries.
 	signingGroupResourceType = &v2.ResourceType{
 		Id:          "signing_group",
 		DisplayName: "Signing Group",
@@ -34,11 +43,10 @@ var (
 	}
 
 	// CLM (Contract Lifecycle Management) resource types. CLM is a separate DocuSign
-	// product/API surface from eSignature above. Registered unconditionally and no
-	// longer gated by any config flag (see connector.go's ResourceSyncers): each CLM
-	// builder's List() always runs, and &v2.OptInRequired{} plus
-	// isOptInFeatureUnavailableError (helper.go) are what keep an account without a CLM
-	// subscription from failing the sync.
+	// product/API surface from eSignature above. &v2.OptInRequired{} keeps these out of
+	// a customer's sync until explicitly enabled; once enabled, Connector.Validate()
+	// fails the sync loudly, up front, if the account can't actually reach CLM — see
+	// that method's doc comment in connector.go.
 
 	// clmMemberResourceType is CLM's own principal object. Deliberately NOT reusing
 	// userResourceType's id ("user") — the CLM Members API is a distinct upstream

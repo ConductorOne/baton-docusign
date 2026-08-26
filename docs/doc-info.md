@@ -45,7 +45,7 @@
 
    **Important Note about CLM:**
 
-   - CLM (Contract Lifecycle Management) is a separate, separately-licensed DocuSign product with its own API. There is no config flag to enable it: CLM resources sync whenever the account and credential can reach the CLM API, and accounts without CLM sync no CLM resources — except CLM workflow queues, which are opt-in and fail the entire sync (all resource types, not just CLM) if enabled on an account that can't reach CLM, since ConductorOne doesn't validate the subscription before letting a customer opt in.
+   - CLM (Contract Lifecycle Management) is a separate, separately-licensed DocuSign product with its own API. The 6 CLM resource types carry `OptInRequired` and don't sync until a customer explicitly enables them in C1's sync configuration; C1's opt-in toggle doesn't validate the underlying subscription/scopes first, so an account that opts in but can't reach CLM fails the sync loudly rather than silently syncing zero CLM resources.
    - Requires a DocuSign CLM production subscription.
    - When using ConductorOne's managed OAuth app (the default cloud-hosted authentication method), CLM also requires that managed app to be granted the CLM API scope on ConductorOne's platform side — this is outside the connector's own configuration. Self-hosted or demo-environment setups using a customer-supplied DocuSign app do not have this extra requirement.
    - CLM permission sets sync for visibility only; DocuSign's CLM API has no endpoint to assign or unassign one, so they cannot be granted or revoked.
@@ -172,7 +172,7 @@ DocuSign CLM is a separate, separately-licensed DocuSign product. To sync CLM da
 
 1. Confirm your DocuSign account has a CLM production subscription.
 2. Confirm the credential has been granted the CLM OAuth scopes (`spring_read`/`spring_write`).
-3. The connector then syncs CLM Members, Roles, Groups, Folders, Folder Security, Permission Sets, and Workflow Queues automatically — there is no flag to set.
+3. The connector then syncs CLM Members, Roles, Groups, Folders, Folder Security, Permission Sets, and Workflow Queues once a customer explicitly enables each CLM resource type in C1's sync configuration (see the CLM note above — these types carry `OptInRequired`).
 
 If running against ConductorOne's managed OAuth app (the default cloud-hosted
 production authentication method), the managed app also needs the CLM API scopes

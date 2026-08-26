@@ -1,6 +1,7 @@
 package sync //nolint:revive,nolintlint // we can't change the package name for backwards compatibility
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -10,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/conductorone/baton-sdk/pkg/dotc1z/c1zstore"
 	"github.com/conductorone/baton-sdk/pkg/sync/expand"
 
 	"github.com/grpc-ecosystem/go-grpc-middleware/logging/zap/ctxzap"
@@ -34,7 +36,9 @@ type State interface {
 	FinishAction(ctx context.Context, action *Action)
 	NextPage(ctx context.Context, actionID string, pageToken string) error
 	EntitlementGraph(ctx context.Context) *expand.EntitlementGraph
+	PeekEntitlementGraph() *expand.EntitlementGraph
 	ClearEntitlementGraph(ctx context.Context)
+	ClearEntitlementGraphTransientState(ctx context.Context)
 	Current() *Action
 	GetAction(id string) *Action
 	PeekMatchingActions(ctx context.Context, op ActionOp) []*Action
@@ -86,6 +90,12 @@ func PrepareExpansionReplayToken(stateStr string) (string, error) {
 		return "", err
 	}
 	st.SetNeedsExpansion()
+	// Clear any preserved entitlement graph. A graph preserved by
+	// WithPreserveEntitlementGraph has Loaded=true with every edge already
+	// marked expanded, so a replayed sync would skip graph loading and the
+	// expander would report done immediately — the replay would silently
+	// no-op. Clearing it makes the replay rebuild the graph from scratch.
+	st.ClearEntitlementGraph(context.Background())
 	if st.Current() == nil {
 		// A finished sync deserializes with no action map, so seed one before
 		// queuing the InitOp that drives the resumed run.
@@ -95,6 +105,68 @@ func PrepareExpansionReplayToken(stateStr string) (string, error) {
 		st.PushAction(context.Background(), Action{Op: InitOp})
 	}
 	return st.Marshal()
+}
+
+// GraphFromToken parses a legacy sync token and returns its entitlement graph
+// for compatibility tests. It returns nil if the token carried no graph.
+//
+// Token graphs have no grant-generation binding and must not drive incremental
+// reuse. Production readers must use GraphFromStore, which verifies that the
+// sidecar graph describes the store's exact sealed grant generation.
+func GraphFromToken(stateStr string) (*expand.EntitlementGraph, error) {
+	st := newState()
+	if err := st.Unmarshal(stateStr); err != nil {
+		return nil, err
+	}
+	return st.entitlementGraph, nil
+}
+
+// EntitlementGraphStore is the optional store capability backing graph
+// persistence in the c1z (Pebble implements it; SQLite does not). The blob
+// format is owned by pkg/sync/expand.
+type EntitlementGraphStore interface {
+	PutEntitlementGraphBlob(ctx context.Context, data []byte) error
+	GetEntitlementGraphBlob(ctx context.Context) ([]byte, error)
+	DeleteEntitlementGraphBlob(ctx context.Context) error
+}
+
+// GraphFromStore loads the entitlement graph persisted in the c1z sidecar for
+// syncID. Returns nil (no error) when the store lacks the capability, no graph
+// was preserved, or the stored graph belongs to a different sync.
+func GraphFromStore(ctx context.Context, store c1zstore.Store, syncID string) (*expand.EntitlementGraph, error) {
+	gs, ok := store.(EntitlementGraphStore)
+	if !ok {
+		return nil, nil
+	}
+	data, err := gs.GetEntitlementGraphBlob(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if data == nil {
+		return nil, nil
+	}
+	graph, boundDigest, err := expand.UnmarshalGraphBlobWithGrantDigest(data, syncID)
+	if err != nil || graph == nil {
+		return graph, err
+	}
+	if boundDigest == nil {
+		return nil, nil
+	}
+	digestReader, ok := store.(c1zstore.GrantGenerationDigestReader)
+	if !ok {
+		return nil, nil
+	}
+	currentDigest, found, err := digestReader.GrantGenerationDigest(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if !found ||
+		boundDigest.Count != currentDigest.Count ||
+		boundDigest.ABIVersion != currentDigest.ABIVersion ||
+		!bytes.Equal(boundDigest.Hash, currentDigest.Hash) {
+		return nil, nil
+	}
+	return graph, nil
 }
 
 // ActionOp represents a sync operation.
@@ -242,6 +314,11 @@ type state struct {
 	// state so Unmarshal→Marshal round trips (e.g. expansion replay
 	// tokens) preserve it.
 	compaction *CompactionTokenStats
+	// checkpointEntitlementGraph opts back in to serializing the graph
+	// inline. Off by default because the encoding is what OOM-kills workers
+	// on large tenants; on, it trades that risk for cross-restart expansion
+	// progress. See Marshal.
+	checkpointEntitlementGraph bool
 	// spawnedInFlight is the evidence set behind ingest invariant I10:
 	// every spawned sibling cursor (EnqueuePageTokens) admitted to the
 	// stack, keyed by action ID, removed only by the two legitimate
@@ -273,6 +350,21 @@ type state struct {
 	// cycles still terminate. Guarded by st.mtx; bounded by total
 	// spawned admissions in the process (32-byte keys).
 	spawnedAdmitted map[parallelActionKey]string
+}
+
+// stateOpt configures a state at construction. Not part of the State
+// interface: these are process-level knobs from SyncOpt, not token contents,
+// so they must not survive an Unmarshal from a token written elsewhere.
+type stateOpt func(*state)
+
+// withCheckpointEntitlementGraph serializes the entitlement graph into every
+// checkpoint, restoring the behavior from before it was dropped. Escape hatch
+// for a tenant whose expansion cannot finish within one worker lifetime; costs
+// O(graph) memory per checkpoint, which is what the default avoids.
+func withCheckpointEntitlementGraph(enabled bool) stateOpt {
+	return func(st *state) {
+		st.checkpointEntitlementGraph = enabled
+	}
 }
 
 // ConnectorCallStat contains cumulative latency statistics for one connector method.
@@ -348,8 +440,8 @@ type serializedTokenV1 struct {
 	Version            uint64                        `json:"version"`
 }
 
-func newState() *state {
-	return &state{
+func newState(opts ...stateOpt) *state {
+	st := &state{
 		actions:            make(map[string]Action),
 		actionOrder:        []string{},
 		currentActionID:    0,
@@ -361,6 +453,10 @@ func newState() *state {
 		spawnedInFlight:    make(map[string]Action),
 		spawnedAdmitted:    make(map[parallelActionKey]string),
 	}
+	for _, opt := range opts {
+		opt(st)
+	}
+	return st
 }
 
 // Current returns nil if there is no current action. Otherwise it returns a pointer to a copy of the current state.
@@ -479,6 +575,21 @@ func (st *state) Unmarshal(input string) error {
 		st.currentActionID = token.CurrentActionID
 		st.needsExpansion = token.NeedsExpansion
 		st.entitlementGraph = token.EntitlementGraph
+		if st.entitlementGraph == nil {
+			// A graph-less token cannot resume a grant-expansion pagination:
+			// the page token indexes a load the (now absent) graph was
+			// accumulating, and continuing from it against a fresh graph would
+			// silently drop the edges from earlier pages. Marshal already
+			// normalizes this, but tolerate tokens from writers that did not.
+			// Tokens carrying an inline graph (written by older SDKs) keep
+			// their page token and resume exactly as before.
+			for id, a := range st.actions {
+				if a.Op == SyncGrantExpansionOp && a.PageToken != "" {
+					a.PageToken = ""
+					st.actions[id] = a
+				}
+			}
+		}
 		st.hasExternalResourceGrants = token.HasExternalResourceGrants
 		st.shouldSkipEntitlementsAndGrants = token.ShouldSkipEntitlementsAndGrants
 		st.shouldSkipGrants = token.ShouldSkipGrants
@@ -568,15 +679,59 @@ func (st *state) UndrainedSpawnedCursors() []string {
 }
 
 // Marshal returns a string encoding of the state object. This is useful for datastores to checkpoint the current state.
+//
+// By default the entitlement graph is NOT serialized. It is a projection of
+// data already in the store (loadEntitlementGraph rebuilds it from
+// PendingExpansionPage, with no connector calls), and for large tenants its
+// JSON encoding multiplied the checkpoint's memory footprint several times
+// over — json map encoding + the string copy + the store's record/compression/
+// batch copies each cost O(graph) live at once, which OOM-killed sync workers
+// mid-checkpoint. A crash mid-expansion now re-runs the load and expansion
+// phases from the store on resume (the same replay property
+// PrepareExpansionReplayToken relies on) instead of resuming them from the
+// token.
+//
+// Because a resumed reader gets no graph, any in-flight SyncGrantExpansionOp
+// action is serialized with its PageToken blanked: the page token indexes a
+// pagination the graph was accumulating, and resuming from it with an empty
+// graph would silently drop the edges from earlier pages. Blanking it at
+// marshal time (rather than only fixing it up at Unmarshal) keeps tokens
+// safe for OLDER readers too — an old SDK resuming a graph-less token starts
+// a fresh graph and must restart the load from the first page. Only the
+// serialized copy is normalized; the live state keeps its page token.
+//
+// WithEntitlementGraphInCheckpoints restores the old inline-graph behavior. The
+// graph and the expansion page token then travel together, as they must: the
+// token is only resumable by a reader that also got the graph it indexes.
 func (st *state) Marshal() (string, error) {
 	st.mtx.RLock()
 	defer st.mtx.RUnlock()
 
+	actions := st.actions
+	graph := st.entitlementGraph
+
+	if !st.checkpointEntitlementGraph {
+		graph = nil
+		for _, action := range st.actions {
+			if action.Op == SyncGrantExpansionOp && action.PageToken != "" {
+				actions = make(map[string]Action, len(st.actions))
+				for id, a := range st.actions {
+					if a.Op == SyncGrantExpansionOp {
+						a.PageToken = ""
+					}
+					actions[id] = a
+				}
+				break
+			}
+		}
+	}
+
 	// Stamp the type-scoped version only when the token actually carries
 	// markers an older parser would misinterpret; plain tokens keep
-	// version 1 so downgrades resume seamlessly.
+	// version 1 so downgrades resume seamlessly. Read from the normalized
+	// copy, which is what actually ships.
 	version := uint64(StateTokenVersion)
-	for _, action := range st.actions {
+	for _, action := range actions {
 		if action.TypeScoped || action.Spawned || action.TypeScopedPlanned {
 			version = StateTokenVersionTypeScoped
 			break
@@ -584,11 +739,11 @@ func (st *state) Marshal() (string, error) {
 	}
 
 	data, err := json.Marshal(serializedTokenV1{
-		ActionsMap:                      st.actions,
+		ActionsMap:                      actions,
 		ActionOrder:                     st.actionOrder,
 		CurrentActionID:                 st.currentActionID,
 		NeedsExpansion:                  st.needsExpansion,
-		EntitlementGraph:                st.entitlementGraph,
+		EntitlementGraph:                graph,
 		HasExternalResourceGrants:       st.hasExternalResourceGrants,
 		ShouldFetchRelatedResources:     st.shouldFetchRelatedResources,
 		ShouldSkipEntitlementsAndGrants: st.shouldSkipEntitlementsAndGrants,
@@ -1010,9 +1165,26 @@ func (st *state) EntitlementGraph(ctx context.Context) *expand.EntitlementGraph 
 	return st.entitlementGraph
 }
 
+// PeekEntitlementGraph returns the graph without allocating one when absent
+// (unlike EntitlementGraph). Used by the preserve path to decide whether
+// there is a graph worth persisting.
+func (st *state) PeekEntitlementGraph() *expand.EntitlementGraph {
+	return st.entitlementGraph
+}
+
 // ClearEntitlementGraph clears the entitlement graph. This is meant to make the final sync token less confusing.
 func (st *state) ClearEntitlementGraph(ctx context.Context) {
 	st.entitlementGraph = nil
+}
+
+// ClearEntitlementGraphTransientState strips a preserved graph's expansion
+// working state before the final checkpoint. A no-op when no graph was built —
+// deliberately NOT EntitlementGraph(ctx), which would allocate an empty graph
+// into the final token where prior behavior serialized none.
+func (st *state) ClearEntitlementGraphTransientState(_ context.Context) {
+	if st.entitlementGraph != nil {
+		st.entitlementGraph.ClearTransientState()
+	}
 }
 
 func (st *state) GetCompletedActionsCount() uint64 {

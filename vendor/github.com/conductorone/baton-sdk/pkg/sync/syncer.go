@@ -81,6 +81,12 @@ var connectorCallMethods = []string{
 // This either means that there was no error, or that the error is recoverable (we can resume the sync and possibly succeed next time).
 // Timeouts (context.DeadlineExceeded or codes.DeadlineExceeded, e.g. an AWS Lambda hard timeout) are
 // preservable because the sync can resume from the checkpoint.
+//
+// FROZEN (RFC 0009): superseded by ShouldDiscardSyncArtifact
+// (preserve-by-default). This behavior must not change — older runners
+// branch on it, so widening it in place ships a silent retention change.
+// Prose freeze rather than `Deprecated:` because unmigrated callers are
+// intentional during rollout and must not fail staticcheck on an SDK bump.
 func IsSyncPreservable(err error) bool {
 	if err == nil {
 		return true
@@ -200,19 +206,20 @@ type syncer struct {
 	// event (seed/dequeue/commit/abort/done) for post-hoc verification
 	// of the queue contract. Nil in production: one pointer check per
 	// queue operation.
-	testQueueAudit        *queueAudit
-	connector             types.ConnectorClient
-	state                 State
-	runDuration           time.Duration
-	transitionHandler     func(s Action)
-	progressHandler       func(p *Progress)
-	tmpDir                string
-	storageEngine         c1zstore.Engine
-	skipFullSync          bool
-	lastCheckPointTime    time.Time
-	counts                *progresslog.ProgressLog
-	targetedSyncResources []*v2.Resource
-	onlyExpandGrants      bool
+	testQueueAudit           *queueAudit
+	connector                types.ConnectorClient
+	state                    State
+	runDuration              time.Duration
+	transitionHandler        func(s Action)
+	progressHandler          func(p *Progress)
+	tmpDir                   string
+	storageEngine            c1zstore.Engine
+	skipFullSync             bool
+	lastCheckPointTime       time.Time
+	counts                   *progresslog.ProgressLog
+	targetedSyncResources    []*v2.Resource
+	onlyExpandGrants         bool
+	preserveEntitlementGraph bool
 	// compactionMergedStore marks the store as a pre-sealed artifact
 	// this process did not collect (WithCompactionMergedStore — the
 	// compactor's keep-newer merge and rollback-expansion's replay):
@@ -222,6 +229,7 @@ type syncer struct {
 	// invariant policy on its own.
 	compactionMergedStore                 bool
 	dontExpandGrants                      bool
+	checkpointEntitlementGraph            bool
 	syncID                                string
 	skipEGForResourceType                 syncMap[string, bool]
 	skipEntitlementsForResourceType       syncMap[string, bool]
@@ -261,6 +269,44 @@ var _ Syncer = (*syncer)(nil)
 // a single narrow interface without knowing about C1ZStore.
 type expanderStoreAdapter struct {
 	store c1zstore.Store
+}
+
+// NewExpanderStore adapts a c1zstore.Store into an expand.ExpanderStore,
+// bridging engine differences (Pebble exposes StoreExpandedGrants on its
+// Grants() sub-store, SQLite at top level). Use this instead of type-asserting
+// the store, which is unsafe for Pebble.
+func NewExpanderStore(store c1zstore.Store) expand.ExpanderStore {
+	return expanderStoreAdapter{store: store}
+}
+
+// persistEntitlementGraphToStore binds the preserved graph to the exact sealed
+// grant generation and writes both into the c1z sidecar.
+func (s *syncer) persistEntitlementGraphToStore(ctx context.Context, syncID string, g *expand.EntitlementGraph) {
+	if g == nil {
+		return
+	}
+	gs, ok := s.store.(EntitlementGraphStore)
+	if !ok {
+		return
+	}
+	digestReader, ok := s.store.(c1zstore.GrantGenerationDigestReader)
+	if !ok {
+		return
+	}
+	digest, found, err := digestReader.GrantGenerationDigest(ctx)
+	if err != nil || !found {
+		ctxzap.Extract(ctx).Warn("preserve entitlement graph: sealed grant digest unavailable; graph will not be reusable", zap.Error(err))
+		return
+	}
+	data, err := expand.MarshalGraphBlobWithGrantDigest(syncID, g, digest)
+	if err != nil {
+		ctxzap.Extract(ctx).Warn("preserve entitlement graph: marshal failed", zap.Error(err))
+		return
+	}
+	if err := gs.PutEntitlementGraphBlob(ctx, data); err != nil {
+		ctxzap.Extract(ctx).Warn("preserve entitlement graph: sidecar write failed", zap.Error(err))
+		return
+	}
 }
 
 func (a expanderStoreAdapter) GetEntitlement(ctx context.Context, req *reader_v2.EntitlementsReaderServiceGetEntitlementRequest) (*reader_v2.EntitlementsReaderServiceGetEntitlementResponse, error) {
@@ -963,7 +1009,7 @@ func (s *syncer) Sync(ctx context.Context) error {
 		return err
 	}
 
-	state := newState()
+	state := newState(withCheckpointEntitlementGraph(s.checkpointEntitlementGraph))
 	err = state.Unmarshal(currentStep)
 	if err != nil {
 		return err
@@ -1051,10 +1097,28 @@ func (s *syncer) Sync(ctx context.Context) error {
 	}
 
 	// Force a checkpoint to clear completed actions & entitlement graph in sync_token.
-	s.state.ClearEntitlementGraph(ctx)
-
+	// preserveEntitlementGraph keeps the graph for a later incremental
+	// expansion: written to the c1z sidecar when the store supports it (token
+	// stays skinny — a whale graph is megabytes), else kept in the final token.
+	// Transient working state is stripped either way; a reload rebuilds it.
+	var graphToPersist *expand.EntitlementGraph
+	if s.preserveEntitlementGraph {
+		s.state.ClearEntitlementGraphTransientState(ctx)
+		_, hasGraphSidecar := s.store.(EntitlementGraphStore)
+		_, hasGrantDigest := s.store.(c1zstore.GrantGenerationDigestReader)
+		if hasGraphSidecar && hasGrantDigest {
+			graphToPersist = s.state.PeekEntitlementGraph()
+			s.state.ClearEntitlementGraph(ctx)
+		}
+	} else {
+		s.state.ClearEntitlementGraph(ctx)
+	}
 	err = s.Checkpoint(ctx, true)
 	if err != nil {
+		// Deliberately no detached rescue (RFC 0009 §4.2): the plan is
+		// already cleared, so a rescue could only write the empty token, and
+		// resuming from an empty token re-runs the whole collection. Failing
+		// without a write resumes from the last mid-plan token instead.
 		return s.returnSyncError(l, span, err)
 	}
 
@@ -1072,6 +1136,10 @@ func (s *syncer) Sync(ctx context.Context) error {
 	if err != nil {
 		return s.returnSyncError(l, span, err)
 	}
+	// EndSync built the authoritative whole-file grant digest. Persisting the
+	// graph now binds it to that exact sealed grant generation. A crash before
+	// this write leaves no reusable graph and therefore fails safe.
+	s.persistEntitlementGraphToStore(ctx, syncID, graphToPersist)
 
 	// The sync is sealed: publish the verification the invariant pass
 	// staged. Marking only after EndSync keeps the marker off unfinished
@@ -3292,25 +3360,23 @@ func (s *syncer) listExternalResourceTypes(ctx context.Context) ([]*v2.ResourceT
 }
 
 // matchProfileAndExpand implements the generic external-resource key/val
-// profile match originally written for TRAIT_GROUP, now shared by GROUP and
-// any additional trait configured via WithExternalResourceTraits (e.g.
-// TRAIT_APP). It returns a nil grant (and nil error) when the principal's
-// profile doesn't match key/value. GrantExpandable remapping is optional:
-// a matching non-expandable grant must still be rewritten to the external
-// principal.
+// expansion originally written for TRAIT_GROUP, now shared by GROUP and any
+// additional trait configured via WithExternalResourceTraits (e.g.
+// TRAIT_APP). The caller must have already confirmed principal matches the
+// grant's key/value pair via externalPrincipalIndex.matchProfile -- this
+// helper does not re-check the profile, so calling it with an unconfirmed
+// principal will unconditionally produce a grant for it. GrantExpandable
+// remapping is optional: a matching non-expandable grant must still be
+// rewritten to the external principal, just without a remapped
+// GrantExpandable annotation.
 func (s *syncer) matchProfileAndExpand(
 	ctx context.Context,
 	l *zap.Logger,
 	grant *v2.Grant,
 	principal *v2.Resource,
-	key, value string,
 	expandableAnno *v2.GrantExpandable,
 	expandableEntitlementsResourceMap map[string][]string,
 ) (*v2.Grant, error) {
-	profileVal, ok := resource.GetProfileStringValue(resource.GetProfile(principal), key)
-	if !ok || !strings.EqualFold(profileVal, value) {
-		return nil, nil
-	}
 	newGrant := newGrantForExternalPrincipal(grant, principal)
 	if expandableAnno == nil {
 		return newGrant, nil
@@ -3347,6 +3413,12 @@ func (s *syncer) matchProfileAndExpand(
 	return newGrant, nil
 }
 
+// externalMatchProgressLogInterval is how many grants the external-principal
+// match scan processes between progress logs. The scan can cover every grant in
+// the store, and without progress output a slow one is indistinguishable from a
+// hang.
+const externalMatchProgressLogInterval = 100_000
+
 func (s *syncer) processGrantsWithExternalPrincipals(ctx context.Context, principals []*v2.Resource) error {
 	ctx, span := tracer.Start(ctx, "processGrantsWithExternalPrincipals")
 	var err error
@@ -3382,12 +3454,44 @@ func (s *syncer) processGrantsWithExternalPrincipals(ctx context.Context, princi
 		principalMap[principalID] = principal
 	}
 
+	// Index each trait's principals once. Matching each grant against every
+	// principal is O(grants x principals) proto unmarshals, which on large
+	// tenants runs for hours and never finishes inside the sync deadline.
+	// TRAIT_USER gets the user-trait-aware index so an "email" key can match a
+	// user-trait address as well as a profile field; every other opted-in trait
+	// matches on profile alone.
+	indexByTrait := make(map[v2.ResourceType_Trait]*externalPrincipalIndex, len(matchTraits))
+	principalCounts := make(map[string]int, len(matchTraits))
+	for trait := range matchTraits {
+		traitPrincipals := principalsByTrait[trait]
+		if trait == v2.ResourceType_TRAIT_USER {
+			indexByTrait[trait] = newExternalUserPrincipalIndex(traitPrincipals, l)
+		} else {
+			indexByTrait[trait] = newExternalPrincipalIndex(traitPrincipals)
+		}
+		principalCounts[trait.String()] = len(traitPrincipals)
+	}
+
+	l.Info("matching grants against external principals",
+		zap.Any("principals_by_trait", principalCounts),
+	)
+
 	grantsToDelete := make([]*v2.Grant, 0)
 	expandedGrants := make([]*v2.Grant, 0)
+	grantsScanned := 0
 
 	for ga, err := range s.store.Grants().ListWithAnnotations(ctx) {
 		if err != nil {
 			return err
+		}
+
+		grantsScanned++
+		if grantsScanned%externalMatchProgressLogInterval == 0 {
+			l.Debug("matching grants against external principals: progress",
+				zap.Int("grants_scanned", grantsScanned),
+				zap.Int("expanded_grants", len(expandedGrants)),
+				zap.Int("grants_to_delete", len(grantsToDelete)),
+			)
 		}
 
 		grant := ga.Grant
@@ -3496,36 +3600,46 @@ func (s *syncer) processGrantsWithExternalPrincipals(ctx context.Context, princi
 
 		if matchExternalResource != nil {
 			trait := matchExternalResource.GetResourceType()
+			matchKey := matchExternalResource.GetKey()
+			matchValue := matchExternalResource.GetValue()
 			switch {
 			case trait == v2.ResourceType_TRAIT_USER:
-				for _, userPrincipal := range principalsByTrait[v2.ResourceType_TRAIT_USER] {
-					userTrait, err := resource.GetUserTrait(userPrincipal)
-					if err != nil {
-						l.Error("error getting user trait", zap.Any("userPrincipal", userPrincipal))
-						continue
-					}
-					if matchExternalResource.GetKey() == "email" {
-						if userTraitContainsEmail(userTrait.GetEmails(), matchExternalResource.GetValue()) {
-							newGrant := newGrantForExternalPrincipal(grant, userPrincipal)
-							expandedGrants = append(expandedGrants, newGrant)
-							// continue to next principal since we found an email match
-							continue
-						}
-					}
-					profileVal, ok := resource.GetProfileStringValue(resource.GetProfile(userPrincipal), matchExternalResource.GetKey())
-					if ok && strings.EqualFold(profileVal, matchExternalResource.GetValue()) {
-						newGrant := newGrantForExternalPrincipal(grant, userPrincipal)
-						expandedGrants = append(expandedGrants, newGrant)
-					}
+				// A user matches on its profile value for the key, or -- when
+				// the key is "email" -- on a user-trait email address. Merging
+				// the two ascending position sets preserves principal order and
+				// emits at most one grant per user, as the per-principal scan
+				// this replaces did.
+				idx := indexByTrait[v2.ResourceType_TRAIT_USER]
+				if idx == nil {
+					// A grant can carry a TRAIT_USER match even when USER is
+					// not among the configured match traits. The pre-index
+					// code scanned an empty slice here; match nothing.
+					break
+				}
+				positions := idx.matchProfile(matchKey, matchValue)
+				if matchKey == "email" {
+					positions = mergePositions(idx.matchUserTraitEmail(matchValue), positions)
+				}
+				for _, i := range positions {
+					newGrant := newGrantForExternalPrincipal(grant, idx.principalAt(i))
+					expandedGrants = append(expandedGrants, newGrant)
 				}
 			case matchTraits[trait]:
 				// Generic profile match, shared by TRAIT_GROUP and any
 				// additional trait opted into via WithExternalResourceTraits
-				// (e.g. TRAIT_APP).
-				for _, principal := range principalsByTrait[trait] {
+				// (e.g. TRAIT_APP). A key/val match yields a grant whether or
+				// not the source grant is expandable: expandableAnno only
+				// controls whether the new grant also gets a remapped
+				// GrantExpandable annotation (see matchProfileAndExpand).
+				// No nil check: this case only fires when matchTraits[trait]
+				// is true, and indexByTrait is populated for every key of
+				// matchTraits. The guard in the TRAIT_USER case above is not
+				// the same situation -- that case fires on the trait named by
+				// the grant, which need not be a configured match trait.
+				idx := indexByTrait[trait]
+				for _, i := range idx.matchProfile(matchKey, matchValue) {
 					newGrant, err := s.matchProfileAndExpand(
-						ctx, l, grant, principal,
-						matchExternalResource.GetKey(), matchExternalResource.GetValue(),
+						ctx, l, grant, idx.principalAt(i),
 						expandableAnno, expandableEntitlementsResourceMap,
 					)
 					if err != nil {
@@ -3544,6 +3658,12 @@ func (s *syncer) processGrantsWithExternalPrincipals(ctx context.Context, princi
 		}
 	}
 
+	l.Debug("matched grants against external principals",
+		zap.Int("grants_scanned", grantsScanned),
+		zap.Int("expanded_grants", len(expandedGrants)),
+		zap.Int("grants_to_delete", len(grantsToDelete)),
+	)
+
 	newGrantIDs := mapset.NewSet[string]()
 	for _, ng := range expandedGrants {
 		newGrantIDs.Add(ng.GetId())
@@ -3554,14 +3674,35 @@ func (s *syncer) processGrantsWithExternalPrincipals(ctx context.Context, princi
 		return err
 	}
 
-	// Prefer the refs-based delete (exact structural identity) when the
-	// store supports it; external ids are a lossy external contract and
-	// stores keyed by structural identity cannot always resolve them.
-	refsDeleter, _ := s.store.(grantByRefsDeleter)
+	// A grant that was re-issued against a matched principal keeps its row;
+	// only the unmatched originals are deleted.
+	pendingDeletes := make([]*v2.Grant, 0, len(grantsToDelete))
 	for _, grantToDelete := range grantsToDelete {
 		if newGrantIDs.ContainsOne(grantToDelete.GetId()) {
 			continue
 		}
+		pendingDeletes = append(pendingDeletes, grantToDelete)
+	}
+
+	if len(pendingDeletes) == 0 {
+		return nil
+	}
+
+	// Prefer the bulk refs-based delete when the store supports it: the
+	// per-grant path commits once per grant with pebble.Sync, so on
+	// network-attached storage this loop cost ~956s for ~90k grants. The
+	// batch form amortizes the fsync without weakening durability.
+	// err is the named value the deferred span reports, so assign it.
+	if batchDeleter, ok := s.store.(grantsByRefsBatchDeleter); ok {
+		err = batchDeleter.DeleteGrantsByRefs(ctx, pendingDeletes...)
+		return err
+	}
+
+	// Prefer the refs-based delete (exact structural identity) when the
+	// store supports it; external ids are a lossy external contract and
+	// stores keyed by structural identity cannot always resolve them.
+	refsDeleter, _ := s.store.(grantByRefsDeleter)
+	for _, grantToDelete := range pendingDeletes {
 		if refsDeleter != nil {
 			err = refsDeleter.DeleteGrantByRefs(ctx, grantToDelete)
 		} else {
@@ -3575,17 +3716,19 @@ func (s *syncer) processGrantsWithExternalPrincipals(ctx context.Context, princi
 	return nil
 }
 
-func userTraitContainsEmail(emails []*v2.UserTrait_Email, address string) bool {
-	return slices.ContainsFunc(emails, func(e *v2.UserTrait_Email) bool {
-		return strings.EqualFold(e.GetAddress(), address)
-	})
-}
-
 // grantByRefsDeleter is the optional store fast path for deleting a grant
 // by its structured refs instead of its lossy public id (Pebble implements
 // it; SQLite resolves ids by exact string and does not need it).
 type grantByRefsDeleter interface {
 	DeleteGrantByRefs(ctx context.Context, grant *v2.Grant) error
+}
+
+// grantsByRefsBatchDeleter is the bulk form of grantByRefsDeleter. Stores
+// that implement it delete N grants in a bounded number of commits instead
+// of one durable commit per grant; stores that do not (SQLite) fall through
+// to the per-grant loop unchanged.
+type grantsByRefsBatchDeleter interface {
+	DeleteGrantsByRefs(ctx context.Context, grants ...*v2.Grant) error
 }
 
 func newGrantForExternalPrincipal(grant *v2.Grant, principal *v2.Resource) *v2.Grant {
@@ -3991,6 +4134,15 @@ func WithCompactionMergedStore() SyncOpt {
 	}
 }
 
+// WithPreserveEntitlementGraph preserves the entitlement graph for later
+// incremental expansion. Pebble stores it in the c1z sidecar; stores without
+// that capability retain it in the final sync token as a legacy fallback.
+func WithPreserveEntitlementGraph() SyncOpt {
+	return func(s *syncer) {
+		s.preserveEntitlementGraph = true
+	}
+}
+
 // WithDontExpandGrants sets whether to skip expanding grants.
 // This is used for speeding up service mode connectors and reducing their c1z upload size.
 // C1 will process the uploaded c1z and expand grants itself.
@@ -4027,6 +4179,23 @@ func WithSkipEntitlementsAndGrants(skip bool) SyncOpt {
 func WithSkipGrants(skip bool) SyncOpt {
 	return func(s *syncer) {
 		s.skipGrants = skip
+	}
+}
+
+// WithEntitlementGraphInCheckpoints serializes the entitlement graph into every
+// checkpoint token. Off by default: the graph is a projection of data already in
+// the store, and encoding it costs O(graph) memory several times over per
+// checkpoint, which OOM-kills workers on large tenants.
+//
+// Enable it to keep expansion progress across restarts. That matters only for a
+// tenant whose expansion cannot finish within one worker or activity lifetime —
+// without it, such a sync re-runs the load and expansion phases on every resume
+// and can fail to converge. Note the two failure modes trade off directly: the
+// tenants large enough to need cross-restart progress are the ones whose graph
+// is expensive enough to encode that checkpointing may OOM.
+func WithEntitlementGraphInCheckpoints(enabled bool) SyncOpt {
+	return func(s *syncer) {
+		s.checkpointEntitlementGraph = enabled
 	}
 }
 

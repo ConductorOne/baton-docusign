@@ -27,10 +27,11 @@ import (
 )
 
 // WithEngine selects the storage engine for the compacted output.
-// The default (unset) is sqlite, which is byte-identical to the
-// historical compactor. EnginePebble produces a v3 Pebble c1z via a
-// native record merge whose strategy (overlay / fold / kway) is
-// resolved per run by resolvePebbleMode.
+// The default (unset) follows the inputs — any Pebble input makes the
+// output Pebble; all-SQLite inputs keep SQLite output, byte-identical
+// to the historical compactor (see inferEngineFromInputs). EnginePebble
+// produces a v3 Pebble c1z via a native record merge whose strategy
+// (overlay / fold / kway) is resolved per run by resolvePebbleMode.
 //
 // This is the only supported way to choose the engine; an engine
 // passed through WithC1ZOptions does not select the compaction
@@ -492,7 +493,7 @@ func (c *Compactor) compactPebbleFold(ctx context.Context) (string, error) {
 	var convertedInputs []string
 	defer func() {
 		for _, path := range convertedInputs {
-			_ = os.Remove(path)
+			_ = os.Remove(path) // #nosec G703 -- paths come only from CreateTemp in the compactor temp directory.
 		}
 	}()
 	for i := len(c.entries) - 1; i >= 1; i-- {
@@ -549,13 +550,26 @@ func (c *Compactor) compactPebbleFold(ctx context.Context) (string, error) {
 		partialSyncIDs = append(partialSyncIDs, srcSyncID)
 		partialTokens = append(partialTokens, readSourceSyncToken(ctx, srcEng, srcSyncID))
 
-		mergeStats, mergeErr := mergepkg.MergeInto(ctx, destEng, []mergepkg.SourceSync{{Engine: srcEng, SyncID: srcSyncID}}, baseSyncID)
+		var mergeOpts []mergepkg.MergeOption
+		if c.incrementalExpansion {
+			mergeOpts = append(mergeOpts, mergepkg.WithGrantEntitlementIDs())
+		}
+		mergeStats, mergeErr := mergepkg.MergeInto(ctx, destEng, []mergepkg.SourceSync{{Engine: srcEng, SyncID: srcSyncID}}, baseSyncID, mergeOpts...)
 		foldStats.Add(mergeStats)
 		if cerr := w.Close(ctx); cerr != nil {
 			l.Error("compactPebbleFold: error closing source store", zap.Error(cerr), zap.String("file", sourcePath))
 		}
 		if mergeErr != nil {
 			return "", fmt.Errorf("compactPebbleFold: merge %s: %w", sourcePath, mergeErr)
+		}
+	}
+
+	if c.incrementalExpansion {
+		// Hand the fold's changed-entitlement set to incremental expansion.
+		// Non-nil even when empty: nil means "no fold ran" (derive fallback).
+		c.foldChangedEntitlementIDs = foldStats.GrantEntitlementIDs
+		if c.foldChangedEntitlementIDs == nil {
+			c.foldChangedEntitlementIDs = map[string]struct{}{}
 		}
 	}
 
@@ -677,6 +691,13 @@ func (c *Compactor) compactPebbleFold(ctx context.Context) (string, error) {
 	// a lineage link would dangle, and the rebuild path's compacted
 	// output carries no parent either.
 	newSyncID := ksuid.New().String()
+	// The folded store is copied from the base, but the graph sidecar is
+	// stamped with that base sync ID and may no longer describe merged data.
+	// Drop it before publishing the fresh sync; a following expansion writes a
+	// new graph, while skip-expansion artifacts safely fall back next time.
+	if err := destEng.DeleteEntitlementGraphSidecar(ctx); err != nil {
+		return "", fmt.Errorf("compactPebbleFold: delete inherited entitlement graph: %w", err)
+	}
 	baseRec.SetSyncId(newSyncID)
 	baseRec.SetParentSyncId("")
 	baseRec.SetType(unionType)
@@ -881,7 +902,7 @@ func copyFileForFold(src, dst string) error {
 // readCompactionInputFormat reads the c1z header of path and returns its
 // on-disk format, rejecting anything that is not a supported v1/v3 c1z.
 func readCompactionInputFormat(path string) (dotc1z.C1ZFormat, error) {
-	f, err := os.Open(path) // #nosec G304 - compaction inputs are caller-provided c1z paths.
+	f, err := os.Open(path) // #nosec G304,G703 -- compaction inputs are intentionally caller-provided c1z paths.
 	if err != nil {
 		return dotc1z.C1ZFormatUnknown, fmt.Errorf("compactPebble: open input header %s: %w", path, err)
 	}
@@ -900,6 +921,23 @@ func readCompactionInputFormat(path string) (dotc1z.C1ZFormat, error) {
 
 func resolveSQLiteCompactionSyncID(ctx context.Context, store *dotc1z.C1File, explicitSyncID string) (string, error) {
 	if explicitSyncID != "" {
+		// An explicit id is taken verbatim, so it can name an unfinished
+		// sync. ToPebble preserves that unfinished state (ended_at cleared,
+		// sync_token kept, so the sync stays resumable), and the merge's
+		// source selection only considers finished syncs — the converted
+		// file would fail later with "no finished compactable sync",
+		// pointing at a temp path instead of the input the caller named.
+		// Reject it here, where the message can say which input and why.
+		sr, err := sqliteSyncRunByID(ctx, store, explicitSyncID)
+		if err != nil {
+			return "", err
+		}
+		if sr == nil {
+			return "", fmt.Errorf("sync %s not found in sqlite input", explicitSyncID)
+		}
+		if sr.EndedAt == nil {
+			return "", fmt.Errorf("sync %s is unfinished; compaction requires a finished sync", explicitSyncID)
+		}
 		return explicitSyncID, nil
 	}
 
@@ -939,6 +977,36 @@ func resolveSQLiteCompactionSyncID(ctx context.Context, store *dotc1z.C1File, ex
 	return best.GetId(), nil
 }
 
+// sqliteSyncRunByID returns the sync_runs metadata for syncID, or nil when the
+// input holds no such sync.
+//
+// Deliberately not GetSync: that recomputes the stats blob whenever it is
+// absent, which is a full GROUP BY over the sync's records — and stats are only
+// cached when a sync ends, so the recompute would fire for exactly the
+// unfinished syncs this lookup exists to detect, then throw the result away
+// (the input is opened read-only, so nothing is persisted) and, if the
+// recompute failed, replace the caller's diagnosis with a stats error.
+// ListSyncRuns reads the rows and nothing else; the c1z sanitizer uses it the
+// same way.
+func sqliteSyncRunByID(ctx context.Context, store *dotc1z.C1File, syncID string) (*c1zstore.SyncRun, error) {
+	pageToken := ""
+	for {
+		runs, nextPageToken, err := store.ListSyncRuns(ctx, pageToken, 0)
+		if err != nil {
+			return nil, err
+		}
+		for _, sr := range runs {
+			if sr != nil && sr.ID == syncID {
+				return sr, nil
+			}
+		}
+		if nextPageToken == "" || nextPageToken == pageToken {
+			return nil, nil
+		}
+		pageToken = nextPageToken
+	}
+}
+
 // convertSQLiteInputToPebble converts a v1/SQLite compaction input into a
 // freshly-written Pebble (v3) c1z in the compactor tmp dir and returns the
 // path to the converted file. The caller owns the returned path and must
@@ -953,11 +1021,11 @@ func (c *Compactor) convertSQLiteInputToPebble(ctx context.Context, cs *Compacta
 	}
 	convertedPath := tmp.Name()
 	if err := tmp.Close(); err != nil {
-		_ = os.Remove(convertedPath)
+		_ = os.Remove(convertedPath) // #nosec G703 -- convertedPath was returned by CreateTemp above.
 		return "", fmt.Errorf("compactPebble: close conversion temp file: %w", err)
 	}
 	// ToPebble requires the destination path to not exist.
-	if err := os.Remove(convertedPath); err != nil {
+	if err := os.Remove(convertedPath); err != nil { // #nosec G703 -- convertedPath was returned by CreateTemp above.
 		return "", fmt.Errorf("compactPebble: remove conversion temp placeholder: %w", err)
 	}
 
@@ -973,16 +1041,16 @@ func (c *Compactor) convertSQLiteInputToPebble(ctx context.Context, cs *Compacta
 	syncID, err := resolveSQLiteCompactionSyncID(ctx, sqliteStore, cs.SyncID)
 	if err != nil {
 		_ = store.Close(ctx)
-		_ = os.Remove(convertedPath)
+		_ = os.Remove(convertedPath) // #nosec G703 -- convertedPath was returned by CreateTemp above.
 		return "", fmt.Errorf("compactPebble: select sqlite input sync %s: %w", cs.FilePath, err)
 	}
 	if _, err := sqliteStore.ToPebble(ctx, convertedPath, syncID, dotc1z.WithConvertTmpDir(c.tmpDir)); err != nil {
 		_ = store.Close(ctx)
-		_ = os.Remove(convertedPath)
+		_ = os.Remove(convertedPath) // #nosec G703 -- convertedPath was returned by CreateTemp above.
 		return "", fmt.Errorf("compactPebble: convert sqlite input %s to pebble: %w", cs.FilePath, err)
 	}
 	if err := store.Close(ctx); err != nil {
-		_ = os.Remove(convertedPath)
+		_ = os.Remove(convertedPath) // #nosec G703 -- convertedPath was returned by CreateTemp above.
 		return "", fmt.Errorf("compactPebble: close sqlite input after conversion %s: %w", cs.FilePath, err)
 	}
 	return convertedPath, nil
@@ -1041,7 +1109,7 @@ func (c *Compactor) compactPebble(ctx context.Context, newSyncId string) error {
 	var convertedInputs []string
 	defer func() {
 		for _, path := range convertedInputs {
-			_ = os.Remove(path)
+			_ = os.Remove(path) // #nosec G703 -- paths come only from CreateTemp in the compactor temp directory.
 		}
 	}()
 	for i := len(c.entries) - 1; i >= 0; i-- {

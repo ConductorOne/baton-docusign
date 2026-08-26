@@ -10,17 +10,22 @@ import (
 
 // clmRoleBuilder syncs the 5 fixed CLM account-level roles (client.ClmRoles). Not
 // backed by an API call — see resource_types.go for why this resource type exists.
+// CLM availability is checked once, up front, by Connector.Validate() rather than here
+// — see that method's doc for why centralizing it there is better than every opted-in
+// CLM builder repeating the same check on its own first page. Unlike every other CLM
+// builder, this one never calls the API at all, so it holds no *client.Client.
 type clmRoleBuilder struct {
 	resourceType *v2.ResourceType
-	client       *client.Client
 }
 
 func (b *clmRoleBuilder) ResourceType(_ context.Context) *v2.ResourceType {
 	return clmRoleResourceType
 }
 
-// List returns the fixed set of CLM roles. No pagination needed — the set is small
-// and hardcoded, not fetched from the API.
+// List returns the fixed set of CLM roles. No pagination needed — the set is small and
+// hardcoded, not fetched from the API. CLM availability was already confirmed once, up
+// front, by Connector.Validate() before any builder's List() runs — see that method's
+// doc — so there's no error path here beyond rs.NewRoleResource construction failing.
 func (b *clmRoleBuilder) List(_ context.Context, _ *v2.ResourceId, _ rs.SyncOpAttrs) ([]*v2.Resource, *rs.SyncOpResults, error) {
 	var resources []*v2.Resource
 	for _, role := range client.ClmRoles {
@@ -50,9 +55,8 @@ func (b *clmRoleBuilder) Grants(_ context.Context, _ *v2.Resource, _ rs.SyncOpAt
 	return nil, nil, nil
 }
 
-func newClmRoleBuilder(c *client.Client) *clmRoleBuilder {
+func newClmRoleBuilder() *clmRoleBuilder {
 	return &clmRoleBuilder{
 		resourceType: clmRoleResourceType,
-		client:       c,
 	}
 }

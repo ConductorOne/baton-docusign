@@ -24,6 +24,17 @@ type Connector struct {
 	// at all (see ResourceSyncers). Unlike the CLM types, which are always registered,
 	// this means ListResourceTypes() advertises a different set depending on the flag.
 	includeSigningGroups bool
+	// includeClm reports whether this sync will touch any CLM resource type — the same
+	// opts.WillSyncResourceType(...) signal that already determines whether any CLM
+	// builder's List() gets invoked this run (see New()). Gates Validate()'s upfront CLM
+	// readiness check only: it does NOT gate resource-type registration. ResourceSyncers
+	// always registers all 6 CLM builders unconditionally, because toggling registration
+	// itself would make ListResourceTypes() advertise a different set between syncs and
+	// C1 would read previously-synced CLM resources/grants as deleted.
+	includeClm bool
+	// skipPermissionProfileResourceType reports whether permission_profile is
+	// excluded from the sync filter.
+	skipPermissionProfileResourceType bool
 }
 
 // Configure handles the OAuth2 authorization flow to obtain a refresh token.
@@ -66,11 +77,11 @@ func Configure(ctx context.Context, docusignCfg *cfg.Docusign, includeClm bool) 
 
 func (d *Connector) ResourceSyncers(_ context.Context) []connectorbuilder.ResourceSyncerV2 {
 	syncers := []connectorbuilder.ResourceSyncerV2{
-		newUserBuilder(d.client),
+		newUserBuilder(d.client, d.skipPermissionProfileResourceType),
 		newGroupBuilder(d.client),
 		newPermissionProfilesBuilder(d.client),
 		newClmMemberBuilder(d.client),
-		newClmRoleBuilder(d.client),
+		newClmRoleBuilder(),
 		newClmGroupBuilder(d.client),
 		newClmPermissionSetBuilder(d.client),
 		newClmFolderBuilder(d.client),
@@ -128,13 +139,34 @@ func (d *Connector) Metadata(_ context.Context) (*v2.ConnectorMetadata, error) {
 	}, nil
 }
 
-func (d *Connector) Validate(_ context.Context) (annotations.Annotations, error) {
+// Validate runs once, before any resource type's List() (see baton-sdk's
+// pkg/sync/syncer.go Sync()), so it's the right place to check readiness a single time
+// upfront rather than discovering a bad account mid-sync at whichever builder's List()
+// happens to run first. EnsureReady (base eSignature credentials) runs unconditionally
+// — every sync needs those regardless of CLM — while EnsureClmReady is gated on
+// includeClm: an account that never opted into any CLM resource type has no reason to
+// pay for, or fail on, a CLM discovery call it doesn't need. This gate is separate from
+// resource-type registration (see this file's includeClm field doc) and replaces each
+// CLM builder's own List() checking readiness independently.
+func (d *Connector) Validate(ctx context.Context) (annotations.Annotations, error) {
+	if err := d.client.EnsureReady(ctx); err != nil {
+		return nil, fmt.Errorf("baton-docusign: eSignature credential check failed: %w", err)
+	}
+	if !d.includeClm {
+		return nil, nil
+	}
+	if err := d.client.EnsureClmReady(ctx); err != nil {
+		return nil, fmt.Errorf("baton-docusign: CLM readiness check failed — clm_* resource types "+
+			"are enabled for this sync but this account/credential cannot reach the CLM API; "+
+			"disable those resource types or enable CLM on the account: %w", err)
+	}
 	return nil, nil
 }
 
 func NewWithRefreshToken(
 	ctx context.Context, isDemo bool, clientId, clientSecret, redirectURI, refreshToken, accountId string,
 	includeSigningGroups, includeClm bool, clmBaseURLOverride, baseURLOverride string,
+	skipPermissionProfileResourceType bool,
 ) (*Connector, error) {
 	l := ctxzap.Extract(ctx)
 
@@ -148,30 +180,29 @@ func NewWithRefreshToken(
 	}
 
 	return &Connector{
-		client:               docusignClient,
-		includeSigningGroups: includeSigningGroups,
+		client:                            docusignClient,
+		includeSigningGroups:              includeSigningGroups,
+		includeClm:                        includeClm,
+		skipPermissionProfileResourceType: skipPermissionProfileResourceType,
 	}, nil
 }
 
-func NewWithClient(client *client.Client, includeSigningGroups bool) (*Connector, error) {
-	return &Connector{
-		client:               client,
-		includeSigningGroups: includeSigningGroups,
-	}, nil
-}
-
-// NewWithTokenSource takes no includeClm: the token source is minted by ConductorOne's
-// OAuth flow, so this path can't influence which scopes were granted, and the CLM
-// builders no longer gate their List() bodies on it.
+// NewWithTokenSource's token source is minted by ConductorOne's OAuth flow, so this
+// path can't influence which scopes were granted (unlike NewWithRefreshToken, where
+// includeClm also drives buildScopes) — but it still needs includeClm to gate
+// Validate()'s CLM readiness check, so it's threaded through for that purpose alone.
 func NewWithTokenSource(
 	ctx context.Context, isDemo bool, tokenSource oauth2.TokenSource, accountId string,
-	includeSigningGroups bool, clmBaseURLOverride string,
+	includeSigningGroups, includeClm bool, clmBaseURLOverride string,
+	skipPermissionProfileResourceType bool,
 ) (*Connector, error) {
 	docusignClient := client.NewClient(ctx, isDemo, tokenSource, accountId, clmBaseURLOverride)
 
 	return &Connector{
-		client:               docusignClient,
-		includeSigningGroups: includeSigningGroups,
+		client:                            docusignClient,
+		includeSigningGroups:              includeSigningGroups,
+		includeClm:                        includeClm,
+		skipPermissionProfileResourceType: skipPermissionProfileResourceType,
 	}, nil
 }
 
@@ -192,10 +223,14 @@ func New(ctx context.Context, docusignCfg *cfg.Docusign, opts *cli.ConnectorOpts
 	// client ID is provided (GUI demo group selection).
 	isDemo := docusignCfg.Demo || opts.SelectedAuthMethod == "demo"
 
+	// nil opts means no filter, so nothing is skipped.
+	skipPermissionProfileResourceType := opts != nil && !opts.WillSyncResourceType(PermissionProfileResourceTypeID)
+
 	if opts.TokenSource != nil {
 		cbWithTokenSource, err := NewWithTokenSource(
 			ctx, isDemo, opts.TokenSource, docusignCfg.AccountId,
-			docusignCfg.IncludeSigningGroups, docusignCfg.ClmBaseUrl,
+			docusignCfg.IncludeSigningGroups, includeClm, docusignCfg.ClmBaseUrl,
+			skipPermissionProfileResourceType,
 		)
 		if err != nil {
 			l.Error("error creating connector with token source", zap.Error(err))
@@ -228,6 +263,7 @@ func New(ctx context.Context, docusignCfg *cfg.Docusign, opts *cli.ConnectorOpts
 			includeClm,
 			docusignCfg.ClmBaseUrl,
 			docusignCfg.BaseUrl,
+			skipPermissionProfileResourceType,
 		)
 		if err != nil {
 			l.Error("error creating connector", zap.Error(err))
