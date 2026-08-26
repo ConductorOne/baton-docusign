@@ -184,6 +184,13 @@ func isCacheablePermissionProfilesError(err error) bool {
 // real request and forwarding a stale, reused annotation would misrepresent the current
 // request's pacing to the SDK's self-throttling rate limiter.
 func (b *userBuilder) getPermissionProfiles(ctx context.Context, syncID string) ([]client.PermissionProfile, annotations.Annotations, error) {
+	if err := ctx.Err(); err != nil {
+		// Fail fast on an already-done context instead of queuing behind
+		// permissionProfilesMu: the lock is held across the real HTTP round-trip below
+		// (see getPermissionProfiles' doc), so a goroutine whose context is already
+		// cancelled/expired would otherwise wait out that entire call for nothing.
+		return nil, nil, err
+	}
 	b.permissionProfilesMu.Lock()
 	defer b.permissionProfilesMu.Unlock()
 
@@ -418,7 +425,12 @@ func (b *userBuilder) tryFastPathGrant(ctx context.Context, resource *v2.Resourc
 	profiles, ppAnnos, err := b.getPermissionProfiles(ctx, syncID)
 	if err != nil {
 		if isReclassifiedRateLimitError(err) {
-			return nil, nil, err, true
+			// Wrapped (not returned bare) so a log line downstream can tell this
+			// originated in the fast-path grant resolution, not any other DocuSign call —
+			// %w preserves the gRPC status (codes.Unavailable + RateLimitDescription)
+			// through errors.As, which status.Code/status.FromError already rely on (see
+			// reclassifyRateLimitError's identical use of errors.Join for the same reason).
+			return nil, nil, fmt.Errorf("failed to resolve permission profile for user %s: %w", userID.Resource, err), true
 		}
 		ctxzap.Extract(ctx).Debug("baton-docusign: GetPermissionProfiles failed, falling back to per-user GetUserDetails for this Grants call",
 			zap.String("user_id", userID.Resource), zap.Error(err))
