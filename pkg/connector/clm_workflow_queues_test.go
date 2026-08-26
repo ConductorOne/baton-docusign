@@ -89,25 +89,23 @@ func TestClmWorkflowQueueBuilder_List_NoQueues(t *testing.T) {
 	}
 }
 
-// TestClmWorkflowQueueBuilder_List_NilParentResourceID pins List()'s documented guard
-// against a nil parent. The SDK should never call List() this way — every call for this
-// type is derived from clmMemberResourceType's ChildResourceType annotation
-// (resource_types.go) — but this proves the guard fails loud with a clear message
-// instead of panicking if that invariant is ever violated.
+// TestClmWorkflowQueueBuilder_List_NilParentResourceID pins List()'s no-op for the SDK's
+// mandatory unparented top-level call (one per registered resource type). Child discovery
+// happens via parented calls driven by clmMemberResourceType's ChildResourceType annotation.
 func TestClmWorkflowQueueBuilder_List_NilParentResourceID(t *testing.T) {
 	_, c := clmtest.NewServer(t)
 	b := newClmWorkflowQueueBuilder(c)
 	ctx := context.Background()
 
 	resources, res, err := b.List(ctx, nil, rs.SyncOpAttrs{})
-	if err == nil {
-		t.Fatal("expected an error when List is called without a parent CLM member, got nil")
+	if err != nil {
+		t.Fatalf("expected nil error for unparented top-level List(), got: %v", err)
 	}
-	if !strings.Contains(err.Error(), "clm_workflow_queue.List called without a parent CLM member") {
-		t.Errorf("expected the documented nil-parent error message, got: %v", err)
+	if resources != nil {
+		t.Errorf("expected nil resources, got %+v", resources)
 	}
-	if resources != nil || res != nil {
-		t.Errorf("expected (nil, nil, err), got (%v, %v, %v)", resources, res, err)
+	if res != nil {
+		t.Errorf("expected nil SyncOpResults, got %+v", res)
 	}
 }
 

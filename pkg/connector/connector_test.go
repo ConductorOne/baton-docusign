@@ -279,9 +279,9 @@ func TestNew_IncludeClmDerivation(t *testing.T) {
 	tokenSource := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "tok"})
 
 	tests := []struct {
-		name                     string
-		syncResourceTypeIDs      []string
-		wantIncludeClm           bool
+		name                      string
+		syncResourceTypeIDs       []string
+		wantIncludeClm            bool
 		wantIncludeWorkflowQueues bool
 	}{
 		{"no filter (opts.SyncResourceTypeIDs empty): syncs everything, including CLM", nil, true, true},

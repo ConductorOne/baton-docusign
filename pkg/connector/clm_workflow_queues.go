@@ -47,11 +47,11 @@ func (b *clmWorkflowQueueBuilder) ResourceType(_ context.Context) *v2.ResourceTy
 // completion internally.
 func (b *clmWorkflowQueueBuilder) List(ctx context.Context, parentResourceID *v2.ResourceId, _ rs.SyncOpAttrs) ([]*v2.Resource, *rs.SyncOpResults, error) {
 	if parentResourceID == nil {
-		// Only reachable if this type's registration ever diverges from the
-		// ChildResourceType annotation clm_member resources carry — the SDK derives
-		// every List() call for this type from that annotation, so this should never
-		// actually happen; failing loud beats silently returning nothing.
-		return nil, nil, fmt.Errorf("baton-docusign: clm_workflow_queue.List called without a parent CLM member")
+		// The SDK always issues one unparented top-level List() per registered resource
+		// type (syncer.go SyncResources) in addition to parented child-resource calls.
+		// clm_workflow_queue is child-only — queues are discovered per clm_member via
+		// ChildResourceType scheduling — so the unparented call is a no-op.
+		return nil, nil, nil
 	}
 
 	queues, annos, err := b.client.GetMemberWorkflowQueues(ctx, parentResourceID.Resource)
