@@ -54,6 +54,13 @@
         "annotations": [
           {
             "@type": "type.googleapis.com/c1.connector.v2.OptInRequired"
+          },
+          {
+            "@type": "type.googleapis.com/c1.connector.v2.ChildResourceType",
+            "resourceTypeId": "clm_workflow_queue"
+          },
+          {
+            "@type": "type.googleapis.com/c1.connector.v2.SkipEntitlements"
           }
         ]
       },

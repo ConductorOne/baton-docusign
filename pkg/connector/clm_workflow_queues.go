@@ -22,8 +22,9 @@ const entitlementClmWorkflowQueueMember = "member"
 // list-all-queues endpoint — so List() here is driven per-member by the SDK rather than
 // paginating independently. A queue with several members is discovered once per member
 // whose scan reaches it; the SDK upserts resources by (ResourceType, Resource) regardless
-// of which parent scan produced them, so the repeat discovery is a no-op re-upsert, not
-// something this builder needs to dedup itself (pkg/sync/syncer.go's syncResources).
+// of which parent scan produced them, so repeat discovery is an idempotent identity
+// re-upsert — parent is not modeled on the resource because a shared queue has no
+// single canonical member parent (see parseIntoClmWorkflowQueueResource).
 // Membership grants are emitted from clmMemberBuilder.Grants() instead of here — the
 // query is per-member either way, and emitting from the principal side avoids needing
 // durable state between the resources and grants sync phases (contrast the previous
@@ -106,17 +107,15 @@ func newClmWorkflowQueueBuilder(c *client.Client) *clmWorkflowQueueBuilder {
 	}
 }
 
-// parseIntoClmWorkflowQueueResource maps a client.ClmWorkflowQueue to a Baton v2.Resource,
-// scoped under the member whose scan discovered it. A queue can belong to several
-// members, each independently discovering and re-upserting it (see this builder's doc
-// comment) — parentResourceID here reflects whichever member's List() call produced this
-// particular instance, not a claim that this is the queue's only member.
-func parseIntoClmWorkflowQueueResource(q *client.ClmWorkflowQueue, parentResourceID *v2.ResourceId) (*v2.Resource, error) {
+// parseIntoClmWorkflowQueueResource maps a client.ClmWorkflowQueue to a Baton v2.Resource.
+// parentResourceID is the member whose List() call discovered this queue — used only for
+// logging context in callers; it is not stamped as ParentResourceId because a queue can
+// belong to several members and the parent would be last-writer-wins across syncs.
+func parseIntoClmWorkflowQueueResource(q *client.ClmWorkflowQueue, _ *v2.ResourceId) (*v2.Resource, error) {
 	return rs.NewGroupResource(
 		q.Name,
 		clmWorkflowQueueResourceType,
 		clmIDFromHref(q.Href),
 		nil,
-		rs.WithParentResourceID(parentResourceID),
 	)
 }

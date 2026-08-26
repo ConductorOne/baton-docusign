@@ -17,8 +17,7 @@ import (
 // ChildResourceType (see resource_types.go), so List() is driven per-member by the SDK's
 // own child-resource scheduling instead of an independent, hand-rolled member scan.
 // member-bob (clmtest/seed.go) belongs to both seeded queues (Onboarding, Escalations) —
-// this confirms List() returns exactly that member's queues, each scoped under the
-// parent member resource via ParentResourceId.
+// this confirms List() returns exactly that member's queues by stable queue ID.
 func TestClmWorkflowQueueBuilder_List_ReturnsMemberWorkflowQueues(t *testing.T) {
 	_, c := clmtest.NewServer(t)
 	b := newClmWorkflowQueueBuilder(c)
@@ -42,8 +41,8 @@ func TestClmWorkflowQueueBuilder_List_ReturnsMemberWorkflowQueues(t *testing.T) 
 		if r.Id.ResourceType != clmWorkflowQueueResourceType.Id {
 			t.Errorf("expected resource type %q, got %q", clmWorkflowQueueResourceType.Id, r.Id.ResourceType)
 		}
-		if r.ParentResourceId == nil || r.ParentResourceId.ResourceType != parentResourceID.ResourceType || r.ParentResourceId.Resource != parentResourceID.Resource {
-			t.Errorf("expected ParentResourceId %+v, got %+v", parentResourceID, r.ParentResourceId)
+		if r.ParentResourceId != nil {
+			t.Errorf("expected no ParentResourceId (shared queues have no canonical parent), got %+v", r.ParentResourceId)
 		}
 		gotIDs[r.Id.Resource] = true
 	}

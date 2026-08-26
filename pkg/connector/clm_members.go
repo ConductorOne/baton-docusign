@@ -6,8 +6,10 @@ import (
 
 	"github.com/conductorone/baton-docusign/pkg/client"
 	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
+	"github.com/conductorone/baton-sdk/pkg/annotations"
 	"github.com/conductorone/baton-sdk/pkg/types/grant"
 	rs "github.com/conductorone/baton-sdk/pkg/types/resource"
+	"google.golang.org/protobuf/proto"
 )
 
 // clmMemberBuilder syncs CLM Members — CLM's own principal object. Synced as its own
@@ -17,10 +19,28 @@ import (
 type clmMemberBuilder struct {
 	resourceType *v2.ResourceType
 	client       *client.Client
+	// includeWorkflowQueues reports whether clm_workflow_queue is included in the
+	// customer's sync filter. When false, ResourceType() attaches
+	// SkipEntitlementsAndGrants so the SDK never calls Grants() — which would
+	// otherwise invoke GetMemberWorkflowQueues even though the customer didn't
+	// opt into workflow queues (mirrors userBuilder + skipPermissionProfileResourceType).
+	includeWorkflowQueues bool
 }
 
+// ResourceType returns the Baton resource type handled by this builder,
+// annotated to tell the SDK's sync engine whether it can skip calling
+// Grants() for clm_member resources. clmMemberResourceType is a package-level
+// var shared with other code, so it's cloned before its annotations are mutated.
 func (b *clmMemberBuilder) ResourceType(_ context.Context) *v2.ResourceType {
-	return clmMemberResourceType
+	rt := proto.Clone(clmMemberResourceType).(*v2.ResourceType)
+	annos := annotations.Annotations(rt.Annotations)
+	if b.includeWorkflowQueues {
+		annos.Update(&v2.SkipEntitlements{})
+	} else {
+		annos.Update(&v2.SkipEntitlementsAndGrants{})
+	}
+	rt.Annotations = annos
+	return rt
 }
 
 func (b *clmMemberBuilder) List(ctx context.Context, _ *v2.ResourceId, attr rs.SyncOpAttrs) ([]*v2.Resource, *rs.SyncOpResults, error) {
@@ -96,10 +116,11 @@ func (b *clmMemberBuilder) Grants(ctx context.Context, resource *v2.Resource, _ 
 	return grants, &rs.SyncOpResults{Annotations: annos}, nil
 }
 
-func newClmMemberBuilder(c *client.Client) *clmMemberBuilder {
+func newClmMemberBuilder(c *client.Client, includeWorkflowQueues bool) *clmMemberBuilder {
 	return &clmMemberBuilder{
-		resourceType: clmMemberResourceType,
-		client:       c,
+		resourceType:          clmMemberResourceType,
+		client:                c,
+		includeWorkflowQueues: includeWorkflowQueues,
 	}
 }
 

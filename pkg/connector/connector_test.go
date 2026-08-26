@@ -176,7 +176,7 @@ func TestNewWithRefreshToken_StoresIncludeClm(t *testing.T) {
 		cb, err := NewWithRefreshToken(
 			ctx, false, "client-id", "client-secret", "https://redirect.example.com",
 			"refresh-token", "account-1", false, includeClm,
-			"https://clm.example.com", "https://api.example.com", false,
+			"https://clm.example.com", "https://api.example.com", false, false,
 		)
 		if err != nil {
 			t.Fatalf("includeClm=%v: NewWithRefreshToken: %v", includeClm, err)
@@ -198,7 +198,7 @@ func TestNewWithTokenSource_StoresIncludeClm(t *testing.T) {
 
 	for _, includeClm := range []bool{true, false} {
 		cb, err := NewWithTokenSource(
-			ctx, false, tokenSource, "account-1", false, includeClm, "https://clm.example.com", false,
+			ctx, false, tokenSource, "account-1", false, includeClm, "https://clm.example.com", false, false,
 		)
 		if err != nil {
 			t.Fatalf("includeClm=%v: NewWithTokenSource: %v", includeClm, err)

@@ -19,7 +19,7 @@ func TestClmMemberBuilder_List_Pagination(t *testing.T) {
 	// member-frank has 105 synthetic groups but is just one member row among 6 — this
 	// confirms ListMembers' own pagination (not GetMemberGroups') is threaded correctly.
 	_, c := clmtest.NewServer(t)
-	b := newClmMemberBuilder(c)
+	b := newClmMemberBuilder(c, true)
 	ctx := context.Background()
 
 	var all []*v2.Resource
@@ -49,7 +49,7 @@ func TestClmMemberBuilder_List_Pagination(t *testing.T) {
 // clm_workflow_queue.List() call triggered even though the type declaration looks correct.
 func TestClmMemberBuilder_List_StampsWorkflowQueueChildResourceType(t *testing.T) {
 	_, c := clmtest.NewServer(t)
-	b := newClmMemberBuilder(c)
+	b := newClmMemberBuilder(c, true)
 	ctx := context.Background()
 
 	resources, _, err := b.List(ctx, nil, rs.SyncOpAttrs{PageToken: pagination.Token{Size: 10}})
@@ -84,7 +84,7 @@ func TestClmMemberBuilder_List_FailsWhenClmUnavailable(t *testing.T) {
 	// rather than silently succeed with zero resources — see clm_roles.go's doc comment.
 	s, _ := clmtest.NewServer(t)
 	badClient := s.NewClientWithToken("wrong-token")
-	b := newClmMemberBuilder(badClient)
+	b := newClmMemberBuilder(badClient, true)
 	ctx := context.Background()
 
 	resources, _, err := b.List(ctx, nil, rs.SyncOpAttrs{PageToken: pagination.Token{Size: 10}})
@@ -99,7 +99,7 @@ func TestClmMemberBuilder_List_FailsWhenClmUnavailable(t *testing.T) {
 func TestClmMemberBuilder_Entitlements_IsNoop(t *testing.T) {
 	// clm_member is a pure principal: it holds no entitlements of its own.
 	_, c := clmtest.NewServer(t)
-	b := newClmMemberBuilder(c)
+	b := newClmMemberBuilder(c, true)
 	ctx := context.Background()
 
 	memberResource, err := rs.NewResource("Alice", clmMemberResourceType, "member-alice")
@@ -120,7 +120,7 @@ func TestClmMemberBuilder_Entitlements_IsNoop(t *testing.T) {
 // entitlement-resource side and the member as the principal.
 func TestClmMemberBuilder_Grants_EmitsWorkflowQueueMembership(t *testing.T) {
 	_, c := clmtest.NewServer(t)
-	b := newClmMemberBuilder(c)
+	b := newClmMemberBuilder(c, true)
 	ctx := context.Background()
 
 	memberResource, err := rs.NewResource("Bob", clmMemberResourceType, "member-bob")
@@ -165,7 +165,7 @@ func TestClmMemberBuilder_Grants_EmitsWorkflowQueueMembership(t *testing.T) {
 // rather than an error.
 func TestClmMemberBuilder_Grants_NoQueues(t *testing.T) {
 	_, c := clmtest.NewServer(t)
-	b := newClmMemberBuilder(c)
+	b := newClmMemberBuilder(c, true)
 	ctx := context.Background()
 
 	memberResource, err := rs.NewResource("Carol", clmMemberResourceType, "member-carol")
@@ -188,7 +188,7 @@ func TestClmMemberBuilder_Grants_NoQueues(t *testing.T) {
 func TestClmMemberBuilder_Grants_PropagatesClientError(t *testing.T) {
 	srv, c := clmtest.NewServer(t)
 	srv.ForceMemberWorkflowQueuesStatus("member-alice", 403)
-	b := newClmMemberBuilder(c)
+	b := newClmMemberBuilder(c, true)
 	ctx := context.Background()
 
 	memberResource, err := rs.NewResource("Alice", clmMemberResourceType, "member-alice")
@@ -218,7 +218,7 @@ func TestClmMemberBuilder_Grants_PropagatesClientError(t *testing.T) {
 func TestClmMemberBuilder_Grants_SkipsQueueWithEmptyHref(t *testing.T) {
 	srv, c := clmtest.NewServer(t)
 	srv.AddMemberWorkflowQueueWithEmptyHref("member-no-href-queue")
-	b := newClmMemberBuilder(c)
+	b := newClmMemberBuilder(c, true)
 	ctx := context.Background()
 
 	memberResource, err := rs.NewResource("No Href Queue Member", clmMemberResourceType, "member-no-href-queue")
@@ -232,5 +232,50 @@ func TestClmMemberBuilder_Grants_SkipsQueueWithEmptyHref(t *testing.T) {
 	}
 	if len(grants) != 0 {
 		t.Fatalf("expected the empty-Href queue to be skipped, got %d grants: %+v", len(grants), grants)
+	}
+}
+
+// TestClmMemberBuilder_ResourceType_SyncWorkflowQueuesEnabled verifies that when
+// clm_workflow_queue is included in the sync, ResourceType() attaches SkipEntitlements
+// (Entitlements() is a no-op so it's safe to skip) but NOT SkipEntitlementsAndGrants
+// (Grants() must still run to emit workflow-queue membership grants).
+func TestClmMemberBuilder_ResourceType_SyncWorkflowQueuesEnabled(t *testing.T) {
+	ctx := context.Background()
+	b := newClmMemberBuilder(nil, true)
+
+	rt := b.ResourceType(ctx)
+
+	rtAnnos := annotations.Annotations(rt.Annotations)
+	if !rtAnnos.Contains(&v2.SkipEntitlements{}) {
+		t.Errorf("expected ResourceType() annotations to contain SkipEntitlements when includeWorkflowQueues=true")
+	}
+	if rtAnnos.Contains(&v2.SkipEntitlementsAndGrants{}) {
+		t.Errorf("expected ResourceType() annotations NOT to contain SkipEntitlementsAndGrants when includeWorkflowQueues=true")
+	}
+}
+
+// TestClmMemberBuilder_ResourceType_SyncWorkflowQueuesDisabled verifies that when the
+// customer's sync filter excludes clm_workflow_queue, ResourceType() attaches
+// SkipEntitlementsAndGrants so the SDK never calls Grants() — which would otherwise
+// invoke GetMemberWorkflowQueues even though the customer didn't opt into workflow queues.
+// Also verifies that building this annotated ResourceType does not mutate the shared
+// package-level clmMemberResourceType var.
+func TestClmMemberBuilder_ResourceType_SyncWorkflowQueuesDisabled(t *testing.T) {
+	ctx := context.Background()
+	b := newClmMemberBuilder(nil, false)
+
+	rt := b.ResourceType(ctx)
+
+	rtAnnos := annotations.Annotations(rt.Annotations)
+	if !rtAnnos.Contains(&v2.SkipEntitlementsAndGrants{}) {
+		t.Errorf("expected ResourceType() annotations to contain SkipEntitlementsAndGrants when includeWorkflowQueues=false")
+	}
+	if rtAnnos.Contains(&v2.SkipEntitlements{}) {
+		t.Errorf("expected ResourceType() annotations NOT to contain a bare SkipEntitlements when includeWorkflowQueues=false")
+	}
+
+	baseAnnos := annotations.Annotations(clmMemberResourceType.Annotations)
+	if baseAnnos.Contains(&v2.SkipEntitlementsAndGrants{}) {
+		t.Error("clmMemberResourceType should not be mutated by ResourceType()")
 	}
 }
