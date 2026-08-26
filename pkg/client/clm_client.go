@@ -966,8 +966,8 @@ func (c *Client) ListPermissionSets(ctx context.Context, options PageOptions) ([
 
 // GetMemberWorkflowQueues lists the workflow queues a CLM member belongs to. Like
 // GetMemberGroups, this fetches the member's complete set rather than exposing a page
-// token: clm_workflow_queue's List() (pkg/connector/clm_workflow_queues.go) needs every
-// queue a member is in to build its member->queues index, not one page at a time.
+// token: clm_workflow_queue's List() (pkg/connector/clm_workflow_queues.go) needs the
+// complete set for the member it was called with, not one page at a time.
 // Confirmed read-only intent per the API's documented surface: there is no reverse
 // lookup (queue to members) and no membership grant/revoke endpoint, only work-item
 // assign/unassign — which this connector doesn't sync (see clm_workflow_queues.go).

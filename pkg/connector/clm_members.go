@@ -93,7 +93,10 @@ func (b *clmMemberBuilder) Entitlements(_ context.Context, _ *v2.Resource, _ rs.
 // side that can produce this. clmWorkflowQueueBuilder.List() (this member's child-resource
 // sync) makes the same GetMemberWorkflowQueues call earlier in the sync to discover queue
 // resources; this Grants() call repeats it once per member — an accepted 2x tradeoff of
-// the ChildResourceType design (no session store between List and Grants phases).
+// the ChildResourceType design (no session store between List and Grants phases). That
+// also means membership can drift between the resources and grants phases on very long
+// syncs (a grant could reference a queue resource not yet stored); we accept that skew
+// rather than reintroduce session-store coupling per the ChildResourceType redesign.
 func (b *clmMemberBuilder) Grants(ctx context.Context, resource *v2.Resource, _ rs.SyncOpAttrs) ([]*v2.Grant, *rs.SyncOpResults, error) {
 	memberID := resource.Id.Resource
 

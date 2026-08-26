@@ -229,9 +229,14 @@ func New(ctx context.Context, docusignCfg *cfg.Docusign, opts *cli.ConnectorOpts
 	// client ID is provided (GUI demo group selection).
 	isDemo := docusignCfg.Demo || opts.SelectedAuthMethod == "demo"
 
-	// nil opts means no filter, so nothing is skipped.
-	skipPermissionProfileResourceType := opts != nil && !opts.WillSyncResourceType(PermissionProfileResourceTypeID)
-	includeWorkflowQueues := opts == nil || opts.WillSyncResourceType(clmWorkflowQueueResourceType.Id)
+	// skipPermissionProfileResourceType and includeWorkflowQueues follow the sync filter;
+	// opts is non-nil here (WillSyncResourceType above requires it).
+	skipPermissionProfileResourceType := !opts.WillSyncResourceType(PermissionProfileResourceTypeID)
+	includeWorkflowQueues := opts.WillSyncResourceType(clmWorkflowQueueResourceType.Id)
+
+	if includeWorkflowQueues && !opts.WillSyncResourceType(clmMemberResourceType.Id) {
+		l.Warn("clm_workflow_queue is enabled but clm_member is not — workflow queues are discovered per member, so this sync will produce zero queues and zero grants")
+	}
 
 	if opts.TokenSource != nil {
 		cbWithTokenSource, err := NewWithTokenSource(
