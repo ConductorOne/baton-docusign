@@ -18,13 +18,12 @@ import (
 // Shared profile/field map keys, reused across builders (and the AccountCreationSchema
 // field map in connector.go) to avoid repeated string literals (golangci-lint: goconst).
 const (
-	profileFieldEmail        = "email"
-	profileFieldUsername     = "username"
-	profileFieldGroupName    = "group_name"
-	profileFieldPermission   = "permission"
-	profileFieldStatus       = "status"
-	profileFieldPermissionID = "permission_profile_id"
-	profileFieldHref         = "href"
+	profileFieldEmail      = "email"
+	profileFieldUsername   = "username"
+	profileFieldGroupName  = "group_name"
+	profileFieldPermission = "permission"
+	profileFieldStatus     = "status"
+	profileFieldHref       = "href"
 )
 
 // userStatusActive is the DocuSign UserStatus value this connector treats as "active" —
@@ -88,17 +87,36 @@ func clmIDFromHref(href string) string {
 // permissionProfileIDByName returns the ID of the profile named name (requiring a
 // non-empty ID) and how many matched, so callers can tell "not found" (0) from
 // "ambiguous" (2+) — names aren't guaranteed unique per account — without a second scan
-// of their own. id is only meaningful when matches == 1.
+// of their own. id is only meaningful when matches == 1. Callers that need to resolve an
+// ambiguous match anyway (rather than treat it as not-found) should use
+// permissionProfilesByName instead — see its doc.
 func permissionProfileIDByName(profiles []client.PermissionProfile, name string) (string, int) {
-	id := ""
-	matches := 0
+	matches := permissionProfilesByName(profiles, name)
+	if len(matches) == 0 {
+		return "", 0
+	}
+	return matches[len(matches)-1].PermissionProfileId, len(matches)
+}
+
+// permissionProfilesByName returns every profile named name (requiring a non-empty ID),
+// in the API's own response order. Unlike permissionProfileIDByName — which deliberately
+// makes an ambiguous match (2+) indistinguishable from "pick one, ID doesn't matter which"
+// by leaving its returned id meaningless in that case — this variant exists for the one
+// caller (permissionProfilesBuilder.Revoke) that needs to actually resolve an ambiguous
+// name to a specific profile: DocuSign doesn't enforce unique profile names, and prior to
+// the ambiguous-is-an-error behavior added elsewhere in this codebase, Revoke took the
+// first match and succeeded silently. Revoke restores that first-match behavior (loudly,
+// via a Warn log) using matches[0] here, while tryFastPathGrant's name-based grant
+// resolution keeps treating ambiguous as not-found via permissionProfileIDByName — a wrong
+// silent guess there is a wrong grant, which is worse than falling back.
+func permissionProfilesByName(profiles []client.PermissionProfile, name string) []client.PermissionProfile {
+	var matches []client.PermissionProfile
 	for _, p := range profiles {
 		if p.PermissionProfileName == name && p.PermissionProfileId != "" {
-			id = p.PermissionProfileId
-			matches++
+			matches = append(matches, p)
 		}
 	}
-	return id, matches
+	return matches
 }
 
 // clmHrefWithID rebuilds sampleHref with its trailing ID segment replaced by newID.

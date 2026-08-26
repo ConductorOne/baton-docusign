@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/conductorone/baton-sdk/pkg/uhttp"
@@ -276,10 +277,13 @@ func TestMultiAccountResourceIsolation(t *testing.T) {
 
 // newCountingPermissionProfilesClient wires a Client to a mock server that counts real
 // GET /permission_profiles hits, to distinguish a real network call from one served by
-// uhttp's shared GET cache.
-func newCountingPermissionProfilesClient(t *testing.T) (*Client, *int) {
+// uhttp's shared GET cache. The counter is incremented inside the httptest server's
+// handler goroutine and read from the test's main goroutine, so it must be an atomic
+// (see pkg/connector/users_test.go's newCountingPermissionProfilesClient, which
+// established this pattern with atomic.Int32) — a plain int here would trip `go test -race`.
+func newCountingPermissionProfilesClient(t *testing.T) (*Client, *atomic.Int32) {
 	t.Helper()
-	calls := 0
+	var calls atomic.Int32
 
 	mockServer := httptest.NewServer(nil)
 	t.Cleanup(mockServer.Close)
@@ -294,7 +298,7 @@ func newCountingPermissionProfilesClient(t *testing.T) (*Client, *int) {
 				},
 			})
 		case strings.HasSuffix(r.URL.Path, "/permission_profiles"):
-			calls++
+			calls.Add(1)
 			_ = json.NewEncoder(w).Encode(PermissionProfilesResponse{
 				PermissionProfiles: []PermissionProfile{{PermissionProfileId: "pp-1", PermissionProfileName: "DocuSign Admin"}},
 			})
@@ -327,8 +331,8 @@ func TestGetPermissionProfiles_CachingSplitByCaller(t *testing.T) {
 				t.Fatalf("call %d: %v", i, err)
 			}
 		}
-		if *calls != 1 {
-			t.Errorf("expected 1 real request across 2 GetPermissionProfiles calls (cache should serve the second), got %d", *calls)
+		if got := calls.Load(); got != 1 {
+			t.Errorf("expected 1 real request across 2 GetPermissionProfiles calls (cache should serve the second), got %d", got)
 		}
 	})
 
@@ -339,8 +343,8 @@ func TestGetPermissionProfiles_CachingSplitByCaller(t *testing.T) {
 				t.Fatalf("call %d: %v", i, err)
 			}
 		}
-		if *calls != 2 {
-			t.Errorf("expected 2 real requests across 2 GetPermissionProfilesFresh calls (no caching), got %d", *calls)
+		if got := calls.Load(); got != 2 {
+			t.Errorf("expected 2 real requests across 2 GetPermissionProfilesFresh calls (no caching), got %d", got)
 		}
 	})
 }

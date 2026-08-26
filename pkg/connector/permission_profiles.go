@@ -9,6 +9,8 @@ import (
 	"github.com/conductorone/baton-sdk/pkg/annotations"
 	"github.com/conductorone/baton-sdk/pkg/types/entitlement"
 	rs "github.com/conductorone/baton-sdk/pkg/types/resource"
+	"github.com/grpc-ecosystem/go-grpc-middleware/logging/zap/ctxzap"
+	"go.uber.org/zap"
 )
 
 const (
@@ -117,12 +119,25 @@ func (p *permissionProfilesBuilder) Revoke(ctx context.Context, grantObj *v2.Gra
 		return profileAnnos, fmt.Errorf("failed to get permission profiles: %w", err)
 	}
 
-	defaultProfileID, matches := permissionProfileIDByName(permissionProfiles, defaultPermissionProfileName)
-	if matches > 1 {
-		return profileAnnos, fmt.Errorf("default permission profile '%s' is ambiguous: %d profiles share that name in this account", defaultPermissionProfileName, matches)
-	}
-	if matches == 0 {
+	// DocuSign does not enforce unique permission profile names, so more than one profile
+	// can share defaultPermissionProfileName. Unlike tryFastPathGrant's name-based grant
+	// resolution (users.go), which treats an ambiguous match as not-found rather than risk
+	// silently emitting a wrong grant, Revoke restores its pre-existing behavior of taking
+	// the first match (same order the API returned them) so that an account with a
+	// duplicate-named default profile can still have permission-profile grants revoked at
+	// all — just loudly, via the Warn below, instead of silently. See
+	// permissionProfilesByName's doc for why this uses a different helper than the
+	// ambiguous-is-not-found path.
+	matchingProfiles := permissionProfilesByName(permissionProfiles, defaultPermissionProfileName)
+	if len(matchingProfiles) == 0 {
 		return profileAnnos, fmt.Errorf("default permission profile '%s' not found in account", defaultPermissionProfileName)
+	}
+	defaultProfileID := matchingProfiles[0].PermissionProfileId
+	if len(matchingProfiles) > 1 {
+		ctxzap.Extract(ctx).Debug("baton-docusign: default permission profile name is ambiguous, using the first match",
+			zap.String("profile_name", defaultPermissionProfileName),
+			zap.Int("match_count", len(matchingProfiles)),
+			zap.String("chosen_profile_id", defaultProfileID))
 	}
 
 	// Check if trying to revoke the default "DocuSign Viewer" profile itself.

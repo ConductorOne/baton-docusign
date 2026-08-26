@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/conductorone/baton-docusign/pkg/client"
 	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
@@ -338,6 +339,12 @@ func TestUserBuilder_Grants_FastPath_ActiveUserWithKnownProfile(t *testing.T) {
 	if got := grants[0].Entitlement.Resource.Id.Resource; got != "pp-1" {
 		t.Errorf("expected grant against permission profile pp-1, got %s", got)
 	}
+	// This is the sync's first (and only) call to getPermissionProfiles, so it's the one
+	// that performed the real HTTP round-trip — the SDK's self-throttling rate limiter
+	// must receive that fresh signal, not nil, during the grants pass.
+	if res.Annotations == nil {
+		t.Error("expected non-nil annotations from the fast path's underlying real GetPermissionProfiles call")
+	}
 }
 
 func TestUserBuilder_Grants_FallsBackWhenNotActive(t *testing.T) {
@@ -450,17 +457,19 @@ func newCountingPermissionProfilesClient(t *testing.T, respond func(w http.Respo
 	return client.NewClient(context.Background(), false, tokenSource, "", "", wrapper), &calls
 }
 
-// TestUserBuilder_Grants_DoesNotMemoizeRateLimitFailure is a regression test: unlike a
-// persistent non-rate-limit failure, a reclassified rate-limit error must NOT be cached
-// on the builder — caching it would replay the same stale error on every retry of the
-// SDK's per-action retry loop (which reuses this same userBuilder), spinning forever at
-// the retryer's clamped interval instead of ever re-checking whether the account's
-// hourly window has reset. Loops well past permissionProfilesTransientFailureThreshold:
-// the rate-limit exemption must hold regardless of how many consecutive times it
-// recurs, unlike an ordinary transient failure that IS eventually cached (see
-// TestUserBuilder_Grants_BoundsTransientFailureRetries) — every call here must issue a
-// real GetPermissionProfiles request.
-func TestUserBuilder_Grants_DoesNotMemoizeRateLimitFailure(t *testing.T) {
+// TestUserBuilder_Grants_CollapsesRateLimitBurstWithinTTL is a regression test for the
+// thundering-herd fix: Grants() runs concurrently across every Active user in a sync, and
+// getPermissionProfiles' mutex alone only serializes access to the cache — it does not
+// stop each waiting caller from, in turn, making its own real HTTP call once it acquires
+// the lock. Without the short permissionProfilesRateLimitedUntil TTL guard, a single
+// rate-limited episode would cost one wasted call per Active user within seconds,
+// hammering an already-exhausted hourly budget with exactly the kind of call
+// amplification this whole fix exists to prevent. This issues several calls
+// back-to-back (well within permissionProfilesRateLimitTTL) right after the first
+// rate-limit response and asserts only that first call actually reached the real
+// endpoint — every call must still propagate the rate-limit error, just without a new
+// HTTP round-trip.
+func TestUserBuilder_Grants_CollapsesRateLimitBurstWithinTTL(t *testing.T) {
 	c, permissionProfilesCalls := newCountingPermissionProfilesClient(t, func(w http.ResponseWriter) {
 		w.WriteHeader(http.StatusBadRequest)
 		_ = json.NewEncoder(w).Encode(client.ErrorResponse{
@@ -472,7 +481,7 @@ func TestUserBuilder_Grants_DoesNotMemoizeRateLimitFailure(t *testing.T) {
 	b := newUserBuilder(c, false)
 	resource := userResourceWithProfile(t, "user-1", userStatusActive, "DocuSign Admin")
 
-	const attempts = permissionProfilesTransientFailureThreshold + 2
+	const attempts = 5
 	for i := 0; i < attempts; i++ {
 		_, _, err := b.Grants(context.Background(), resource, rs.SyncOpAttrs{})
 		if err == nil {
@@ -483,8 +492,47 @@ func TestUserBuilder_Grants_DoesNotMemoizeRateLimitFailure(t *testing.T) {
 		}
 	}
 
-	if got := atomic.LoadInt32(permissionProfilesCalls); got != attempts {
-		t.Errorf("expected GetPermissionProfiles called on every one of %d retries, got %d — the rate-limit error must never be memoized, even past the threshold", attempts, got)
+	if got := atomic.LoadInt32(permissionProfilesCalls); got != 1 {
+		t.Errorf("expected exactly 1 real GetPermissionProfiles call across %d rapid retries (collapsed by the rate-limit TTL guard), got %d", attempts, got)
+	}
+}
+
+// TestUserBuilder_Grants_RateLimitTTLExpiryAllowsFreshRetry proves the TTL guard above is
+// bounded, not a disguised permanent cache: once permissionProfilesRateLimitedUntil has
+// passed, the next call must reach the real endpoint again — otherwise a genuine later
+// retry from the SDK's own per-action retry loop could never notice the hourly window has
+// reset, the exact regression the "never cache a rate-limit error via
+// permissionProfilesCached" rule (see getPermissionProfiles' doc) exists to prevent.
+// Simulates TTL expiry by setting the unexported field directly (same package) rather
+// than sleeping permissionProfilesRateLimitTTL in a unit test.
+func TestUserBuilder_Grants_RateLimitTTLExpiryAllowsFreshRetry(t *testing.T) {
+	c, permissionProfilesCalls := newCountingPermissionProfilesClient(t, func(w http.ResponseWriter) {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(client.ErrorResponse{
+			ErrorCode:    "HOURLY_APIINVOCATION_LIMIT_EXCEEDED",
+			ErrorMessage: "The maximum number of hourly API invocations has been exceeded. The hourly limit is 3000.",
+		})
+	})
+
+	b := newUserBuilder(c, false)
+	resource := userResourceWithProfile(t, "user-1", userStatusActive, "DocuSign Admin")
+
+	if _, _, err := b.Grants(context.Background(), resource, rs.SyncOpAttrs{}); err == nil {
+		t.Fatal("expected the first call to propagate the rate-limit error, got nil")
+	}
+	if got := atomic.LoadInt32(permissionProfilesCalls); got != 1 {
+		t.Fatalf("expected exactly 1 real call after the first attempt, got %d", got)
+	}
+
+	b.permissionProfilesMu.Lock()
+	b.permissionProfilesRateLimitedUntil = time.Now().Add(-time.Second)
+	b.permissionProfilesMu.Unlock()
+
+	if _, _, err := b.Grants(context.Background(), resource, rs.SyncOpAttrs{}); err == nil {
+		t.Fatal("expected the post-TTL call to still propagate the rate-limit error, got nil")
+	}
+	if got := atomic.LoadInt32(permissionProfilesCalls); got != 2 {
+		t.Errorf("expected a second real GetPermissionProfiles call once the TTL expired, got %d real calls total", got)
 	}
 }
 
@@ -616,6 +664,45 @@ func TestUserBuilder_Grants_FallsBackOnNonRateLimitPermissionProfilesFailure(t *
 	}
 }
 
+// TestUserBuilder_GetPermissionProfiles_ForwardsAnnotationsOnlyOnFreshCall is a
+// regression test for Fix 3: tryFastPathGrant's success path used to always return nil
+// annotations, starving the SDK's self-throttling rate limiter of any signal during the
+// grants pass even though getPermissionProfiles makes exactly one real HTTP call per
+// sync (see getPermissionProfiles' doc). The first call in a sync — the one that performs
+// the real round-trip — must return non-nil annotations; a second call with the same
+// syncID, served from the memo cache, must return nil.
+func TestUserBuilder_GetPermissionProfiles_ForwardsAnnotationsOnlyOnFreshCall(t *testing.T) {
+	c, permissionProfilesCalls := newCountingPermissionProfilesClient(t, func(w http.ResponseWriter) {
+		_ = json.NewEncoder(w).Encode(client.PermissionProfilesResponse{
+			PermissionProfiles: []client.PermissionProfile{
+				{PermissionProfileId: "pp-1", PermissionProfileName: "DocuSign Admin"},
+			},
+		})
+	})
+
+	b := newUserBuilder(c, false)
+
+	_, firstAnnos, err := b.getPermissionProfiles(context.Background(), "sync-1")
+	if err != nil {
+		t.Fatalf("first call: %v", err)
+	}
+	if firstAnnos == nil {
+		t.Error("expected the first (real-call) invocation to return non-nil annotations")
+	}
+
+	_, secondAnnos, err := b.getPermissionProfiles(context.Background(), "sync-1")
+	if err != nil {
+		t.Fatalf("second call: %v", err)
+	}
+	if secondAnnos != nil {
+		t.Errorf("expected the memo-hit invocation to return nil annotations, got %+v", secondAnnos)
+	}
+
+	if got := atomic.LoadInt32(permissionProfilesCalls); got != 1 {
+		t.Errorf("expected exactly 1 real GetPermissionProfiles call, got %d", got)
+	}
+}
+
 // TestUserBuilder_Grants_MemoizesPermissionProfilesFailureAcrossUsers is a regression
 // test: uhttp's GET cache never stores a non-2xx response, so without its own
 // memoization, tryFastPathGrant would re-hit GetPermissionProfiles for every Active user
@@ -705,33 +792,6 @@ func TestUserBuilder_Grants_FallsBackOnServiceUnavailable(t *testing.T) {
 	}
 	if len(grants) != 1 || grants[0].Entitlement.Resource.Id.Resource != "pp-1" {
 		t.Errorf("expected the GetUserDetails fallback to resolve pp-1, got %+v", grants)
-	}
-}
-
-// TestUserBuilder_Grants_FastPath_PrefersDirectProfileIDOverName covers the
-// PermissionProfileID-on-the-list-response path: when present, it must skip
-// GetPermissionProfiles entirely and use the ID directly. If it fell through instead,
-// GetPermissionProfiles would succeed with an empty list (no profiles fixture is
-// provided), fail to resolve "DocuSign Admin" by name, and fall through again to
-// GetUserDetails — which 404s (no userDetails fixture either) and fails this test.
-func TestUserBuilder_Grants_FastPath_PrefersDirectProfileIDOverName(t *testing.T) {
-	c := newUsersTestClient(t, nil, nil, permissionProfilesOK)
-	b := newUserBuilder(c, false)
-	resource, err := rs.NewUserResource("user-1", userResourceType, "user-1", nil, rs.WithResourceProfile(map[string]any{
-		profileFieldStatus:       userStatusActive,
-		profileFieldPermission:   "DocuSign Admin",
-		profileFieldPermissionID: "pp-1",
-	}))
-	if err != nil {
-		t.Fatalf("NewUserResource: %v", err)
-	}
-
-	grants, _, err := b.Grants(context.Background(), resource, rs.SyncOpAttrs{})
-	if err != nil {
-		t.Fatalf("Grants: %v", err)
-	}
-	if len(grants) != 1 || grants[0].Entitlement.Resource.Id.Resource != "pp-1" {
-		t.Errorf("expected the direct profile ID to resolve pp-1 with no API call, got %+v", grants)
 	}
 }
 
