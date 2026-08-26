@@ -279,17 +279,19 @@ func TestNew_IncludeClmDerivation(t *testing.T) {
 	tokenSource := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "tok"})
 
 	tests := []struct {
-		name                string
-		syncResourceTypeIDs []string
-		wantIncludeClm      bool
+		name                     string
+		syncResourceTypeIDs      []string
+		wantIncludeClm           bool
+		wantIncludeWorkflowQueues bool
 	}{
-		{"no filter (opts.SyncResourceTypeIDs empty): syncs everything, including CLM", nil, true},
-		{"CI's actual allowlist: no clm_* type present", nonClmAllowlist(), false},
-		{"clm_member present", []string{"user", clmMemberResourceType.Id}, true},
-		{"clm_role present", []string{"user", clmRoleResourceType.Id}, true},
-		{"clm_group present", []string{"user", clmGroupResourceType.Id}, true},
-		{"clm_permission_set present", []string{"user", clmPermissionSetResourceType.Id}, true},
-		{"clm_folder present", []string{"user", clmFolderResourceType.Id}, true},
+		{"no filter (opts.SyncResourceTypeIDs empty): syncs everything, including CLM", nil, true, true},
+		{"CI's actual allowlist: no clm_* type present", nonClmAllowlist(), false, false},
+		{"clm_member present", []string{"user", clmMemberResourceType.Id}, true, false},
+		{"clm_role present", []string{"user", clmRoleResourceType.Id}, true, false},
+		{"clm_group present", []string{"user", clmGroupResourceType.Id}, true, false},
+		{"clm_permission_set present", []string{"user", clmPermissionSetResourceType.Id}, true, false},
+		{"clm_folder present", []string{"user", clmFolderResourceType.Id}, true, false},
+		{"clm_workflow_queue present", []string{"user", clmWorkflowQueueResourceType.Id}, true, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -304,6 +306,9 @@ func TestNew_IncludeClmDerivation(t *testing.T) {
 			}
 			if cb.includeClm != tt.wantIncludeClm {
 				t.Errorf("SyncResourceTypeIDs=%v: expected includeClm=%v, got %v", tt.syncResourceTypeIDs, tt.wantIncludeClm, cb.includeClm)
+			}
+			if cb.includeWorkflowQueues != tt.wantIncludeWorkflowQueues {
+				t.Errorf("SyncResourceTypeIDs=%v: expected includeWorkflowQueues=%v, got %v", tt.syncResourceTypeIDs, tt.wantIncludeWorkflowQueues, cb.includeWorkflowQueues)
 			}
 		})
 	}
