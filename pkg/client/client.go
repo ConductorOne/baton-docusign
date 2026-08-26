@@ -313,6 +313,16 @@ func (c *Client) ensureInitialized(ctx context.Context) error {
 	return nil
 }
 
+// EnsureReady exposes the base eSignature-credential check every other client method
+// runs internally before its real request, for callers with no eSignature endpoint of
+// their own that still need to detect whether the base connection/credentials are
+// valid — namely Connector.Validate() (see pkg/connector/connector.go), which runs
+// this once, up front, before any resource type's List() executes. Memoized after the
+// first successful call, same as every other method — see ensureInitialized.
+func (c *Client) EnsureReady(ctx context.Context) error {
+	return c.ensureInitialized(ctx)
+}
+
 // buildClientURL safely reads baseURI and accountId to build a URL.
 func (c *Client) buildClientURL(path string, params ...any) (*url.URL, error) {
 	c.mutex.RLock()

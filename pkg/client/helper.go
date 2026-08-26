@@ -103,6 +103,19 @@ func isHourlyAPIInvocationLimitError(er *ErrorResponse) bool {
 	return strings.Contains(er.ErrorMessage, docusignHourlyRateLimitErrorMessage)
 }
 
+// IDFromHref extracts the trailing path segment from a CLM object's Href — CLM's
+// Object API schemas expose a Href field ("Uri where the object can be retrieved") but
+// no separate opaque Id field, so this is the closest thing to a native ID CLM exposes.
+// Shared by pkg/connector (reading real Hrefs) and pkg/client/clmtest (generating seed
+// Hrefs for the mock server), which otherwise each maintained an identical copy.
+func IDFromHref(href string) string {
+	href = strings.TrimSuffix(href, "/")
+	if idx := strings.LastIndex(href, "/"); idx != -1 {
+		return href[idx+1:]
+	}
+	return href
+}
+
 // BuildURL combines the base API URL with a formatted endpoint path.
 func buildURL(base, path string, params ...any) (*url.URL, error) {
 	baseURL, err := url.Parse(base)

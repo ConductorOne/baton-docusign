@@ -6,8 +6,6 @@ import (
 	"github.com/conductorone/baton-docusign/pkg/client"
 	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
 	rs "github.com/conductorone/baton-sdk/pkg/types/resource"
-	"github.com/grpc-ecosystem/go-grpc-middleware/logging/zap/ctxzap"
-	"go.uber.org/zap"
 )
 
 // clmMemberBuilder syncs CLM Members — CLM's own principal object. Synced as its own
@@ -35,10 +33,6 @@ func (b *clmMemberBuilder) List(ctx context.Context, _ *v2.ResourceId, attr rs.S
 		PageToken: pageToken,
 	})
 	if err != nil {
-		if attr.PageToken.Token == "" && isOptInFeatureUnavailableError(err) {
-			ctxzap.Extract(ctx).Info("baton-docusign: CLM is not available for this account or token, skipping clm_member sync", zap.Error(err))
-			return nil, &rs.SyncOpResults{}, nil
-		}
 		return nil, nil, err
 	}
 
@@ -83,7 +77,10 @@ func newClmMemberBuilder(c *client.Client) *clmMemberBuilder {
 	}
 }
 
-// parseIntoClmMemberResource maps a client.ClmMember to a Baton v2.Resource.
+// parseIntoClmMemberResource maps a client.ClmMember to a Baton v2.Resource. The Href is
+// kept in the profile both for display and as the preferred sample href for Grant;
+// Grant falls back to client.MemberHref when it's absent, since neither a profile nor
+// an annotation is guaranteed to survive to where it's needed.
 func parseIntoClmMemberResource(member *client.ClmMember) (*v2.Resource, error) {
 	profile := map[string]any{
 		profileFieldEmail:    member.Email,
@@ -91,7 +88,7 @@ func parseIntoClmMemberResource(member *client.ClmMember) (*v2.Resource, error) 
 		"role":               member.Role,
 		"exemptFromUserSync": member.ExemptFromUserSync,
 		"portalOnly":         member.PortalOnly,
-		"href":               member.Href,
+		profileFieldHref:     member.Href,
 	}
 
 	displayName := member.UserName

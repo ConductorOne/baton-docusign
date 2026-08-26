@@ -364,6 +364,18 @@ func (s *pebbleStore) PebbleEngine() *pebble.Engine {
 	return s.Engine
 }
 
+func (s *pebbleStore) GrantGenerationDigest(ctx context.Context) (c1zstore.GrantGenerationDigest, bool, error) {
+	root, ok, err := s.GetGrantDigestGlobalRoot(ctx)
+	if err != nil || !ok {
+		return c1zstore.GrantGenerationDigest{}, ok, err
+	}
+	return c1zstore.GrantGenerationDigest{
+		Hash:       append([]byte(nil), root.Hash...),
+		Count:      root.Count,
+		ABIVersion: pebble.GrantDigestABIVersion,
+	}, true, nil
+}
+
 // CloseEngineOnly closes the Pebble engine without removing the
 // store's unpacked temp directory, refusing to discard a dirty
 // writable store. Consumed by the compactor's chunk lifecycle via
@@ -498,6 +510,21 @@ func (s *pebbleStore) PutAsset(ctx context.Context, assetRef *v2.AssetRef, conte
 	return s.markDirty(s.Engine.PutAsset(ctx, assetRef, contentType, data))
 }
 
+// PutEntitlementGraphBlob / GetEntitlementGraphBlob / DeleteEntitlementGraphBlob
+// expose the entitlement-graph sidecar (see pkg/sync's EntitlementGraphStore).
+// The blob format is owned by pkg/sync/expand; the store treats it as opaque.
+func (s *pebbleStore) PutEntitlementGraphBlob(ctx context.Context, data []byte) error {
+	return s.markDirty(s.PutEntitlementGraphSidecar(ctx, data))
+}
+
+func (s *pebbleStore) GetEntitlementGraphBlob(ctx context.Context) ([]byte, error) {
+	return s.GetEntitlementGraphSidecar(ctx)
+}
+
+func (s *pebbleStore) DeleteEntitlementGraphBlob(ctx context.Context) error {
+	return s.markDirty(s.DeleteEntitlementGraphSidecar(ctx))
+}
+
 // SetSupportsDiff marks the given sync as diff-capable, matching the
 // SQLite engine's sync_runs.supports_diff column. The c1z sanitizer
 // carries this marker from a source sync to its sanitized copy so the
@@ -563,6 +590,22 @@ func (s *pebbleStore) DeleteGrant(ctx context.Context, grantID string) error {
 // string. The syncer prefers this when available.
 func (s *pebbleStore) DeleteGrantByRefs(ctx context.Context, grant *v2.Grant) error {
 	return s.markDirty(s.Engine.DeleteGrantByRefs(ctx, grant))
+}
+
+// DeleteGrantsByRefs is the bulk form of DeleteGrantByRefs: identical
+// per-grant semantics, but the deletes are committed in chunked batches so a
+// bulk caller does not pay one fsync per grant.
+//
+// Unlike its siblings this marks dirty UNCONDITIONALLY rather than through
+// markDirty, which only marks on success. One call here can commit many
+// chunks: if a later chunk fails, the earlier ones are already durable in
+// Pebble, and leaving dirty unset would let Close discard the temp dir and
+// silently drop that committed work. Over-marking when nothing was staged
+// only costs an unnecessary flush of an unchanged file; under-marking loses
+// data.
+func (s *pebbleStore) DeleteGrantsByRefs(ctx context.Context, grants ...*v2.Grant) error {
+	s.MarkDirty()
+	return s.Engine.DeleteGrantsByRefs(ctx, grants...)
 }
 
 // DeleteResourceRecord removes a resource and marks the envelope dirty so an
@@ -760,12 +803,19 @@ func (s *pebbleStore) Close(ctx context.Context) (retErr error) {
 			// condition and Close again; if the process exits instead, the
 			// temp dir survives on disk for manual recovery rather than
 			// being deleted out from under a failed save.
-			return fmt.Errorf("pebble store close: save failed, store left open and unsaved data preserved under %s: %w", s.tmpDir, err)
+			//
+			// Storage verdict: dirty state exists but the output c1z was
+			// not rewritten (save's atomic temp+rename means the on-disk
+			// artifact is stale, never torn).
+			return artifactUnusable(fmt.Errorf("pebble store close: save failed, store left open and unsaved data preserved under %s: %w", s.tmpDir, err))
 		}
 		s.dirty = false
 	}
 	s.closed = true
 
+	// No artifactUnusable below: the save above succeeded (or was not
+	// needed), so the c1z on disk is a faithful commit; teardown failures
+	// must not become a discard verdict.
 	defer func() {
 		if removeErr := os.RemoveAll(s.tmpDir); removeErr != nil {
 			retErr = errors.Join(retErr, removeErr)

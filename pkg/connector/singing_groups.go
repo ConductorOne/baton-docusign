@@ -38,10 +38,6 @@ func (g *signingGroupBuilder) List(ctx context.Context, _ *v2.ResourceId, attr r
 		PageToken: pageToken,
 	})
 	if err != nil {
-		if attr.PageToken.Token == "" && isOptInFeatureUnavailableError(err) {
-			ctxzap.Extract(ctx).Info("baton-docusign: signing groups are not available for this account, skipping signing_group sync", zap.Error(err))
-			return nil, &rs.SyncOpResults{}, nil
-		}
 		return nil, nil, err
 	}
 
@@ -101,7 +97,7 @@ func (g *signingGroupBuilder) Grants(ctx context.Context, groupResource *v2.Reso
 		userDetails, _, err := g.client.GetUserByEmail(ctx, user.Email)
 		if err != nil {
 			l := ctxzap.Extract(ctx)
-			l.Warn("docusign-connector: failed to lookup user by email for signing group member, skipping",
+			l.Debug("baton-docusign: failed to lookup user by email for signing group member, skipping",
 				zap.String("signing_group_id", groupResource.Id.Resource),
 				zap.String("email", user.Email),
 				zap.String("username", user.UserName),

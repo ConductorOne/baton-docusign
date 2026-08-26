@@ -348,7 +348,9 @@ type c1zOptions struct {
 	disableGrantDigestIndex bool
 
 	// engine is the storage engine to use for newly created files.
-	// Reads dispatch on magic byte regardless. Default EngineSQLite.
+	// Reads dispatch on magic byte regardless. NewStore defaults an
+	// unset engine to EnginePebble; NewC1ZFile (SQLite-only) normalizes
+	// unset to EngineSQLite.
 	engine c1zstore.Engine
 
 	// payloadEncoding controls the v3 envelope payload framing. Only
@@ -433,8 +435,10 @@ func WithSyncLimit(limit int) C1ZOption {
 }
 
 // WithEngine selects the storage engine for newly created .c1z files.
-// Default is EngineSQLite (v1 format). EnginePebble enables the v3
-// engine.
+// Under NewStore the default is EnginePebble (v3 format); EngineSQLite
+// selects the legacy v1 engine. NewC1ZFile does not share that default:
+// it is the SQLite-only constructor, treats an unset engine as
+// EngineSQLite, and rejects a writable EnginePebble request.
 //
 // Reading existing files dispatches on the file's magic byte and is
 // independent of this option.
@@ -672,7 +676,10 @@ func (c *C1File) Close(ctx context.Context) (retErr error) {
 	// state stays consistent for a retried Close.
 	if c.bulkLoad {
 		if err := c.buildDeferredIndexes(ctx); err != nil {
-			return err
+			// Storage verdict: mutations exist but the c1z was not
+			// rewritten (the working DB is preserved for a retried Close,
+			// per the comment above).
+			return artifactUnusable(err)
 		}
 	}
 
@@ -721,6 +728,13 @@ func (c *C1File) finalize(ctx context.Context) error {
 
 	l := ctxzap.Extract(finalizeCtx)
 
+	// Every error return from here through saveC1z carries the
+	// ErrArtifactUnusable storage verdict: mutations exist but the output
+	// c1z was not rewritten, so the on-disk artifact is stale relative to
+	// this run's progress (saveC1z's atomic temp+rename means it is never
+	// torn). Post-save failures (cleanup, below) deliberately do not carry
+	// the verdict — the artifact is a faithful commit at that point.
+	//
 	// Only WAL-checkpoint and close the raw DB if a handle is open.
 	// Some callers (notably TestC1ZDecoder) manually close c.rawDb to
 	// force a checkpoint before calling Close — that path skips both
@@ -735,7 +749,7 @@ func (c *C1File) finalize(ctx context.Context) error {
 		// then truncates the WAL file to zero bytes.
 		busy, log, checkpointed, err := c.truncateWAL(finalizeCtx)
 		if err != nil {
-			finalizeErr = fmt.Errorf("c1z: WAL checkpoint failed: %w", err)
+			finalizeErr = artifactUnusable(fmt.Errorf("c1z: WAL checkpoint failed: %w", err))
 			l.Error("WAL checkpoint failed before close",
 				zap.Error(err),
 				zap.String("db_path", c.dbFilePath))
@@ -745,7 +759,7 @@ func (c *C1File) finalize(ctx context.Context) error {
 			return cleanupDbDir(c.dbFilePath, finalizeErr)
 		}
 		if busy != 0 || (log >= 0 && checkpointed < log) {
-			finalizeErr = fmt.Errorf("c1z: WAL checkpoint incomplete: busy=%d log=%d checkpointed=%d", busy, log, checkpointed)
+			finalizeErr = artifactUnusable(fmt.Errorf("c1z: WAL checkpoint incomplete: busy=%d log=%d checkpointed=%d", busy, log, checkpointed))
 			l.Error("WAL checkpoint incomplete before close",
 				zap.Int("busy", busy),
 				zap.Int("log", log),
@@ -758,8 +772,8 @@ func (c *C1File) finalize(ctx context.Context) error {
 		}
 
 		if err := c.closeRawDB(finalizeCtx); err != nil {
-			finalizeErr = err
-			return cleanupDbDir(c.dbFilePath, err)
+			finalizeErr = artifactUnusable(err)
+			return cleanupDbDir(c.dbFilePath, finalizeErr)
 		}
 	}
 
@@ -768,7 +782,7 @@ func (c *C1File) finalize(ctx context.Context) error {
 	// the main database file.
 	walPath := c.dbFilePath + "-wal"
 	if walInfo, statErr := os.Stat(walPath); statErr == nil && walInfo.Size() > 0 {
-		finalizeErr = fmt.Errorf("c1z: WAL file not empty after close (size=%d) - refusing to save incomplete data", walInfo.Size())
+		finalizeErr = artifactUnusable(fmt.Errorf("c1z: WAL file not empty after close (size=%d) - refusing to save incomplete data", walInfo.Size()))
 		return cleanupDbDir(c.dbFilePath, finalizeErr)
 	}
 
@@ -786,14 +800,17 @@ func (c *C1File) finalize(ctx context.Context) error {
 	saveErr := saveC1z(c.dbFilePath, c.outputFilePath, c.encoderConcurrency)
 	uotel.EndSpanWithError(saveSpan, saveErr)
 	if saveErr != nil {
-		finalizeErr = saveErr
-		return cleanupDbDir(c.dbFilePath, saveErr)
+		finalizeErr = artifactUnusable(saveErr)
+		return cleanupDbDir(c.dbFilePath, finalizeErr)
 	}
 	if outInfo, statErr := os.Stat(c.outputFilePath); statErr == nil {
 		finalizeSpan.SetAttributes(attribute.Int64("c1z.finalize.output_bytes", outInfo.Size()))
 		recordC1ZSize(finalizeCtx, "finalize", outInfo.Size())
 	}
 
+	// No artifactUnusable here: the save above succeeded, so the c1z on
+	// disk is a faithful commit; a cleanup failure must not become a
+	// discard verdict.
 	if err := cleanupDbDir(c.dbFilePath, nil); err != nil {
 		finalizeErr = err
 		return err

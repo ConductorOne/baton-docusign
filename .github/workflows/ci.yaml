@@ -5,18 +5,40 @@ on:
   push:
     branches:
       - main
+# Workflow-level, not per-job: all three jobs share the DocuSign demo account, and a
+# per-job block only protects a *running* job — GitHub Actions still cancels a *pending*
+# job in the same group when a newer run queues. Declaring it once here queues/cancels
+# all three jobs as one unit.
+concurrency:
+  group: docusign-demo-account
+  cancel-in-progress: false
 env:
+  # This CI account has no CLM subscription, and (unlike a C1-hosted sync) nothing here
+  # filters resource types by OptInRequired — every registered resource type is attempted
+  # by default. CLM builders now fail the whole sync rather than skip gracefully when CLM
+  # isn't available (see pkg/connector/clm_roles.go), so the 5 clm_* types must be
+  # excluded here explicitly to test the ones the three test-* jobs below care about.
+  # This is an allowlist, not a CLM-only exclusion: if you register a new non-CLM
+  # resource type in pkg/connector/connector.go, add it here too — otherwise it silently
+  # gets zero CI sync-test coverage. Declared once at the workflow level (all three jobs
+  # inherit it) so there's no per-job copy to keep in sync.
+  #
+  # signing_group specifically only works here because every job below also sets
+  # BATON_INCLUDE_SIGNING_GROUPS: "true" — the connector only advertises signing_group
+  # via ListResourceTypes() when that flag is set (pkg/connector/connector.go), and the
+  # SDK hard-errors on any filter entry the connector doesn't advertise
+  # ("invalid resource type 'signing_group' in filter"). If a future job drops that
+  # per-job env var, it fails with that confusing filter error instead of just skipping
+  # signing groups.
+  BATON_SYNC_RESOURCE_TYPES: user,group,permission_profile,signing_group
   # Forces the legacy v1/SQLite c1z format instead of baton-sdk v0.25.0's new default
-  # (Pebble/v3). GitHub Actions tests this PR's merge-preview (this PR's head merged
-  # onto main), and main is already on baton-sdk v0.25.0 — since this PR doesn't touch
-  # go.mod's baton-sdk line, that merge picks up v0.25.0 even though this branch's own
-  # tip is still on v0.24.2. The `baton` CLI these jobs download
-  # (ConductorOne/github-workflows' get-baton action, currently v0.4.5) is built against
-  # baton-sdk v0.8.24 — long before Pebble existed — and fails every read of a
-  # Pebble-format file with a bare "c1z: invalid file", no matter how the file was
-  # produced. Safe to drop once a `baton` CLI release built against a Pebble-aware
-  # baton-sdk ships and get-baton picks it up, or once this branch merges and its own
-  # go.mod matches main again.
+  # (Pebble/v3). The `baton` CLI these jobs download (ConductorOne/github-workflows'
+  # get-baton action, currently v0.4.5) is built against baton-sdk v0.8.24 — long before
+  # Pebble existed — and fails every read of a Pebble-format file with a bare
+  # "c1z: invalid file", no matter how the file was produced. Confirmed: syncing with
+  # this flag set produces a file `baton` v0.4.5 reads correctly; without it, the exact
+  # same sync fails at the very next step. Safe to drop once a `baton` CLI release built
+  # against a Pebble-aware baton-sdk ships and get-baton picks it up.
   BATON_STORAGE_ENGINE: sqlite
 jobs:
   test-groups:

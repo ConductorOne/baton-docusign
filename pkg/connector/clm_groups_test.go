@@ -2,6 +2,7 @@ package connector
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/conductorone/baton-docusign/pkg/client"
@@ -36,22 +37,19 @@ func TestClmGroupBuilder_List(t *testing.T) {
 	}
 }
 
-func TestClmGroupBuilder_List_SkipsGracefullyWhenClmUnavailable(t *testing.T) {
+func TestClmGroupBuilder_List_FailsWhenClmUnavailable(t *testing.T) {
 	// See clm_members_test.go's identical test for the full rationale.
 	s, _ := clmtest.NewServer(t)
 	badClient := s.NewClientWithToken("wrong-token")
 	b := newClmGroupBuilder(badClient)
 	ctx := context.Background()
 
-	resources, res, err := b.List(ctx, nil, rs.SyncOpAttrs{PageToken: pagination.Token{Size: 10}})
-	if err != nil {
-		t.Fatalf("expected List to tolerate an unavailable CLM account and skip gracefully, got error: %v", err)
+	resources, _, err := b.List(ctx, nil, rs.SyncOpAttrs{PageToken: pagination.Token{Size: 10}})
+	if err == nil {
+		t.Fatal("expected List to fail when CLM is unavailable, got nil error")
 	}
 	if len(resources) != 0 {
-		t.Errorf("expected zero resources when CLM is unavailable, got %d", len(resources))
-	}
-	if res == nil || res.NextPageToken != "" {
-		t.Errorf("expected an empty (non-paginating) result, got %+v", res)
+		t.Errorf("expected zero resources on a hard failure, got %d", len(resources))
 	}
 }
 
@@ -174,6 +172,151 @@ func TestClmGroupBuilder_GrantAndRevoke_Idempotent(t *testing.T) {
 	} else if !hasAlreadyRevoked(annos) {
 		t.Error("repeat Revoke should report GrantAlreadyRevoked")
 	}
+}
+
+// TestClmGroupBuilder_GrantAndRevoke_RejectEmptyID is a regression test mirroring
+// TestClmFolderBuilder_GrantAndRevoke_RejectEmptyPrincipalID: clmIDFromHref reduces an
+// empty Href to "", so an empty memberID or groupID must be rejected before Grant/Revoke
+// reach the currentGroups matching loop — otherwise an empty groupID could match a
+// currentGroups entry with an empty Href, causing Grant to falsely report
+// GrantAlreadyExists (bypassing clmPreferredHref's own empty-id check) or Revoke to
+// silently drop that unrelated membership via PutMemberGroups' full-replace semantics.
+func TestClmGroupBuilder_GrantAndRevoke_RejectEmptyID(t *testing.T) {
+	_, c := clmtest.NewServer(t)
+	b := newClmGroupBuilder(c)
+	ctx := context.Background()
+
+	validMember := clmIdentityOnlyResource(clmMemberResourceType, "member-carol")
+	validGroup := clmIdentityOnlyResource(clmGroupResourceType, "group-legal")
+	emptyMember := clmIdentityOnlyResource(clmMemberResourceType, "")
+	emptyGroup := clmIdentityOnlyResource(clmGroupResourceType, "")
+
+	cases := []struct {
+		name      string
+		principal *v2.Resource
+		groupRes  *v2.Resource
+	}{
+		{"empty member ID", emptyMember, validGroup},
+		{"empty group ID", validMember, emptyGroup},
+		{"both empty", emptyMember, emptyGroup},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ent := &v2.Entitlement{Slug: entitlementClmGroupMember, Resource: tc.groupRes}
+
+			if _, _, err := b.Grant(ctx, tc.principal, ent); err == nil {
+				t.Error("expected Grant to reject an empty member or group ID, got nil error")
+			}
+
+			grantObj := &v2.Grant{Principal: tc.principal, Entitlement: ent}
+			if _, err := b.Revoke(ctx, grantObj); err == nil {
+				t.Error("expected Revoke to reject an empty member or group ID, got nil error")
+			}
+		})
+	}
+}
+
+// TestClmGroupBuilder_Grant_SurvivesIdentityOnlyEntitlementResource is a regression test:
+// passes an identity-only entitlement Resource (pebble's V3EntitlementToV2 shape — no
+// profile, no annotations, nothing but Id) to confirm Grant resolves the groupHref to
+// write via clmPreferredHref without needing anything on ent.Resource itself. The two
+// subtests below exercise both of clmPreferredHref's branches.
+func TestClmGroupBuilder_Grant_SurvivesIdentityOnlyEntitlementResource(t *testing.T) {
+	// An identity-only Resource — exactly what V3EntitlementToV2 hands back on pebble,
+	// carrying nothing but the group's ID.
+	identityOnlyGroupResource := clmIdentityOnlyResource(clmGroupResourceType, "group-legal")
+	ent := &v2.Entitlement{Slug: entitlementClmGroupMember, Resource: identityOnlyGroupResource}
+
+	t.Run("fallback branch: member has no other groups, derives via client.GroupHref", func(t *testing.T) {
+		srv, c := clmtest.NewServer(t)
+		b := newClmGroupBuilder(c)
+		ctx := context.Background()
+
+		// member-dave is seeded with zero groups (clmtest/seed.go), so currentGroups is
+		// empty and clmPreferredHref has no sample to derive from.
+		memberResource, err := rs.NewResource("Dave", clmMemberResourceType, "member-dave")
+		if err != nil {
+			t.Fatalf("NewResource: %v", err)
+		}
+
+		if _, annos, err := b.Grant(ctx, memberResource, ent); err != nil {
+			t.Fatalf("Grant with an identity-only ent.Resource: %v", err)
+		} else if hasAlreadyExists(annos) {
+			t.Error("first Grant should not report GrantAlreadyExists")
+		}
+		groups := srv.MemberGroups("member-dave")
+		found := false
+		for _, g := range groups {
+			if g == "group-legal" {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("expected dave to be granted group-legal, got %v", groups)
+		}
+	})
+
+	t.Run("sample branch: member already has another group, derives via clmPreferredHref's sample", func(t *testing.T) {
+		srv, c := clmtest.NewServer(t)
+		b := newClmGroupBuilder(c)
+		ctx := context.Background()
+
+		// member-carol is seeded into group-finance (clmtest/seed.go), giving
+		// clmPreferredHref a real sample Href to derive group-legal's Href from instead
+		// of falling back to client.GroupHref. srv.GroupHref and the fallback
+		// client.GroupHref build the same shape from the same discovered base URL, so
+		// they'd be byte-identical here — overriding group-finance's Href to a
+		// different host makes the sample branch's output actually distinguishable from
+		// what the fallback branch would have produced.
+		const sampleHost = "https://other.example.com"
+		altGroupFinanceHref := fmt.Sprintf("%s/v2/%s/groups/group-finance", sampleHost, clmtest.AccountID)
+		srv.SetGroupHref("group-finance", altGroupFinanceHref)
+
+		memberResource, err := rs.NewResource("Carol", clmMemberResourceType, "member-carol")
+		if err != nil {
+			t.Fatalf("NewResource: %v", err)
+		}
+
+		if _, annos, err := b.Grant(ctx, memberResource, ent); err != nil {
+			t.Fatalf("Grant with an identity-only ent.Resource: %v", err)
+		} else if hasAlreadyExists(annos) {
+			t.Error("first Grant should not report GrantAlreadyExists")
+		}
+		groups := srv.MemberGroups("member-carol")
+		found := false
+		for _, g := range groups {
+			if g == "group-legal" {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("expected carol to be granted group-legal, got %v", groups)
+		}
+
+		// MemberGroups reduces every Href to its trailing ID (matching the real API's
+		// own comparison semantics), which can't tell a sample-derived Href from a
+		// fallback-derived one. Asserting on the raw Href the server actually received,
+		// derived from the overridden group-finance sample (a different host than
+		// client.GroupHref's fallback would produce), pins that clmPreferredHref
+		// actually used the sample rather than falling back.
+		wantHref, err := clmHrefWithID(altGroupFinanceHref, "group-legal")
+		if err != nil {
+			t.Fatalf("clmHrefWithID (computing expected Href): %v", err)
+		}
+		// PatchMemberGroups sends the member's full current+new list (additive), so the
+		// PATCH body also carries carol's pre-existing group-finance entry alongside the
+		// new group-legal one.
+		hrefs := srv.LastPatchedMemberGroupHrefs("member-carol")
+		sawWantHref := false
+		for _, h := range hrefs {
+			if h == wantHref {
+				sawWantHref = true
+			}
+		}
+		if !sawWantHref {
+			t.Errorf("expected the PATCH request to carry Href %q, got %v", wantHref, hrefs)
+		}
+	})
 }
 
 // TestClmGroupMemberSlugRegressionPin guards against an accidental rename of
