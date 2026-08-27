@@ -264,7 +264,21 @@ func (c *Client) buildClmClientURL(path string, params ...any) (*url.URL, error)
 	accountId := c.accountId
 	c.mutex.RUnlock()
 
-	return buildURL(clmBaseURI, path, append([]any{accountId}, params...)...)
+	return buildURL(clmBaseURI, path, clmPathParams(append([]any{accountId}, params...)...)...)
+}
+
+// clmPathParams applies url.PathEscape to every string path-segment before fmt.Sprintf
+// inserts it into a CLM endpoint template (accountId, memberID, groupID, folderID, etc.).
+func clmPathParams(params ...any) []any {
+	out := make([]any, len(params))
+	for i, p := range params {
+		if s, ok := p.(string); ok {
+			out[i] = url.PathEscape(s)
+		} else {
+			out[i] = p
+		}
+	}
+	return out
 }
 
 // prepareClmPagedRequest safely prepares a paged CLM request URL. extra supplies any
@@ -282,7 +296,7 @@ func (c *Client) prepareClmPagedRequest(endpoint string, options PageOptions, ex
 		return nil, clmRequestedPage{}, fmt.Errorf("baton-docusign: invalid CLM base URL: %w", err)
 	}
 
-	formatted := fmt.Sprintf(endpoint, append([]any{accountId}, extra...)...)
+	formatted := fmt.Sprintf(endpoint, clmPathParams(append([]any{accountId}, extra...)...)...)
 	return preparePagedRequestClm(baseURL, formatted, options)
 }
 

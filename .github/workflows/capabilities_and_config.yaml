@@ -37,6 +37,10 @@ jobs:
         run: ./connector config > config_schema.json
 
       - name: Run and save capabilities output
+        # ./connector capabilities calls ResourceType() with no sync-resource-types
+        # filter, so clm_member's SkipEntitlements (not SkipEntitlementsAndGrants)
+        # reflects the all-types-enabled default; runtime differs when
+        # clm_workflow_queue is filtered out — see clmMemberBuilder.ResourceType().
         env:
           BATON_DOCUSIGN_CLIENT_ID: ${{ secrets.CLIENTID }}
           BATON_DOCUSIGN_CLIENT_SECRET: ${{ secrets.CLIENTSECRET }}

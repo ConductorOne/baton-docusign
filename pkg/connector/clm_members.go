@@ -31,6 +31,12 @@ type clmMemberBuilder struct {
 // annotated to tell the SDK's sync engine whether it can skip calling
 // Grants() for clm_member resources. clmMemberResourceType is a package-level
 // var shared with other code, so it's cloned before its annotations are mutated.
+//
+// baton_capabilities.json (generated via ./connector capabilities) reflects the
+// all-types-enabled case: SkipEntitlements when clm_workflow_queue is in scope.
+// When a customer's sync filter excludes clm_workflow_queue, this returns
+// SkipEntitlementsAndGrants instead — same pattern as userBuilder +
+// skipPermissionProfileResourceType.
 func (b *clmMemberBuilder) ResourceType(_ context.Context) *v2.ResourceType {
 	rt := proto.Clone(clmMemberResourceType).(*v2.ResourceType)
 	annos := annotations.Annotations(rt.Annotations)
@@ -56,7 +62,7 @@ func (b *clmMemberBuilder) List(ctx context.Context, _ *v2.ResourceId, attr rs.S
 		PageToken: pageToken,
 	})
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, fmt.Errorf("baton-docusign: listing CLM members: %w", err)
 	}
 
 	for _, member := range members {

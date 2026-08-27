@@ -91,6 +91,9 @@ func TestClmMemberBuilder_List_FailsWhenClmUnavailable(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected List to fail when CLM is unavailable, got nil error")
 	}
+	if !strings.HasPrefix(err.Error(), "baton-docusign:") {
+		t.Errorf("expected error wrapped with the baton-docusign: prefix, got: %v", err)
+	}
 	if len(resources) != 0 {
 		t.Errorf("expected zero resources on a hard failure, got %d", len(resources))
 	}
