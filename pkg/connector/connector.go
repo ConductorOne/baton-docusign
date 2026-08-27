@@ -28,13 +28,17 @@ type Connector struct {
 	// opts.WillSyncResourceType(...) signal that already determines whether any CLM
 	// builder's List() gets invoked this run (see New()). Gates Validate()'s upfront CLM
 	// readiness check only: it does NOT gate resource-type registration. ResourceSyncers
-	// always registers all 5 CLM builders unconditionally, because toggling registration
+	// always registers all 6 CLM builders unconditionally, because toggling registration
 	// itself would make ListResourceTypes() advertise a different set between syncs and
 	// C1 would read previously-synced CLM resources/grants as deleted.
 	includeClm bool
 	// skipPermissionProfileResourceType reports whether permission_profile is
 	// excluded from the sync filter.
 	skipPermissionProfileResourceType bool
+	// includeWorkflowQueues reports whether clm_workflow_queue is included in the
+	// customer's sync filter. Gates clmMemberBuilder.ResourceType()'s Grants skip
+	// annotation — see clm_members.go.
+	includeWorkflowQueues bool
 }
 
 // Configure handles the OAuth2 authorization flow to obtain a refresh token.
@@ -80,11 +84,12 @@ func (d *Connector) ResourceSyncers(_ context.Context) []connectorbuilder.Resour
 		newUserBuilder(d.client, d.skipPermissionProfileResourceType),
 		newGroupBuilder(d.client),
 		newPermissionProfilesBuilder(d.client),
-		newClmMemberBuilder(d.client),
+		newClmMemberBuilder(d.client, d.includeWorkflowQueues),
 		newClmRoleBuilder(),
 		newClmGroupBuilder(d.client),
 		newClmPermissionSetBuilder(d.client),
 		newClmFolderBuilder(d.client),
+		newClmWorkflowQueueBuilder(d.client),
 	}
 
 	// Only include signing groups if opted in
@@ -105,7 +110,7 @@ func (d *Connector) Metadata(_ context.Context) (*v2.ConnectorMetadata, error) {
 	// description, so the description no longer branches on includeSigningGroups/
 	// includeClm — it always lists everything the connector can sync.
 	description := "Connector syncs data from Users, Permission Profiles, Groups, and Signing Groups (if enabled on your account). " +
-		"Also syncs DocuSign CLM members, roles, groups, folders, folder security, and permission sets (if your account has a CLM subscription). " +
+		"Also syncs DocuSign CLM members, roles, groups, folders, folder security, permission sets, and workflow queues (if your account has a CLM subscription). " +
 		"It also allows the creation of users in DocuSign"
 
 	return &v2.ConnectorMetadata{
@@ -165,7 +170,7 @@ func (d *Connector) Validate(ctx context.Context) (annotations.Annotations, erro
 func NewWithRefreshToken(
 	ctx context.Context, isDemo bool, clientId, clientSecret, redirectURI, refreshToken, accountId string,
 	includeSigningGroups, includeClm bool, clmBaseURLOverride, baseURLOverride string,
-	skipPermissionProfileResourceType bool,
+	skipPermissionProfileResourceType, includeWorkflowQueues bool,
 ) (*Connector, error) {
 	l := ctxzap.Extract(ctx)
 
@@ -183,6 +188,7 @@ func NewWithRefreshToken(
 		includeSigningGroups:              includeSigningGroups,
 		includeClm:                        includeClm,
 		skipPermissionProfileResourceType: skipPermissionProfileResourceType,
+		includeWorkflowQueues:             includeWorkflowQueues,
 	}, nil
 }
 
@@ -193,7 +199,7 @@ func NewWithRefreshToken(
 func NewWithTokenSource(
 	ctx context.Context, isDemo bool, tokenSource oauth2.TokenSource, accountId string,
 	includeSigningGroups, includeClm bool, clmBaseURLOverride string,
-	skipPermissionProfileResourceType bool,
+	skipPermissionProfileResourceType, includeWorkflowQueues bool,
 ) (*Connector, error) {
 	docusignClient := client.NewClient(ctx, isDemo, tokenSource, accountId, clmBaseURLOverride)
 
@@ -202,6 +208,7 @@ func NewWithTokenSource(
 		includeSigningGroups:              includeSigningGroups,
 		includeClm:                        includeClm,
 		skipPermissionProfileResourceType: skipPermissionProfileResourceType,
+		includeWorkflowQueues:             includeWorkflowQueues,
 	}, nil
 }
 
@@ -211,7 +218,7 @@ func New(ctx context.Context, docusignCfg *cfg.Docusign, opts *cli.ConnectorOpts
 
 	includeClm := opts.WillSyncResourceType(clmMemberResourceType.Id) || opts.WillSyncResourceType(clmRoleResourceType.Id) ||
 		opts.WillSyncResourceType(clmGroupResourceType.Id) || opts.WillSyncResourceType(clmPermissionSetResourceType.Id) ||
-		opts.WillSyncResourceType(clmFolderResourceType.Id)
+		opts.WillSyncResourceType(clmFolderResourceType.Id) || opts.WillSyncResourceType(clmWorkflowQueueResourceType.Id)
 
 	// Validate the configuration
 	if err := field.Validate(cfg.ConfigurationSchema, docusignCfg); err != nil {
@@ -222,14 +229,20 @@ func New(ctx context.Context, docusignCfg *cfg.Docusign, opts *cli.ConnectorOpts
 	// client ID is provided (GUI demo group selection).
 	isDemo := docusignCfg.Demo || opts.SelectedAuthMethod == "demo"
 
-	// nil opts means no filter, so nothing is skipped.
-	skipPermissionProfileResourceType := opts != nil && !opts.WillSyncResourceType(PermissionProfileResourceTypeID)
+	// skipPermissionProfileResourceType and includeWorkflowQueues follow the sync filter;
+	// opts is non-nil here (WillSyncResourceType above requires it).
+	skipPermissionProfileResourceType := !opts.WillSyncResourceType(PermissionProfileResourceTypeID)
+	includeWorkflowQueues := opts.WillSyncResourceType(clmWorkflowQueueResourceType.Id)
+
+	if includeWorkflowQueues && !opts.WillSyncResourceType(clmMemberResourceType.Id) {
+		l.Debug("baton-docusign: clm_workflow_queue is enabled but clm_member is not — workflow queues are discovered per member, so this sync will produce zero queues and zero grants")
+	}
 
 	if opts.TokenSource != nil {
 		cbWithTokenSource, err := NewWithTokenSource(
 			ctx, isDemo, opts.TokenSource, docusignCfg.AccountId,
 			docusignCfg.IncludeSigningGroups, includeClm, docusignCfg.ClmBaseUrl,
-			skipPermissionProfileResourceType,
+			skipPermissionProfileResourceType, includeWorkflowQueues,
 		)
 		if err != nil {
 			l.Error("error creating connector with token source", zap.Error(err))
@@ -263,6 +276,7 @@ func New(ctx context.Context, docusignCfg *cfg.Docusign, opts *cli.ConnectorOpts
 			docusignCfg.ClmBaseUrl,
 			docusignCfg.BaseUrl,
 			skipPermissionProfileResourceType,
+			includeWorkflowQueues,
 		)
 		if err != nil {
 			l.Error("error creating connector", zap.Error(err))

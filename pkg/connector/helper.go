@@ -168,3 +168,11 @@ func clmSampleHrefsFrom[T any](principal *v2.Resource, entries []T, hrefOf func(
 	}
 	return sampleHrefs
 }
+
+// logSkippedClmWorkflowQueueWithEmptyHref Debug-logs a workflow-queue entry whose Href
+// does not resolve to a usable native ID — the queue is skipped rather than synced/granted
+// with an empty resource ID.
+func logSkippedClmWorkflowQueueWithEmptyHref(ctx context.Context, memberID, queueHref string) {
+	ctxzap.Extract(ctx).Debug("baton-docusign: skipping CLM workflow queue with an empty Href-derived ID",
+		zap.String("member_id", memberID), zap.String("queue_href", queueHref))
+}

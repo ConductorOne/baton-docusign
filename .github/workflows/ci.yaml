@@ -15,9 +15,15 @@ concurrency:
 env:
   # This CI account has no CLM subscription, and (unlike a C1-hosted sync) nothing here
   # filters resource types by OptInRequired — every registered resource type is attempted
-  # by default. CLM builders now fail the whole sync rather than skip gracefully when CLM
-  # isn't available (see pkg/connector/clm_roles.go), so the 5 clm_* types must be
-  # excluded here explicitly to test the ones the three test-* jobs below care about.
+  # by default. Every clm_* type must stay excluded here, not just clm_workflow_queue:
+  # Connector.Validate() now runs an upfront CLM-readiness check (EnsureClmReady) whenever
+  # ANY clm_* type is in this allowlist, and it fails the whole sync loudly — before any
+  # resource type's List() runs — rather than tolerating a no-subscription account (see
+  # connector.go's Validate doc comment). Including even one clm_* type here would fail
+  # these jobs' group/signing-group/permission-profile coverage too, not just skip CLM.
+  # TestNonClmAllowlistMatchesCI
+  # (pkg/connector/connector_test.go) pins this list against nonClmAllowlist() as a drift
+  # guard.
   # This is an allowlist, not a CLM-only exclusion: if you register a new non-CLM
   # resource type in pkg/connector/connector.go, add it here too — otherwise it silently
   # gets zero CI sync-test coverage. Declared once at the workflow level (all three jobs

@@ -54,6 +54,13 @@
         "annotations": [
           {
             "@type": "type.googleapis.com/c1.connector.v2.OptInRequired"
+          },
+          {
+            "@type": "type.googleapis.com/c1.connector.v2.ChildResourceType",
+            "resourceTypeId": "clm_workflow_queue"
+          },
+          {
+            "@type": "type.googleapis.com/c1.connector.v2.SkipEntitlements"
           }
         ]
       },
@@ -90,6 +97,28 @@
           "TRAIT_ROLE"
         ],
         "annotations": [
+          {
+            "@type": "type.googleapis.com/c1.connector.v2.OptInRequired"
+          }
+        ]
+      },
+      "capabilities": [
+        "CAPABILITY_SYNC"
+      ],
+      "permissions": {},
+      "optInRequired": true
+    },
+    {
+      "resourceType": {
+        "id": "clm_workflow_queue",
+        "displayName": "CLM Workflow Queue",
+        "traits": [
+          "TRAIT_GROUP"
+        ],
+        "annotations": [
+          {
+            "@type": "type.googleapis.com/c1.connector.v2.SkipEntitlements"
+          },
           {
             "@type": "type.googleapis.com/c1.connector.v2.OptInRequired"
           }

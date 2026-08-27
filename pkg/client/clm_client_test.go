@@ -385,3 +385,58 @@ func TestListPermissionSets_Pagination(t *testing.T) {
 		t.Fatalf("expected 5 permission sets across all pages, got %d", len(all))
 	}
 }
+
+func TestGetMemberWorkflowQueues(t *testing.T) {
+	_, c := clmtest.NewServer(t)
+	ctx := context.Background()
+
+	t.Run("member in two queues", func(t *testing.T) {
+		queues, _, err := c.GetMemberWorkflowQueues(ctx, "member-bob")
+		if err != nil {
+			t.Fatalf("GetMemberWorkflowQueues: %v", err)
+		}
+		if len(queues) != 2 {
+			t.Fatalf("expected member-bob to be in 2 workflow queues, got %d: %+v", len(queues), queues)
+		}
+	})
+
+	t.Run("member in no queues", func(t *testing.T) {
+		queues, _, err := c.GetMemberWorkflowQueues(ctx, "member-carol")
+		if err != nil {
+			t.Fatalf("GetMemberWorkflowQueues: %v", err)
+		}
+		if len(queues) != 0 {
+			t.Fatalf("expected member-carol to be in 0 workflow queues, got %d: %+v", len(queues), queues)
+		}
+	})
+
+	t.Run("unknown member returns an error", func(t *testing.T) {
+		if _, _, err := c.GetMemberWorkflowQueues(ctx, "member-does-not-exist"); err == nil {
+			t.Error("expected an error for an unknown member ID, got nil")
+		}
+	})
+}
+
+func TestGetMemberWorkflowQueues_PaginatesAcrossPages(t *testing.T) {
+	// Regression test mirroring TestGetMemberGroups_PaginatesAcrossPages: confirms
+	// GetMemberWorkflowQueues' shared clmPageToCompletion loop actually issues multiple
+	// requests for a member with more queues than fit on one page, rather than silently
+	// returning a truncated first page. member-mallory is added via
+	// AddBulkWorkflowQueueMember (not the default seed) specifically so its 105 queues
+	// don't perturb the default seed's "2 distinct queues" / "6 members" assertions used
+	// elsewhere.
+	srv, c := clmtest.NewServer(t)
+	ctx := context.Background()
+	srv.AddBulkWorkflowQueueMember("member-mallory", 105)
+
+	queues, _, err := c.GetMemberWorkflowQueues(ctx, "member-mallory")
+	if err != nil {
+		t.Fatalf("GetMemberWorkflowQueues: %v", err)
+	}
+	if len(queues) != 105 {
+		t.Fatalf("expected all 105 of member-mallory's workflow queues (paginated internally), got %d", len(queues))
+	}
+	if got := srv.MemberWorkflowQueuesRequestCount(); got < 2 {
+		t.Fatalf("expected GetMemberWorkflowQueues to issue at least 2 HTTP requests to page through 105 queues, but the mock server only saw %d — pagination is not actually happening", got)
+	}
+}

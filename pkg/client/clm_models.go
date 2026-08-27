@@ -514,3 +514,16 @@ var ClmRoles = []ClmRole{
 	{Name: "UserAdministrator"},
 	{Name: "SuperAdministrator"},
 }
+
+// ClmWorkflowQueue is a CLM WorkflowQueue (Member's workflow-queues response shape).
+type ClmWorkflowQueue struct {
+	Href string `json:"Href"`
+	Name string `json:"Name"`
+}
+
+// ClmWorkflowQueuePage is the paginated collection of ClmWorkflowQueue, returned by a
+// member's workflow-queues endpoint.
+type ClmWorkflowQueuePage struct {
+	ClmPage
+	Items []ClmWorkflowQueue `json:"Items"`
+}

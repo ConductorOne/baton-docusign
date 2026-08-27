@@ -39,6 +39,7 @@
 // Members (CLM's principal object):
 //   - GET   /v2/{accountId}/members - List members (GetMembers)
 //   - GET   /v2/{accountId}/members/{id}/groups - Groups a member belongs to
+//   - GET   /v2/{accountId}/members/{id}/workflowqueues - Workflow queues a member belongs to
 //   - PATCH /v2/{accountId}/members/{id} - Add member to new groups (additive/merge)
 //   - PUT   /v2/{accountId}/members/{id} - Replace member's groups (adds new, removes unspecified)
 //
@@ -136,6 +137,7 @@ const (
 	clmGetMemberGroups          = "/v2/%s/members/%s/groups"
 	clmPatchPutMember           = "/v2/%s/members/%s"
 	clmGetPermissionSet         = "/v2/%s/permissionsets"
+	clmGetMemberQueues          = "/v2/%s/members/%s/workflowqueues"
 
 	// clmGroupPath and clmMemberPath are path *shapes*, not endpoints this connector
 	// calls — hrefFor builds a Href string locally from these, issuing no request beyond
@@ -262,7 +264,21 @@ func (c *Client) buildClmClientURL(path string, params ...any) (*url.URL, error)
 	accountId := c.accountId
 	c.mutex.RUnlock()
 
-	return buildURL(clmBaseURI, path, append([]any{accountId}, params...)...)
+	return buildURL(clmBaseURI, path, clmPathParams(append([]any{accountId}, params...)...)...)
+}
+
+// clmPathParams applies url.PathEscape to every string path-segment before fmt.Sprintf
+// inserts it into a CLM endpoint template (accountId, memberID, groupID, folderID, etc.).
+func clmPathParams(params ...any) []any {
+	out := make([]any, len(params))
+	for i, p := range params {
+		if s, ok := p.(string); ok {
+			out[i] = url.PathEscape(s)
+		} else {
+			out[i] = p
+		}
+	}
+	return out
 }
 
 // prepareClmPagedRequest safely prepares a paged CLM request URL. extra supplies any
@@ -280,7 +296,7 @@ func (c *Client) prepareClmPagedRequest(endpoint string, options PageOptions, ex
 		return nil, clmRequestedPage{}, fmt.Errorf("baton-docusign: invalid CLM base URL: %w", err)
 	}
 
-	formatted := fmt.Sprintf(endpoint, append([]any{accountId}, extra...)...)
+	formatted := fmt.Sprintf(endpoint, clmPathParams(append([]any{accountId}, extra...)...)...)
 	return preparePagedRequestClm(baseURL, formatted, options)
 }
 
@@ -800,32 +816,27 @@ func (c *Client) ListMembers(ctx context.Context, options PageOptions) ([]ClmMem
 	return page.Items, nextToken, anno, nil
 }
 
-// GetMemberGroups gets the FULL current list of groups a member belongs to — required
-// before Grant/Revoke, since both are read-modify-write against this list (Patch is
-// additive/merge, Put is full-replace). This method pages to completion internally:
-// callers need the complete list, not one page of it — Revoke in
-// particular does a full-replace Put using this result, so a truncated list here would
-// silently drop the member's memberships in every group beyond the first page.
-//
-// Intentional carve-out from the usual client-layer rule against looping through pages
-// internally (that's normally the connector layer's job, driving one page per call):
-// this isn't a sync List — it's a read-before-write for provisioning, where the caller
-// fundamentally needs the complete set to safely do a full-replace Put, not a page at a
-// time. The loop is bounded (maxMemberGroupPages) and guards against a non-advancing
-// token, so it can't hang even if the underlying assumption about the API is wrong.
-func (c *Client) GetMemberGroups(ctx context.Context, memberID string) ([]ClmGroup, annotations.Annotations, error) {
-	// maxMemberGroupPages bounds this loop in case the CLM API ever echoes a
-	// non-advancing Offset/Limit, which would make getClmNextToken compute the same
-	// "next" token forever. A member with more pages of groups than this is
-	// implausible; if it ever happens, fail loudly instead of hanging.
-	const maxMemberGroupPages = 1000
+// clmMaxMemberSubResourcePages bounds every "fetch a member's complete X" loop below
+// (GetMemberGroups, GetMemberWorkflowQueues) in case the CLM API ever echoes a
+// non-advancing Offset/Limit, which would make getClmNextToken compute the same "next"
+// token forever. A member with more pages of groups/queues than this is implausible; if
+// it ever happens, fail loudly instead of hanging.
+const clmMaxMemberSubResourcePages = 1000
 
-	var all []ClmGroup
+// clmPageToCompletion pages through fetchPage until it returns an empty nextPageToken,
+// accumulating every item — the shared shape behind every "get a member's complete X"
+// client method (GetMemberGroups, GetMemberWorkflowQueues), which each need the whole
+// set at once rather than one page per caller-visible call. See GetMemberGroups' doc for
+// why looping internally is an intentional carve-out from the usual client-layer rule.
+// Bounded by maxPages and guards against a non-advancing token, so it can't hang even if
+// the underlying assumption about the API is wrong.
+func clmPageToCompletion[T any](fetchPage func(pageToken string) ([]T, string, annotations.Annotations, error), maxPages int, label string) ([]T, annotations.Annotations, error) {
+	var all []T
 	var anno annotations.Annotations
 	pageToken := ""
 
-	for i := 0; i < maxMemberGroupPages; i++ {
-		page, nextPageToken, pageAnno, err := c.getMemberGroupsPage(ctx, memberID, PageOptions{PageToken: pageToken})
+	for i := 0; i < maxPages; i++ {
+		page, nextPageToken, pageAnno, err := fetchPage(pageToken)
 		if err != nil {
 			return nil, anno, err
 		}
@@ -836,12 +847,30 @@ func (c *Client) GetMemberGroups(ctx context.Context, memberID string) ([]ClmGro
 			return all, anno, nil
 		}
 		if nextPageToken == pageToken {
-			return nil, anno, fmt.Errorf("baton-docusign: CLM API returned a non-advancing pagination token while listing groups for member %s", memberID)
+			return nil, anno, fmt.Errorf("baton-docusign: CLM API returned a non-advancing pagination token while listing %s", label)
 		}
 		pageToken = nextPageToken
 	}
 
-	return nil, anno, fmt.Errorf("baton-docusign: exceeded %d pages while listing groups for member %s", maxMemberGroupPages, memberID)
+	return nil, anno, fmt.Errorf("baton-docusign: exceeded %d pages while listing %s", maxPages, label)
+}
+
+// GetMemberGroups gets the FULL current list of groups a member belongs to — required
+// before Grant/Revoke, since both are read-modify-write against this list (Patch is
+// additive/merge, Put is full-replace). This method pages to completion internally:
+// callers need the complete list, not one page of it — Revoke in particular does a
+// full-replace Put using this result, so a truncated list here would silently drop the
+// member's memberships in every group beyond the first page.
+//
+// Intentional carve-out from the usual client-layer rule against looping through pages
+// internally (that's normally the connector layer's job, driving one page per call):
+// this isn't a sync List — it's a read-before-write for provisioning, where the caller
+// fundamentally needs the complete set to safely do a full-replace Put, not a page at a
+// time. See clmPageToCompletion for the shared bounded/non-advancing-token-guarded loop.
+func (c *Client) GetMemberGroups(ctx context.Context, memberID string) ([]ClmGroup, annotations.Annotations, error) {
+	return clmPageToCompletion(func(pageToken string) ([]ClmGroup, string, annotations.Annotations, error) {
+		return c.getMemberGroupsPage(ctx, memberID, PageOptions{PageToken: pageToken})
+	}, clmMaxMemberSubResourcePages, fmt.Sprintf("groups for member %s", memberID))
 }
 
 // getMemberGroupsPage fetches a single page of a member's group memberships. Both of
@@ -940,6 +969,42 @@ func (c *Client) ListPermissionSets(ctx context.Context, options PageOptions) ([
 	anno, err := c.doClmRequest(ctx, http.MethodGet, listURL, nil, &page)
 	if err != nil {
 		return nil, "", nil, fmt.Errorf("baton-docusign: failed to list CLM permission sets: %w", err)
+	}
+
+	nextToken, err := getClmNextToken(requestedPage, len(page.Items), page.Next != "", page.Total, "")
+	if err != nil {
+		return nil, "", anno, err
+	}
+	return page.Items, nextToken, anno, nil
+}
+
+// GetMemberWorkflowQueues lists the workflow queues a CLM member belongs to. Like
+// GetMemberGroups, this fetches the member's complete set rather than exposing a page
+// token: clm_workflow_queue's List() (pkg/connector/clm_workflow_queues.go) needs the
+// complete set for the member it was called with, not one page at a time.
+// Confirmed read-only intent per the API's documented surface: there is no reverse
+// lookup (queue to members) and no membership grant/revoke endpoint, only work-item
+// assign/unassign — which this connector doesn't sync (see clm_workflow_queues.go).
+func (c *Client) GetMemberWorkflowQueues(ctx context.Context, memberID string) ([]ClmWorkflowQueue, annotations.Annotations, error) {
+	return clmPageToCompletion(func(pageToken string) ([]ClmWorkflowQueue, string, annotations.Annotations, error) {
+		return c.getMemberWorkflowQueuesPage(ctx, memberID, PageOptions{PageToken: pageToken})
+	}, clmMaxMemberSubResourcePages, fmt.Sprintf("workflow queues for member %s", memberID))
+}
+
+func (c *Client) getMemberWorkflowQueuesPage(ctx context.Context, memberID string, options PageOptions) ([]ClmWorkflowQueue, string, annotations.Annotations, error) {
+	if err := c.ensureClmReady(ctx); err != nil {
+		return nil, "", nil, err
+	}
+
+	queuesURL, requestedPage, err := c.prepareClmPagedRequest(clmGetMemberQueues, options, memberID)
+	if err != nil {
+		return nil, "", nil, err
+	}
+
+	var page ClmWorkflowQueuePage
+	anno, err := c.doClmRequest(ctx, http.MethodGet, queuesURL, nil, &page)
+	if err != nil {
+		return nil, "", nil, fmt.Errorf("baton-docusign: failed to get workflow queues for CLM member %s: %w", memberID, err)
 	}
 
 	nextToken, err := getClmNextToken(requestedPage, len(page.Items), page.Next != "", page.Total, "")

@@ -11,6 +11,8 @@ import (
 
 	"github.com/conductorone/baton-docusign/pkg/client/clmtest"
 	cfg "github.com/conductorone/baton-docusign/pkg/config"
+	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
+	"github.com/conductorone/baton-sdk/pkg/annotations"
 	"github.com/conductorone/baton-sdk/pkg/cli"
 	"golang.org/x/oauth2"
 	"gopkg.in/yaml.v3"
@@ -33,6 +35,29 @@ var alwaysRegisteredTypeIDs = []string{
 	"clm_group",
 	"clm_permission_set",
 	"clm_folder",
+	"clm_workflow_queue",
+}
+
+// TestClmMemberResourceType_HasWorkflowQueueChildResourceType pins the annotation that
+// drives clm_workflow_queue's whole redesign: clm_workflow_queue is modeled as
+// clmMemberResourceType's ChildResourceType (see resource_types.go's doc and
+// clm_workflow_queues.go) rather than syncing independently, so the SDK's child-resource
+// scheduling can call clmWorkflowQueueBuilder.List() once per synced clm_member. A
+// missing or misconfigured annotation here would silently stop that scheduling from ever
+// firing, with no compile-time signal.
+func TestClmMemberResourceType_HasWorkflowQueueChildResourceType(t *testing.T) {
+	annos := annotations.Annotations(clmMemberResourceType.Annotations)
+	var child v2.ChildResourceType
+	ok, err := annos.Pick(&child)
+	if err != nil {
+		t.Fatalf("Pick(ChildResourceType): %v", err)
+	}
+	if !ok {
+		t.Fatal("expected clmMemberResourceType to carry a ChildResourceType annotation")
+	}
+	if child.ResourceTypeId != clmWorkflowQueueResourceType.Id {
+		t.Errorf("expected ChildResourceType.ResourceTypeId %q, got %q", clmWorkflowQueueResourceType.Id, child.ResourceTypeId)
+	}
 }
 
 func registeredTypeIDs(ctx context.Context, d *Connector) map[string]bool {
@@ -151,7 +176,7 @@ func TestNewWithRefreshToken_StoresIncludeClm(t *testing.T) {
 		cb, err := NewWithRefreshToken(
 			ctx, false, "client-id", "client-secret", "https://redirect.example.com",
 			"refresh-token", "account-1", false, includeClm,
-			"https://clm.example.com", "https://api.example.com", false,
+			"https://clm.example.com", "https://api.example.com", false, false,
 		)
 		if err != nil {
 			t.Fatalf("includeClm=%v: NewWithRefreshToken: %v", includeClm, err)
@@ -173,7 +198,7 @@ func TestNewWithTokenSource_StoresIncludeClm(t *testing.T) {
 
 	for _, includeClm := range []bool{true, false} {
 		cb, err := NewWithTokenSource(
-			ctx, false, tokenSource, "account-1", false, includeClm, "https://clm.example.com", false,
+			ctx, false, tokenSource, "account-1", false, includeClm, "https://clm.example.com", false, false,
 		)
 		if err != nil {
 			t.Fatalf("includeClm=%v: NewWithTokenSource: %v", includeClm, err)
@@ -254,17 +279,19 @@ func TestNew_IncludeClmDerivation(t *testing.T) {
 	tokenSource := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "tok"})
 
 	tests := []struct {
-		name                string
-		syncResourceTypeIDs []string
-		wantIncludeClm      bool
+		name                      string
+		syncResourceTypeIDs       []string
+		wantIncludeClm            bool
+		wantIncludeWorkflowQueues bool
 	}{
-		{"no filter (opts.SyncResourceTypeIDs empty): syncs everything, including CLM", nil, true},
-		{"CI's actual allowlist: no clm_* type present", nonClmAllowlist(), false},
-		{"clm_member present", []string{"user", clmMemberResourceType.Id}, true},
-		{"clm_role present", []string{"user", clmRoleResourceType.Id}, true},
-		{"clm_group present", []string{"user", clmGroupResourceType.Id}, true},
-		{"clm_permission_set present", []string{"user", clmPermissionSetResourceType.Id}, true},
-		{"clm_folder present", []string{"user", clmFolderResourceType.Id}, true},
+		{"no filter (opts.SyncResourceTypeIDs empty): syncs everything, including CLM", nil, true, true},
+		{"CI's actual allowlist: no clm_* type present", nonClmAllowlist(), false, false},
+		{"clm_member present", []string{"user", clmMemberResourceType.Id}, true, false},
+		{"clm_role present", []string{"user", clmRoleResourceType.Id}, true, false},
+		{"clm_group present", []string{"user", clmGroupResourceType.Id}, true, false},
+		{"clm_permission_set present", []string{"user", clmPermissionSetResourceType.Id}, true, false},
+		{"clm_folder present", []string{"user", clmFolderResourceType.Id}, true, false},
+		{"clm_workflow_queue present", []string{"user", clmWorkflowQueueResourceType.Id}, true, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -279,6 +306,9 @@ func TestNew_IncludeClmDerivation(t *testing.T) {
 			}
 			if cb.includeClm != tt.wantIncludeClm {
 				t.Errorf("SyncResourceTypeIDs=%v: expected includeClm=%v, got %v", tt.syncResourceTypeIDs, tt.wantIncludeClm, cb.includeClm)
+			}
+			if cb.includeWorkflowQueues != tt.wantIncludeWorkflowQueues {
+				t.Errorf("SyncResourceTypeIDs=%v: expected includeWorkflowQueues=%v, got %v", tt.syncResourceTypeIDs, tt.wantIncludeWorkflowQueues, cb.includeWorkflowQueues)
 			}
 		})
 	}

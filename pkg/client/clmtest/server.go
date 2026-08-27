@@ -40,6 +40,7 @@
 //	PATCH /v2/{accountId}/members/{id}                  — PatchMemberGroups (additive)
 //	PUT   /v2/{accountId}/members/{id}                  — PutMemberGroups (full-replace)
 //	GET   /v2/{accountId}/permissionsets                 — ListPermissionSets
+//	GET   /v2/{accountId}/members/{id}/workflowqueues    — GetMemberWorkflowQueues (paginated)
 package clmtest
 
 import (
@@ -115,7 +116,13 @@ type Server struct {
 	permissionSets     map[string]*client.ClmPermissionSet
 	permissionSetOrder []string
 
-	memberGroupsRequests int // count of GET .../members/{id}/groups calls, for pagination assertions
+	workflowQueues       map[string]*client.ClmWorkflowQueue
+	memberWorkflowQueues map[string][]string // memberID -> workflow queue IDs, seed-only (no write endpoint)
+
+	memberGroupsRequests         int // count of GET .../members/{id}/groups calls, for pagination assertions
+	memberWorkflowQueuesRequests int // count of GET .../members/{id}/workflowqueues calls, for pagination assertions
+
+	forcedMemberWorkflowQueuesStatus map[string]int // memberID -> forced HTTP status, for tests
 
 	lastPatchedMemberGroupHrefs map[string][]string // memberID -> the raw Href strings the last PATCH request body carried, for tests
 
@@ -141,6 +148,17 @@ type Server struct {
 	// resolving to "success" on poll — see SetPendingChangeSecurityPolls. Decremented on
 	// each poll.
 	pendingChangeSecurityPolls int
+}
+
+// ForceMemberWorkflowQueuesStatus makes GET .../members/{id}/workflowqueues fail with
+// the given HTTP status for exactly this memberID — for tests that need a specific
+// gRPC code (e.g. PermissionDenied/Unauthenticated) out of one particular member's
+// call, distinct from the unknown-member 404 handleMemberWorkflowQueues already
+// produces for an ID absent from the seed. Call after NewServer returns.
+func (s *Server) ForceMemberWorkflowQueuesStatus(memberID string, status int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.forcedMemberWorkflowQueuesStatus[memberID] = status
 }
 
 // SetPendingFolderSearchPolls makes the next folder search task created by this server
@@ -190,6 +208,72 @@ func (s *Server) MemberGroupsRequestCount() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.memberGroupsRequests
+}
+
+// MemberWorkflowQueuesRequestCount is MemberGroupsRequestCount's equivalent for GET
+// .../members/{id}/workflowqueues.
+func (s *Server) MemberWorkflowQueuesRequestCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.memberWorkflowQueuesRequests
+}
+
+// AddBulkWorkflowQueueMember adds a new member (not part of the default seed) who
+// belongs to queueCount newly created, distinct workflow queues — for pagination tests
+// that need a member with more workflow-queue memberships than fit on one page, without
+// perturbing the default seed's member count or distinct-queue count that other tests
+// (both here and in pkg/connector) assert on. Call after NewServer returns.
+func (s *Server) AddBulkWorkflowQueueMember(memberID string, queueCount int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	member := &client.ClmMember{Email: memberID + "@example.com", UserName: memberID}
+	member.Href = s.MemberHref(memberID)
+	s.members[memberID] = member
+	s.memberOrder = append(s.memberOrder, memberID)
+
+	queueIDs := make([]string, 0, queueCount)
+	for i := 1; i <= queueCount; i++ {
+		qid := fmt.Sprintf("queue-bulk-%03d", i)
+		s.workflowQueues[qid] = &client.ClmWorkflowQueue{
+			Name: fmt.Sprintf("Bulk Queue %03d", i),
+			Href: s.WorkflowQueueHref(qid),
+		}
+		queueIDs = append(queueIDs, qid)
+	}
+	s.memberWorkflowQueues[memberID] = queueIDs
+}
+
+// AddMemberWithoutHref seeds a member with an empty Href — clmIDFromHref then reports an
+// empty ID for it, exercising List()'s empty-memberID guard (a malformed record CLM's
+// own API could plausibly return; this connector's endpoint shapes are
+// documented-but-unexercised against a live tenant) without the scan ever reaching
+// GetMemberWorkflowQueues for this member. Call after NewServer returns.
+func (s *Server) AddMemberWithoutHref(memberID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.members[memberID] = &client.ClmMember{Email: memberID + "@example.com", UserName: memberID}
+	s.memberOrder = append(s.memberOrder, memberID)
+}
+
+// AddMemberWorkflowQueueWithEmptyHref seeds a new member (not part of the default seed)
+// with a single workflow-queue membership whose Href is empty — clmIDFromHref then
+// reports an empty ID for it, exercising clm_workflow_queue.List()'s skip-unusable-ID
+// guard for one queue within an otherwise normal member scan. Mirrors
+// AddMemberWithoutHref's equivalent case at the member level. Call after NewServer
+// returns.
+func (s *Server) AddMemberWorkflowQueueWithEmptyHref(memberID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	member := &client.ClmMember{Email: memberID + "@example.com", UserName: memberID}
+	member.Href = s.MemberHref(memberID)
+	s.members[memberID] = member
+	s.memberOrder = append(s.memberOrder, memberID)
+
+	const queueID = "queue-no-href"
+	s.workflowQueues[queueID] = &client.ClmWorkflowQueue{Name: "No Href Queue"} // Href intentionally empty
+	s.memberWorkflowQueues[memberID] = []string{queueID}
 }
 
 // LastPatchedMemberGroupHrefs returns the raw Href strings the most recent PATCH
@@ -284,6 +368,10 @@ func (s *Server) MemberHref(id string) string {
 	return fmt.Sprintf("%s/v2/%s/members/%s", s.baseURL, AccountID, id)
 }
 
+func (s *Server) WorkflowQueueHref(id string) string {
+	return fmt.Sprintf("%s/v2/%s/workflowqueues/%s", s.baseURL, AccountID, id)
+}
+
 // MemberGroups returns the current (test-visible) group membership for a member, for
 // assertions after a Grant/Revoke round trip.
 func (s *Server) MemberGroups(memberID string) []string {
@@ -321,13 +409,16 @@ func (s *Server) FolderSecurity(folderID string) client.ClmFolderSecurity {
 // RunStandalone so both construct exactly the same seeded state.
 func newState() *Server {
 	return &Server{
-		folders:                     make(map[string]*client.ClmFolder),
-		groups:                      make(map[string]*client.ClmGroup),
-		groupMembers:                make(map[string][]string),
-		members:                     make(map[string]*client.ClmMember),
-		memberGroups:                make(map[string][]string),
-		permissionSets:              make(map[string]*client.ClmPermissionSet),
-		lastPatchedMemberGroupHrefs: make(map[string][]string),
+		folders:                          make(map[string]*client.ClmFolder),
+		groups:                           make(map[string]*client.ClmGroup),
+		groupMembers:                     make(map[string][]string),
+		members:                          make(map[string]*client.ClmMember),
+		memberGroups:                     make(map[string][]string),
+		permissionSets:                   make(map[string]*client.ClmPermissionSet),
+		workflowQueues:                   make(map[string]*client.ClmWorkflowQueue),
+		memberWorkflowQueues:             make(map[string][]string),
+		forcedMemberWorkflowQueuesStatus: make(map[string]int),
+		lastPatchedMemberGroupHrefs:      make(map[string][]string),
 	}
 }
 
@@ -347,6 +438,7 @@ func newMux(s *Server) *http.ServeMux {
 	mux.HandleFunc("GET /v2/{accountId}/groups/{id}/groupmembers", s.requireAuth(s.handleGroupMembers))
 	mux.HandleFunc("GET /v2/{accountId}/members", s.requireAuth(s.handleListMembers))
 	mux.HandleFunc("GET /v2/{accountId}/members/{id}/groups", s.requireAuth(s.handleMemberGroups))
+	mux.HandleFunc("GET /v2/{accountId}/members/{id}/workflowqueues", s.requireAuth(s.handleMemberWorkflowQueues))
 	mux.HandleFunc("PATCH /v2/{accountId}/members/{id}", s.requireAuth(s.handlePatchMember))
 	mux.HandleFunc("PUT /v2/{accountId}/members/{id}", s.requireAuth(s.handlePutMember))
 	mux.HandleFunc("GET /v2/{accountId}/permissionsets", s.requireAuth(s.handleListPermissionSets))
