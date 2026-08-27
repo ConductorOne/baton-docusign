@@ -75,6 +75,12 @@ jobs:
           baton-entitlement: "${{ vars.TEST_GROUP_ENTITLEMENT }}"
           baton-principal: "${{ vars.TEST_GROUP_PRINCIPAL }}"
           baton-principal-type: "${{ vars.TEST_GROUP_PRINCIPAL_TYPE }}"
+          # DocuSign's backend doesn't apply a write instantly — the sync immediately
+          # after a grant/revoke can still read the pre-write state. sync-test's sleep
+          # input exists exactly for this; confirmed needed by a real failure (a
+          # verification query returning no grants right after a grant that itself
+          # succeeded) on test-permission-profiles, which has no built-in retry.
+          sleep: "3"
   test-signing-groups:
     needs: [test-groups]
     runs-on: ubuntu-latest
@@ -104,6 +110,9 @@ jobs:
           baton-entitlement: "${{ vars.TEST_SIGNING_GROUP_ENTITLEMENT }}"
           baton-principal: "${{ vars.TEST_SIGNING_GROUP_PRINCIPAL }}"
           baton-principal-type: "${{ vars.TEST_SIGNING_GROUP_PRINCIPAL_TYPE }}"
+          # See test-groups' identical sleep above — same shared demo account, same
+          # DocuSign write-propagation delay risk.
+          sleep: "3"
   test-permission-profiles:
     needs: [test-signing-groups]
     runs-on: ubuntu-latest
@@ -133,3 +142,7 @@ jobs:
           baton-entitlement: "${{ vars.TEST_PERMISSION_PROFILE_ENTITLEMENT }}"
           baton-principal: "${{ vars.TEST_PERMISSION_PROFILE_PRINCIPAL }}"
           baton-principal-type: "${{ vars.TEST_PERMISSION_PROFILE_PRINCIPAL_TYPE }}"
+          # See test-groups' identical sleep above — same shared demo account, same
+          # DocuSign write-propagation delay risk (the one confirmed to actually fire
+          # here).
+          sleep: "3"

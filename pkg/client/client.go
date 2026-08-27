@@ -645,13 +645,51 @@ func (c *Client) GetUserByEmail(ctx context.Context, userEmail string) (*User, a
 	return &user, annos, nil
 }
 
-// GetPermissionProfiles fetches all permission profiles from the DocuSign account.
+// GetPermissionProfiles fetches all permission profiles from the DocuSign account. The
+// response may be served from the shared HTTP GET cache — fine for List/Revoke, neither
+// of which memoizes across syncs the way userBuilder does (see GetPermissionProfilesFresh).
+//
+// Cache-split skew (accepted tradeoff, not an oversight): this cache is uhttp's own
+// shared GET cache, which is cross-sync for a long-lived connector process (default TTL
+// 1h, overridable via BATON_HTTP_CACHE_TTL) — not just cross-caller within one sync. A
+// permission profile created or deleted between two syncs less than that TTL apart can
+// be visible to userBuilder's always-fresh GetPermissionProfilesFresh grants pass before
+// it is visible here, or vice versa, producing a bounded resource-vs-grant skew window
+// (up to the cache TTL) between what List/Revoke see and what the grants pass sees.
+// Pre-split, both readers shared this same cached view, so there was no skew between
+// them — this split introduced the asymmetry, in exchange for keeping List/Revoke on
+// uhttp's cheap shared cache path instead of paying for a fresh call on every read. That
+// tradeoff is intentional: bypassing the cache here too would undo the call-volume
+// reduction this split exists for.
 //
 // Pagination: This endpoint does NOT support pagination. It returns all permission profiles in a single request.
 // Typically, DocuSign accounts have a limited number of permission profiles (< 50), so this is acceptable.
 //
 // Returns: all permission profiles, annotations, error.
 func (c *Client) GetPermissionProfiles(ctx context.Context) ([]PermissionProfile, annotations.Annotations, error) {
+	return c.getPermissionProfiles(ctx, false)
+}
+
+// GetPermissionProfilesFresh is identical to GetPermissionProfiles but bypasses the
+// shared HTTP GET cache. userBuilder calls this at most once per sync (see its
+// memoization fields' doc in pkg/connector/users.go), so by the time this request
+// fires, that caller has already decided a fresh call is needed — a cached response
+// here could only ever serve a stale snapshot left over from a previous sync on the
+// same long-lived connector process, never save a real call. List and Revoke don't
+// share userBuilder's process-lifetime memoization risk (neither memoizes this call
+// across syncs), and sharing uhttp's cache with them when both fire in the same sync
+// saves a real network call — so only this path opts out of the cache, not
+// GetPermissionProfiles itself.
+//
+// This does NOT mean List/Revoke are free of cross-sync staleness risk of their own:
+// see GetPermissionProfiles' doc for the cache-split skew this asymmetry introduces
+// between this method's always-fresh view and List/Revoke's cached one — an accepted,
+// bounded tradeoff, not a gap specific to this method.
+func (c *Client) GetPermissionProfilesFresh(ctx context.Context) ([]PermissionProfile, annotations.Annotations, error) {
+	return c.getPermissionProfiles(ctx, true)
+}
+
+func (c *Client) getPermissionProfiles(ctx context.Context, noCache bool) ([]PermissionProfile, annotations.Annotations, error) {
 	if err := c.ensureInitialized(ctx); err != nil {
 		return nil, nil, err
 	}
@@ -665,7 +703,11 @@ func (c *Client) GetPermissionProfiles(ctx context.Context) ([]PermissionProfile
 
 	permissionProfilesURL = baseURL.ResolveReference(permissionProfilesURL)
 
-	_, annos, err := c.doRequest(ctx, http.MethodGet, permissionProfilesURL, nil, &permissionProfilesResponse)
+	var extraOpts []uhttp.RequestOption
+	if noCache {
+		extraOpts = append(extraOpts, uhttp.WithNoCache())
+	}
+	_, annos, err := c.doRequest(ctx, http.MethodGet, permissionProfilesURL, nil, &permissionProfilesResponse, extraOpts...)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -801,6 +843,7 @@ func (c *Client) doRequest(
 	url *url.URL,
 	body any,
 	response any,
+	extraOpts ...uhttp.RequestOption,
 ) (http.Header, annotations.Annotations, error) {
 	token, err := c.tokenSource.Token()
 	if err != nil {
@@ -816,6 +859,7 @@ func (c *Client) doRequest(
 	if body != nil {
 		requestOptions = append(requestOptions, uhttp.WithJSONBody(body))
 	}
+	requestOptions = append(requestOptions, extraOpts...)
 
 	request, err := c.wrapper.NewRequest(ctx, method, url, requestOptions...)
 	if err != nil {

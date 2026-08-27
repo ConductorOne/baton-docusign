@@ -18,11 +18,46 @@ import (
 // Shared profile/field map keys, reused across builders (and the AccountCreationSchema
 // field map in connector.go) to avoid repeated string literals (golangci-lint: goconst).
 const (
-	profileFieldEmail     = "email"
-	profileFieldUsername  = "username"
-	profileFieldGroupName = "group_name"
-	profileFieldHref      = "href"
+	profileFieldEmail      = "email"
+	profileFieldUsername   = "username"
+	profileFieldGroupName  = "group_name"
+	profileFieldPermission = "permission"
+	profileFieldStatus     = "status"
+	profileFieldHref       = "href"
 )
+
+// userStatusActive is the DocuSign UserStatus value this connector treats as "active" —
+// used to gate userBuilder.Grants' list-response fast path on the same active/non-active
+// distinction GetUserDetails' PermissionProfileID-empty check already relies on (see
+// users.go), not a new assumption.
+const userStatusActive = "Active"
+
+// isReclassifiedRateLimitError reports whether err represents a genuine rate-limit
+// overlimit — either DocuSign's hourly/burst error (pkg/client/helper.go's
+// reclassifyRateLimitError) or a plain HTTP 429 uhttp's own
+// WrapErrorsWithRateLimitInfo already classifies this way — identified by a
+// RateLimitDescription with Status == STATUS_OVERLIMIT specifically, not merely the
+// presence of a RateLimitDescription at all: uhttp's wrapper.go attaches one to every
+// non-2xx response unconditionally (ratelimit.ExtractRateLimitData never errors, so
+// WrapErrorsWithRateLimitInfo's `if err == nil { st.WithDetails(description) }` always
+// runs), almost always with Status left at its unset zero value — so a bare presence
+// check would false-positive-match ordinary unrelated errors (403s, validation errors,
+// anything non-2xx). codes.Unavailable alone is also too broad on its own: uhttp maps a
+// plain 503 or a transient network failure to it too, and those are genuinely different
+// failures a caller may want to handle differently (e.g. still fall back to another
+// endpoint) rather than treat as an account already over its rate-limit budget.
+func isReclassifiedRateLimitError(err error) bool {
+	st, ok := status.FromError(err)
+	if !ok {
+		return false
+	}
+	for _, d := range st.Details() {
+		if rl, ok := d.(*v2.RateLimitDescription); ok && rl.GetStatus() == v2.RateLimitDescription_STATUS_OVERLIMIT {
+			return true
+		}
+	}
+	return false
+}
 
 // parsePageToken deserializes the Baton token and returns the Bag and page number for upstream.
 func parsePageToken(i string, resourceID *v2.ResourceId) (*pagination.Bag, string, error) {
@@ -47,6 +82,43 @@ func parsePageToken(i string, resourceID *v2.ResourceId) (*pagination.Bag, strin
 // maintaining two copies.
 func clmIDFromHref(href string) string {
 	return client.IDFromHref(href)
+}
+
+// permissionProfileIDByName returns the ID of the profile named name (requiring a
+// non-empty ID) and how many matched, so callers can tell "not found" (0) from
+// "ambiguous" (2+) — names aren't guaranteed unique per account — without a second scan
+// of their own. id is only meaningful when matches == 1. Callers that need to resolve an
+// ambiguous match anyway (rather than treat it as not-found) should use
+// permissionProfilesByName instead — see its doc.
+func permissionProfileIDByName(profiles []client.PermissionProfile, name string) (string, int) {
+	matches := permissionProfilesByName(profiles, name)
+	if len(matches) == 0 {
+		return "", 0
+	}
+	// First match — same order as permissionProfilesByName / Revoke. Callers must still
+	// treat id as meaningful only when matches == 1.
+	return matches[0].PermissionProfileId, len(matches)
+}
+
+// permissionProfilesByName returns every profile named name (requiring a non-empty ID),
+// in the API's own response order. Unlike permissionProfileIDByName — which deliberately
+// makes an ambiguous match (2+) indistinguishable from "pick one, ID doesn't matter which"
+// by leaving its returned id meaningful only when matches == 1 — this variant exists for
+// the one caller (permissionProfilesBuilder.Revoke) that needs to actually resolve an
+// ambiguous name to a specific profile: DocuSign doesn't enforce unique profile names, and
+// prior to the ambiguous-is-an-error behavior added elsewhere in this codebase, Revoke took
+// the first match and succeeded silently. Revoke restores that first-match behavior
+// (logged at Debug) using matches[0] here, while tryFastPathGrant's name-based grant
+// resolution keeps treating ambiguous as not-found via permissionProfileIDByName — a wrong
+// silent guess there is a wrong grant, which is worse than falling back.
+func permissionProfilesByName(profiles []client.PermissionProfile, name string) []client.PermissionProfile {
+	var matches []client.PermissionProfile
+	for _, p := range profiles {
+		if p.PermissionProfileName == name && p.PermissionProfileId != "" {
+			matches = append(matches, p)
+		}
+	}
+	return matches
 }
 
 // clmHrefWithID rebuilds sampleHref with its trailing ID segment replaced by newID.
