@@ -60,12 +60,18 @@ A user with access to the **Docusign Admin console** must perform this task.
   </Step>
   <Step>
   On the app configuration screen, carefully copy and save the **Client ID** (also called an integration key).
+
+  You'll be asked to classify the integration key. This choice affects production billing and [can't be changed later](https://developers.docusign.com/platform/go-live/#ik-classifications):
+    - Choose **Private custom integration** if this app will only be used internally by your organization — the typical case for a self-hosted connector.
+    - Choose **Third-party integration key** if you're using this app with C1's **Custom App (Demo Environment)** field group and connecting third-party (C1) infrastructure to your DocuSign account.
   </Step>
   <Step>
   Click **Add Secret Key**, then carefully copy and save the client secret.
   </Step>
   <Step>
-  In the **Redirect URI** field, enter any URI of your choice (such as http://example.com/callback) and click **Add**.
+  In the **Redirect URI** field:
+    - If you're configuring a **self-hosted** connector, enter any URI of your choice (such as http://example.com/callback) and click **Add**. The `--configure` flow prints an authorization URL and reads the resulting code from the terminal — it never receives a redirect, so this value is never actually used.
+    - If you're configuring a **Cloud-hosted (demo environment)** connector, enter `https://accounts.conductor.one/oauth/callback` and click **Add**. C1 completes the OAuth flow through this URL; DocuSign rejects the authorization request if it isn't registered here.
   </Step>
   <Step>
   Under **Authentication**, enable **Authorization Code Grant**.
