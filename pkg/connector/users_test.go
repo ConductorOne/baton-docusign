@@ -332,6 +332,7 @@ func TestUserBuilder_Grants_FastPath_ActiveUserWithKnownProfile(t *testing.T) {
 	}
 	if res == nil {
 		t.Fatal("expected non-nil SyncOpResults")
+		return
 	}
 	if len(grants) != 1 {
 		t.Fatalf("expected exactly 1 grant, got %d: %+v", len(grants), grants)

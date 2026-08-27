@@ -125,7 +125,7 @@ func (p *permissionProfilesBuilder) Revoke(ctx context.Context, grantObj *v2.Gra
 	// silently emitting a wrong grant, Revoke restores its pre-existing behavior of taking
 	// the first match (same order the API returned them) so that an account with a
 	// duplicate-named default profile can still have permission-profile grants revoked at
-	// all — just loudly, via the Warn below, instead of silently. See
+	// all — logged at Debug rather than silently guessing with no trace. See
 	// permissionProfilesByName's doc for why this uses a different helper than the
 	// ambiguous-is-not-found path.
 	matchingProfiles := permissionProfilesByName(permissionProfiles, defaultPermissionProfileName)

@@ -33,8 +33,8 @@ const (
 const userStatusActive = "Active"
 
 // isReclassifiedRateLimitError reports whether err represents a genuine rate-limit
-// overlimit — either DocuSign's hourly error (pkg/client/helper.go's
-// reclassifyHourlyRateLimitError) or a plain HTTP 429 uhttp's own
+// overlimit — either DocuSign's hourly/burst error (pkg/client/helper.go's
+// reclassifyRateLimitError) or a plain HTTP 429 uhttp's own
 // WrapErrorsWithRateLimitInfo already classifies this way — identified by a
 // RateLimitDescription with Status == STATUS_OVERLIMIT specifically, not merely the
 // presence of a RateLimitDescription at all: uhttp's wrapper.go attaches one to every
@@ -95,18 +95,20 @@ func permissionProfileIDByName(profiles []client.PermissionProfile, name string)
 	if len(matches) == 0 {
 		return "", 0
 	}
-	return matches[len(matches)-1].PermissionProfileId, len(matches)
+	// First match — same order as permissionProfilesByName / Revoke. Callers must still
+	// treat id as meaningful only when matches == 1.
+	return matches[0].PermissionProfileId, len(matches)
 }
 
 // permissionProfilesByName returns every profile named name (requiring a non-empty ID),
 // in the API's own response order. Unlike permissionProfileIDByName — which deliberately
 // makes an ambiguous match (2+) indistinguishable from "pick one, ID doesn't matter which"
-// by leaving its returned id meaningless in that case — this variant exists for the one
-// caller (permissionProfilesBuilder.Revoke) that needs to actually resolve an ambiguous
-// name to a specific profile: DocuSign doesn't enforce unique profile names, and prior to
-// the ambiguous-is-an-error behavior added elsewhere in this codebase, Revoke took the
-// first match and succeeded silently. Revoke restores that first-match behavior (loudly,
-// via a Warn log) using matches[0] here, while tryFastPathGrant's name-based grant
+// by leaving its returned id meaningful only when matches == 1 — this variant exists for
+// the one caller (permissionProfilesBuilder.Revoke) that needs to actually resolve an
+// ambiguous name to a specific profile: DocuSign doesn't enforce unique profile names, and
+// prior to the ambiguous-is-an-error behavior added elsewhere in this codebase, Revoke took
+// the first match and succeeded silently. Revoke restores that first-match behavior
+// (logged at Debug) using matches[0] here, while tryFastPathGrant's name-based grant
 // resolution keeps treating ambiguous as not-found via permissionProfileIDByName — a wrong
 // silent guess there is a wrong grant, which is worse than falling back.
 func permissionProfilesByName(profiles []client.PermissionProfile, name string) []client.PermissionProfile {

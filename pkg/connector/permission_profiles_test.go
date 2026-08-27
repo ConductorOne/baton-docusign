@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/conductorone/baton-docusign/pkg/client"
@@ -20,16 +21,37 @@ import (
 	"golang.org/x/oauth2"
 )
 
+// recordedUpdates collects UpdateUserProfileRequest bodies from the mock PUT handler.
+// Appends happen on the httptest goroutine; Snapshot is called from the test goroutine —
+// the mutex gives a happens-before edge so go test -race stays clean.
+type recordedUpdates struct {
+	mu   sync.Mutex
+	reqs []client.UpdateUserProfileRequest
+}
+
+func (r *recordedUpdates) append(req client.UpdateUserProfileRequest) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.reqs = append(r.reqs, req)
+}
+
+func (r *recordedUpdates) Snapshot() []client.UpdateUserProfileRequest {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]client.UpdateUserProfileRequest, len(r.reqs))
+	copy(out, r.reqs)
+	return out
+}
+
 // newPermissionProfilesTestClient wires a *client.Client to a mock server handling
 // /oauth/userinfo, GET permission_profiles, GET users/{id}, and PUT users/{id}/profile —
-// everything permissionProfilesBuilder.Revoke needs. updateCalls, if non-nil, is
-// incremented (with the request body recorded) on every PUT users/{id}/profile call, so
-// tests can assert which profile ID Revoke actually assigned.
+// everything permissionProfilesBuilder.Revoke needs. updateCalls, if non-nil, records
+// every PUT users/{id}/profile body so tests can assert which profile ID Revoke assigned.
 func newPermissionProfilesTestClient(
 	t *testing.T,
 	profiles []client.PermissionProfile,
 	userDetails map[string]client.UserDetail,
-	updateCalls *[]client.UpdateUserProfileRequest,
+	updateCalls *recordedUpdates,
 ) *client.Client {
 	t.Helper()
 	mockServer := httptest.NewServer(nil)
@@ -52,7 +74,7 @@ func newPermissionProfilesTestClient(
 			var req client.UpdateUserProfileRequest
 			_ = json.NewDecoder(r.Body).Decode(&req)
 			if updateCalls != nil {
-				*updateCalls = append(*updateCalls, req)
+				updateCalls.append(req)
 			}
 			_ = json.NewEncoder(w).Encode(map[string]string{})
 		case r.Method == http.MethodGet:
@@ -107,7 +129,7 @@ func TestPermissionProfilesBuilder_Revoke_AmbiguousDefaultNameUsesFirstMatch(t *
 		"user-1": {UserID: "user-1", PermissionProfileName: "DocuSign Admin", PermissionProfileID: "pp-admin"},
 	}
 
-	var updateCalls []client.UpdateUserProfileRequest
+	var updateCalls recordedUpdates
 	c := newPermissionProfilesTestClient(t, profiles, userDetails, &updateCalls)
 	b := newPermissionProfilesBuilder(c)
 
@@ -120,10 +142,11 @@ func TestPermissionProfilesBuilder_Revoke_AmbiguousDefaultNameUsesFirstMatch(t *
 	}
 	_ = annos
 
-	if len(updateCalls) != 1 {
-		t.Fatalf("expected exactly 1 UpdateUserProfile call, got %d", len(updateCalls))
+	gotCalls := updateCalls.Snapshot()
+	if len(gotCalls) != 1 {
+		t.Fatalf("expected exactly 1 UpdateUserProfile call, got %d", len(gotCalls))
 	}
-	if got := updateCalls[0].UserDetails.PermissionProfileId; got != "pp-viewer-first" {
+	if got := gotCalls[0].UserDetails.PermissionProfileId; got != "pp-viewer-first" {
 		t.Errorf("expected Revoke to assign the first-listed match %q, got %q", "pp-viewer-first", got)
 	}
 
@@ -147,7 +170,7 @@ func TestPermissionProfilesBuilder_Revoke_UnambiguousDefaultNameNoWarning(t *tes
 		"user-1": {UserID: "user-1", PermissionProfileName: "DocuSign Admin", PermissionProfileID: "pp-admin"},
 	}
 
-	var updateCalls []client.UpdateUserProfileRequest
+	var updateCalls recordedUpdates
 	c := newPermissionProfilesTestClient(t, profiles, userDetails, &updateCalls)
 	b := newPermissionProfilesBuilder(c)
 
@@ -158,11 +181,12 @@ func TestPermissionProfilesBuilder_Revoke_UnambiguousDefaultNameNoWarning(t *tes
 		t.Fatalf("Revoke: %v", err)
 	}
 
-	if len(updateCalls) != 1 || updateCalls[0].UserDetails.PermissionProfileId != "pp-viewer" {
-		t.Fatalf("expected Revoke to assign pp-viewer, got %+v", updateCalls)
+	gotCalls := updateCalls.Snapshot()
+	if len(gotCalls) != 1 || gotCalls[0].UserDetails.PermissionProfileId != "pp-viewer" {
+		t.Fatalf("expected Revoke to assign pp-viewer, got %+v", gotCalls)
 	}
-	if logs.Len() != 0 {
-		t.Errorf("expected no ambiguous-match logs for an unambiguous default profile name, got %d", logs.Len())
+	if logs.FilterMessageSnippet("ambiguous").Len() != 0 {
+		t.Errorf("expected no ambiguous-match logs for an unambiguous default profile name, got %d", logs.FilterMessageSnippet("ambiguous").Len())
 	}
 }
 
