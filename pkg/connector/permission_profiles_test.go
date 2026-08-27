@@ -156,10 +156,10 @@ func TestPermissionProfilesBuilder_Revoke_AmbiguousDefaultNameUsesFirstMatch(t *
 	}
 }
 
-// TestPermissionProfilesBuilder_Revoke_UnambiguousDefaultNameNoWarning is the control
-// case for the test above: a single unambiguous default profile must revoke exactly as
-// before, with no ambiguous-match log at all.
-func TestPermissionProfilesBuilder_Revoke_UnambiguousDefaultNameNoWarning(t *testing.T) {
+// TestPermissionProfilesBuilder_Revoke_NoAmbiguityLog is the control case for the test
+// above: a single unambiguous default profile must revoke exactly as before, with no
+// ambiguous-match Debug log.
+func TestPermissionProfilesBuilder_Revoke_NoAmbiguityLog(t *testing.T) {
 	ctx := context.Background()
 
 	profiles := []client.PermissionProfile{
