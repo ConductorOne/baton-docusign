@@ -236,7 +236,7 @@ docker run --rm -it \
   -e BATON_DOCUSIGN_CLIENT_ID=YOUR_CLIENT_ID \
   -e BATON_DOCUSIGN_CLIENT_SECRET=YOUR_CLIENT_SECRET \
   -e BATON_REDIRECT_URI=YOUR_REDIRECT_URI \
-  ghcr.io/conductorone/baton-docusign:latest --configure
+  public.ecr.aws/conductorone/baton-docusign:latest --configure
 
 # Then, run the connector with your refresh token
 docker run --rm -v $(pwd):/out \
@@ -245,7 +245,7 @@ docker run --rm -v $(pwd):/out \
   -e BATON_DOCUSIGN_CLIENT_SECRET=YOUR_CLIENT_SECRET \
   -e BATON_REDIRECT_URI=YOUR_REDIRECT_URI \
   -e BATON_REFRESH_TOKEN=YOUR_REFRESH_TOKEN \
-  ghcr.io/conductorone/baton-docusign:latest -f "/out/sync.c1z"
+  public.ecr.aws/conductorone/baton-docusign:latest -f "/out/sync.c1z"
 
 docker run --rm -v $(pwd):/out \
   ghcr.io/conductorone/baton:latest -f "/out/sync.c1z" resources
