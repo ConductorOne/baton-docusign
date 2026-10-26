@@ -2,8 +2,12 @@ package client
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
+
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // clmTopLevelKeys returns the sorted top-level JSON keys of data, for describing an
@@ -64,6 +68,35 @@ func (e *ClmErrorResponse) Message() string {
 		return fmt.Sprintf("CLM API error %d: %s (%s)", e.Error.ErrorCode, primary, e.Error.DeveloperMessage)
 	}
 	return fmt.Sprintf("CLM API error %d: %s", e.Error.ErrorCode, primary)
+}
+
+// ClmAPIError wraps a failed CLM request's error with the ErrorCode CLM returned in its
+// error envelope. Error() and Unwrap() defer to the wrapped error, so the message and the
+// gRPC code (status.Code) are unchanged; only errors.As callers see ErrorCode.
+type ClmAPIError struct {
+	ErrorCode int
+	err       error
+}
+
+func (e *ClmAPIError) Error() string { return e.err.Error() }
+
+func (e *ClmAPIError) Unwrap() error { return e.err }
+
+// clmErrorCodeWorkflowTaskGroupsNotFound is the CLM ErrorCode GET
+// .../members/{id}/workflowqueues returns (with HTTP 404) for a member who belongs to no
+// workflow task group — "Workflow task groups not found or you do not have access".
+// Observed live (CXP-1252): CLM signals an empty membership this way rather than with a
+// 200 and an empty Items list.
+const clmErrorCodeWorkflowTaskGroupsNotFound = 104
+
+// IsClmNoWorkflowTaskGroupsError reports whether err is CLM's "member has no workflow
+// task groups" response: NotFound with ErrorCode 104. Any other 404 (e.g. an unknown
+// member) and every 401/403 don't match.
+func IsClmNoWorkflowTaskGroupsError(err error) bool {
+	var apiErr *ClmAPIError
+	return status.Code(err) == codes.NotFound &&
+		errors.As(err, &apiErr) &&
+		apiErr.ErrorCode == clmErrorCodeWorkflowTaskGroupsNotFound
 }
 
 // ClmFolder represents a CLM Folder object.

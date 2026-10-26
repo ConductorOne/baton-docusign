@@ -595,6 +595,17 @@ func writeJSON(w http.ResponseWriter, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
+// writeClmError writes a CLM error envelope with a JSON content type, so the client can
+// decode ErrorCode from it.
+func writeClmError(w http.ResponseWriter, statusCode, errorCode int, message string) {
+	var resp client.ClmErrorResponse
+	resp.Error.UserMessage = message
+	resp.Error.ErrorCode = errorCode
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(statusCode)
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
 func writeNotFound(w http.ResponseWriter) {
 	w.WriteHeader(http.StatusNotFound)
 	_ = json.NewEncoder(w).Encode(client.ClmErrorResponse{})

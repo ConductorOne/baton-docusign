@@ -2,8 +2,12 @@ package client
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
+
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // TestClmErrorResponse_Message is a regression test: a live 401 from a real CLM tenant
@@ -175,4 +179,38 @@ func TestClmRoleSecurityEntry_UnmarshalJSON(t *testing.T) {
 			t.Errorf("got %+v", e)
 		}
 	})
+}
+
+func TestIsClmNoWorkflowTaskGroupsError(t *testing.T) {
+	notFound := status.Error(codes.NotFound, "Request failed with status 404")
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		{"404 with ErrorCode 104", &ClmAPIError{ErrorCode: 104, err: notFound}, true},
+		{"404 with ErrorCode 104, wrapped", fmt.Errorf("baton-docusign: outer: %w", &ClmAPIError{ErrorCode: 104, err: notFound}), true},
+		{"404 with another ErrorCode", &ClmAPIError{ErrorCode: 103, err: notFound}, false},
+		{"404 without ErrorCode", notFound, false},
+		{"403 with ErrorCode 104", &ClmAPIError{ErrorCode: 104, err: status.Error(codes.PermissionDenied, "denied")}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := IsClmNoWorkflowTaskGroupsError(tt.err); got != tt.want {
+				t.Errorf("IsClmNoWorkflowTaskGroupsError(%v) = %v, want %v", tt.err, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestClmAPIError_PreservesMessageAndCode(t *testing.T) {
+	inner := status.Error(codes.NotFound, "Request failed with status 404: CLM API error 104: x")
+	err := &ClmAPIError{ErrorCode: 104, err: inner}
+	if err.Error() != inner.Error() {
+		t.Errorf("expected Error() to equal the wrapped error's message, got %q", err.Error())
+	}
+	if status.Code(err) != codes.NotFound {
+		t.Errorf("expected status.Code to see through ClmAPIError, got %s", status.Code(err))
+	}
 }
