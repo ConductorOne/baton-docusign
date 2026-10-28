@@ -85,8 +85,10 @@ func (e *ClmAPIError) Unwrap() error { return e.err }
 // clmErrorCodeWorkflowTaskGroupsNotFound is the CLM ErrorCode GET
 // .../members/{id}/workflowqueues returns (with HTTP 404) for a member who belongs to no
 // workflow task group — "Workflow task groups not found or you do not have access".
-// Observed live (CXP-1252): CLM signals an empty membership this way rather than with a
-// 200 and an empty Items list.
+// Observed live: CLM signals an empty membership this way rather than with a 200 and an
+// empty Items list. The same code also covers "no access", and CLM offers no way to tell
+// the two apart; the connector assumes a caller that can list members can also read their
+// workflow queues, so a 104 is treated as "no task groups" (see the README's CLM section).
 const clmErrorCodeWorkflowTaskGroupsNotFound = 104
 
 // IsClmNoWorkflowTaskGroupsError reports whether err is CLM's "member has no workflow
