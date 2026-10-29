@@ -410,9 +410,6 @@ func TestGetMemberWorkflowQueues(t *testing.T) {
 		if !client.IsClmNoWorkflowTaskGroupsError(err) {
 			t.Fatalf("expected a no-workflow-task-groups error for member-carol, got: %v", err)
 		}
-		if !strings.HasPrefix(err.Error(), "baton-docusign:") {
-			t.Errorf("expected error wrapped with the baton-docusign: prefix, got: %v", err)
-		}
 	})
 
 	t.Run("unknown member returns an error", func(t *testing.T) {

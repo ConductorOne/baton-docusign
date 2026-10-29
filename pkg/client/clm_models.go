@@ -82,23 +82,22 @@ func (e *ClmAPIError) Error() string { return e.err.Error() }
 
 func (e *ClmAPIError) Unwrap() error { return e.err }
 
-// clmErrorCodeWorkflowTaskGroupsNotFound is the CLM ErrorCode GET
-// .../members/{id}/workflowqueues returns (with HTTP 404) for a member who belongs to no
-// workflow task group — "Workflow task groups not found or you do not have access".
-// Observed live: CLM signals an empty membership this way rather than with a 200 and an
-// empty Items list. The same code also covers "no access", and CLM offers no way to tell
-// the two apart; the connector assumes a caller that can list members can also read their
-// workflow queues, so a 104 is treated as "no task groups" (see the README's CLM section).
-const clmErrorCodeWorkflowTaskGroupsNotFound = 104
+// clmErrorCodeNotFound is CLM's generic "Not Found" ErrorCode, returned with HTTP 404.
+const clmErrorCodeNotFound = 104
 
-// IsClmNoWorkflowTaskGroupsError reports whether err is CLM's "member has no workflow
-// task groups" response: NotFound with ErrorCode 104. Any other 404 (e.g. an unknown
-// member) and every 401/403 don't match.
+// IsClmNoWorkflowTaskGroupsError reports whether err from GET
+// .../members/{id}/workflowqueues is a 404 with ErrorCode 104 ("Workflow task groups not
+// found or you do not have access"). A production sync showed CLM answering this way, not
+// with a 200 and an empty Items list, for members in no workflow task group. The same
+// response also covers "no access", and CLM offers no way to tell the two apart; the
+// connector assumes a caller that can list members can also read their workflow queues,
+// so callers treat a match as "no task groups" (see the README's CLM section). A 404
+// without ErrorCode 104 and every 401/403 don't match.
 func IsClmNoWorkflowTaskGroupsError(err error) bool {
 	var apiErr *ClmAPIError
 	return status.Code(err) == codes.NotFound &&
 		errors.As(err, &apiErr) &&
-		apiErr.ErrorCode == clmErrorCodeWorkflowTaskGroupsNotFound
+		apiErr.ErrorCode == clmErrorCodeNotFound
 }
 
 // ClmFolder represents a CLM Folder object.
