@@ -303,6 +303,12 @@ func (s *Server) handleMemberWorkflowQueues(w http.ResponseWriter, r *http.Reque
 	}
 
 	queueIDs := s.memberWorkflowQueues[id]
+	if len(queueIDs) == 0 {
+		// Mirrors the 404 + ErrorCode 104 a production sync got from CLM for members in
+		// no workflow task group, instead of an empty page.
+		writeClmError(w, http.StatusNotFound, 104, "Workflow task groups not found or you do not have access")
+		return
+	}
 	page, meta := pageSlice(r, queueIDs)
 	items := make([]client.ClmWorkflowQueue, 0, len(page))
 	for _, qid := range page {

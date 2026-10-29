@@ -248,3 +248,12 @@ func logSkippedClmWorkflowQueueWithEmptyHref(ctx context.Context, memberID, queu
 	ctxzap.Extract(ctx).Debug("baton-docusign: skipping CLM workflow queue with an empty Href-derived ID",
 		zap.String("member_id", memberID), zap.String("queue_href", queueHref))
 }
+
+// logClmMemberHasNoWorkflowQueues Debug-logs a member whose workflow-queues call came back
+// as a 404 with CLM ErrorCode 104 (client.IsClmNoWorkflowTaskGroupsError). It's treated as
+// zero queues rather than a sync warning, since most members on a tenant can be in no task
+// group and each warning counts toward the SDK's too-many-warnings abort.
+func logClmMemberHasNoWorkflowQueues(ctx context.Context, memberID string) {
+	ctxzap.Extract(ctx).Debug("baton-docusign: CLM returned Not Found (104) for member workflow queues, treating as none",
+		zap.String("member_id", memberID))
+}

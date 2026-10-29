@@ -2,12 +2,15 @@ package client_test
 
 import (
 	"context"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/conductorone/baton-docusign/pkg/client"
 	"github.com/conductorone/baton-docusign/pkg/client/clmtest"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 func TestSearchFolders_Pagination(t *testing.T) {
@@ -400,13 +403,12 @@ func TestGetMemberWorkflowQueues(t *testing.T) {
 		}
 	})
 
-	t.Run("member in no queues", func(t *testing.T) {
-		queues, _, err := c.GetMemberWorkflowQueues(ctx, "member-carol")
-		if err != nil {
-			t.Fatalf("GetMemberWorkflowQueues: %v", err)
-		}
-		if len(queues) != 0 {
-			t.Fatalf("expected member-carol to be in 0 workflow queues, got %d: %+v", len(queues), queues)
+	t.Run("member in no queues returns CLM's 404 + ErrorCode 104", func(t *testing.T) {
+		// The client surfaces this as an error; treating it as zero queues is the
+		// connector layer's call (see clmMemberBuilder.Grants).
+		_, _, err := c.GetMemberWorkflowQueues(ctx, "member-carol")
+		if !client.IsClmNoWorkflowTaskGroupsError(err) {
+			t.Fatalf("expected a no-workflow-task-groups error for member-carol, got: %v", err)
 		}
 	})
 
@@ -415,6 +417,25 @@ func TestGetMemberWorkflowQueues(t *testing.T) {
 			t.Error("expected an error for an unknown member ID, got nil")
 		}
 	})
+}
+
+// TestGetMemberWorkflowQueues_NotFoundWithoutErrorCode104Propagates pins that
+// IsClmNoWorkflowTaskGroupsError matches only CLM's "no workflow task groups" 404
+// (ErrorCode 104) — any other 404 on this endpoint is a plain NotFound.
+func TestGetMemberWorkflowQueues_NotFoundWithoutErrorCode104Propagates(t *testing.T) {
+	srv, c := clmtest.NewServer(t)
+	srv.ForceMemberWorkflowQueuesStatus("member-alice", http.StatusNotFound)
+
+	_, _, err := c.GetMemberWorkflowQueues(context.Background(), "member-alice")
+	if err == nil {
+		t.Fatal("expected an error for a 404 without ErrorCode 104, got nil")
+	}
+	if status.Code(err) != codes.NotFound {
+		t.Errorf("expected NotFound, got %s (err: %v)", status.Code(err), err)
+	}
+	if client.IsClmNoWorkflowTaskGroupsError(err) {
+		t.Errorf("expected a 404 without ErrorCode 104 not to match IsClmNoWorkflowTaskGroupsError, got: %v", err)
+	}
 }
 
 func TestGetMemberWorkflowQueues_PaginatesAcrossPages(t *testing.T) {
