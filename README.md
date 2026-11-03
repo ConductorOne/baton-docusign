@@ -178,6 +178,16 @@ membership syncs for visibility only — the API supports work-item assign/unass
 not queue-membership grant/revoke, so it cannot be granted or revoked through this
 connector.
 
+**Workflow queue permissions assumption.** For a member who belongs to no workflow queue,
+CLM answers `GET .../members/{id}/workflowqueues` with HTTP 404 and CLM error code 104
+("Workflow task groups not found or you do not have access") instead of an empty list.
+CLM returns the same 404/104 when the caller lacks access, and the API offers no way to
+tell the two cases apart. Given these API limitations, the connector assumes that if the
+authenticated user can list CLM members, it can also read their workflow queues: a 104 is
+treated as "this member has no workflow queues" and returns empty grants. To avoid losing
+information, make sure the authenticated user has the CLM permissions required to view
+every member's workflow queues (task groups).
+
 The CLM Object API's base URL is resolved via a separate account discovery call
 (`GET /api/v2/{accountId}/account` on `auth.springcm.com`/`authuat.springcm.com`,
 authenticated with the same access token), confirmed via DocuSign's CLM API 101

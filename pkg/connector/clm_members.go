@@ -107,6 +107,10 @@ func (b *clmMemberBuilder) Grants(ctx context.Context, resource *v2.Resource, _ 
 	memberID := resource.Id.Resource
 
 	queues, annos, err := b.client.GetMemberWorkflowQueues(ctx, memberID)
+	if client.IsClmNoWorkflowTaskGroupsError(err) {
+		logClmMemberHasNoWorkflowQueues(ctx, memberID)
+		return []*v2.Grant{}, nil, nil
+	}
 	if err != nil {
 		return nil, nil, fmt.Errorf("baton-docusign: getting CLM workflow queues for member %s: %w", memberID, err)
 	}

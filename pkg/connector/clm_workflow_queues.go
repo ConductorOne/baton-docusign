@@ -55,6 +55,10 @@ func (b *clmWorkflowQueueBuilder) List(ctx context.Context, parentResourceID *v2
 	}
 
 	queues, annos, err := b.client.GetMemberWorkflowQueues(ctx, parentResourceID.Resource)
+	if client.IsClmNoWorkflowTaskGroupsError(err) {
+		logClmMemberHasNoWorkflowQueues(ctx, parentResourceID.Resource)
+		return nil, nil, nil
+	}
 	if err != nil {
 		return nil, nil, fmt.Errorf("baton-docusign: getting CLM workflow queues for member %s: %w", parentResourceID.Resource, err)
 	}

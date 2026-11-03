@@ -37,15 +37,6 @@ env:
   # per-job env var, it fails with that confusing filter error instead of just skipping
   # signing groups.
   BATON_SYNC_RESOURCE_TYPES: user,group,permission_profile,signing_group
-  # Forces the legacy v1/SQLite c1z format instead of baton-sdk v0.25.0's new default
-  # (Pebble/v3). The `baton` CLI these jobs download (ConductorOne/github-workflows'
-  # get-baton action, currently v0.4.5) is built against baton-sdk v0.8.24 — long before
-  # Pebble existed — and fails every read of a Pebble-format file with a bare
-  # "c1z: invalid file", no matter how the file was produced. Confirmed: syncing with
-  # this flag set produces a file `baton` v0.4.5 reads correctly; without it, the exact
-  # same sync fails at the very next step. Safe to drop once a `baton` CLI release built
-  # against a Pebble-aware baton-sdk ships and get-baton picks it up.
-  BATON_STORAGE_ENGINE: sqlite
 jobs:
   test-groups:
     runs-on: ubuntu-latest
@@ -80,7 +71,7 @@ jobs:
           # input exists exactly for this; confirmed needed by a real failure (a
           # verification query returning no grants right after a grant that itself
           # succeeded) on test-permission-profiles, which has no built-in retry.
-          sleep: "3"
+          sleep: "5"
   test-signing-groups:
     needs: [test-groups]
     runs-on: ubuntu-latest
@@ -112,7 +103,7 @@ jobs:
           baton-principal-type: "${{ vars.TEST_SIGNING_GROUP_PRINCIPAL_TYPE }}"
           # See test-groups' identical sleep above — same shared demo account, same
           # DocuSign write-propagation delay risk.
-          sleep: "3"
+          sleep: "5"
   test-permission-profiles:
     needs: [test-signing-groups]
     runs-on: ubuntu-latest
@@ -145,4 +136,4 @@ jobs:
           # See test-groups' identical sleep above — same shared demo account, same
           # DocuSign write-propagation delay risk (the one confirmed to actually fire
           # here).
-          sleep: "3"
+          sleep: "5"

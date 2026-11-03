@@ -373,7 +373,13 @@ func (c *Client) doClmRequest(ctx context.Context, method string, reqURL *url.UR
 		return nil, err
 	}
 
-	_, anno, err := doRequestCommon(c.wrapper, request, response, &ClmErrorResponse{})
+	errResp := &ClmErrorResponse{}
+	_, anno, err := doRequestCommon(c.wrapper, request, response, errResp)
+	if err != nil && errResp.Error.ErrorCode != 0 {
+		// Keep CLM's ErrorCode reachable via errors.As so callers can tell apart failures
+		// that share an HTTP status (see IsClmNoWorkflowTaskGroupsError).
+		return anno, &ClmAPIError{ErrorCode: errResp.Error.ErrorCode, err: err}
+	}
 	return anno, err
 }
 

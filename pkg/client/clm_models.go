@@ -2,8 +2,12 @@ package client
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
+
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // clmTopLevelKeys returns the sorted top-level JSON keys of data, for describing an
@@ -64,6 +68,36 @@ func (e *ClmErrorResponse) Message() string {
 		return fmt.Sprintf("CLM API error %d: %s (%s)", e.Error.ErrorCode, primary, e.Error.DeveloperMessage)
 	}
 	return fmt.Sprintf("CLM API error %d: %s", e.Error.ErrorCode, primary)
+}
+
+// ClmAPIError wraps a failed CLM request's error with the ErrorCode CLM returned in its
+// error envelope. Error() and Unwrap() defer to the wrapped error, so the message and the
+// gRPC code (status.Code) are unchanged; only errors.As callers see ErrorCode.
+type ClmAPIError struct {
+	ErrorCode int
+	err       error
+}
+
+func (e *ClmAPIError) Error() string { return e.err.Error() }
+
+func (e *ClmAPIError) Unwrap() error { return e.err }
+
+// clmErrorCodeNotFound is CLM's generic "Not Found" ErrorCode, returned with HTTP 404.
+const clmErrorCodeNotFound = 104
+
+// IsClmNoWorkflowTaskGroupsError reports whether err from GET
+// .../members/{id}/workflowqueues is a 404 with ErrorCode 104 ("Workflow task groups not
+// found or you do not have access"). A production sync showed CLM answering this way, not
+// with a 200 and an empty Items list, for members in no workflow task group. The same
+// response also covers "no access", and CLM offers no way to tell the two apart; the
+// connector assumes a caller that can list members can also read their workflow queues,
+// so callers treat a match as "no task groups" (see the README's CLM section). A 404
+// without ErrorCode 104 and every 401/403 don't match.
+func IsClmNoWorkflowTaskGroupsError(err error) bool {
+	var apiErr *ClmAPIError
+	return status.Code(err) == codes.NotFound &&
+		errors.As(err, &apiErr) &&
+		apiErr.ErrorCode == clmErrorCodeNotFound
 }
 
 // ClmFolder represents a CLM Folder object.
