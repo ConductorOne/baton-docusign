@@ -148,10 +148,10 @@ Within `List()` itself (once `Validate()` has passed and a sync is actually runn
 of the 6 CLM resource types carry their own CLM-availability tolerance logic anymore —
 that responsibility now lives entirely in `Connector.Validate()`'s upfront
 `EnsureClmReady()` gate (see above), which runs once, before any CLM builder's `List()`
-executes. `clm_member`, `clm_group`, `clm_permission_set`, `clm_folder`, and
+executes. `clm_member`, `clm_role`, `clm_group`, `clm_permission_set`, `clm_folder`, and
 `clm_workflow_queue` all behave identically here: if `Validate()` passed, their `List()`
-bodies just call the API and propagate whatever error comes back, same as any other
-resource type; `clm_role` still makes no API call at all (a hardcoded set). An earlier
+bodies just call the API (`clm_role` reads the members list) and propagate whatever error
+comes back, same as any other resource type. An earlier
 version of this connector had each CLM builder run its own per-type tolerance check
 instead (with `clm_workflow_queue` as a deliberate exception that failed loud where the
 others didn't) — that logic has been removed now that `Validate()` covers it once, upfront,
@@ -160,6 +160,14 @@ for all 6 types uniformly.
 CLM permission sets sync for visibility only — DocuSign's CLM API has no endpoint to
 assign or unassign a permission set, so they cannot be granted or revoked through this
 connector.
+
+CLM roles (`clm_role`) sync the roles the CLM API reference documents (`Guest`, `LimitedSubscriber`,
+`FullSubscriber`, `UserAdministrator` and `SuperAdministrator`) plus every `Role` held by a
+CLM member (e.g. `CLMAdmin`, shown as "CLM Admin"); the CLM API has no roles endpoint. Each
+role has an `assigned` entitlement, and member-to-role grants sync when `clm_member` is also
+synced. Folder security entries that grant a synced role are synced and expand to the
+role's members. Role membership is read-only: members cannot be added to or removed from a
+role through this connector.
 
 CLM workflow queues (`clm_workflow_queue`) map to what the CLM admin console reportedly
 calls "Task Groups" — that equivalence is an unconfirmed assumption, not a documented

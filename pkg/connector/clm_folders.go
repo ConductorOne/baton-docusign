@@ -3,13 +3,16 @@ package connector
 import (
 	"context"
 	"fmt"
+	"slices"
 
 	"github.com/conductorone/baton-docusign/pkg/client"
 	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
 	"github.com/conductorone/baton-sdk/pkg/annotations"
 	"github.com/conductorone/baton-sdk/pkg/connectorbuilder"
+	"github.com/conductorone/baton-sdk/pkg/session"
 	"github.com/conductorone/baton-sdk/pkg/types/grant"
 	rs "github.com/conductorone/baton-sdk/pkg/types/resource"
+	"github.com/conductorone/baton-sdk/pkg/types/sessions"
 	"github.com/grpc-ecosystem/go-grpc-middleware/logging/zap/ctxzap"
 	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
@@ -61,6 +64,8 @@ var clmFolderEntitlements = []clmFolderEntitlement{
 type clmFolderBuilder struct {
 	resourceType *v2.ResourceType
 	client       *client.Client
+	// includeRoles reports whether clm_role is synced; role entries outside client.ClmRoles resolve only to the roles its List recorded.
+	includeRoles bool
 }
 
 func (f *clmFolderBuilder) ResourceType(_ context.Context) *v2.ResourceType {
@@ -133,8 +138,9 @@ func (f *clmFolderBuilder) StaticEntitlements(_ context.Context, _ rs.SyncOpAttr
 // three principal-type collections (Groups/Roles/Users — see ClmFolderSecurity's doc)
 // and emits a grant per entry that maps cleanly to one of the 5 static tiers. Entries
 // that don't (Custom, InheritFromParentFolder, or an unrecognized AccessType) are
-// skipped, not approximated — see clmSlugForAccessType.
-func (f *clmFolderBuilder) Grants(ctx context.Context, folderResource *v2.Resource, _ rs.SyncOpAttrs) ([]*v2.Grant, *rs.SyncOpResults, error) {
+// skipped, not approximated — see clmSlugForAccessType. Role entries are also skipped
+// when clm_role isn't synced, or when the role is neither shipped nor recorded by its List.
+func (f *clmFolderBuilder) Grants(ctx context.Context, folderResource *v2.Resource, attr rs.SyncOpAttrs) ([]*v2.Grant, *rs.SyncOpResults, error) {
 	folder, annos, err := f.client.GetFolder(ctx, folderResource.Id.Resource, "Security")
 	if err != nil {
 		return nil, nil, fmt.Errorf("baton-docusign: getting security for CLM folder %s: %w", folderResource.Id.Resource, err)
@@ -159,6 +165,21 @@ func (f *clmFolderBuilder) Grants(ctx context.Context, folderResource *v2.Resour
 		grants = append(grants, grant.NewGrant(folderResource, slug, principalID, grantOpts...))
 	}
 
+	var roleNames []string
+	if f.includeRoles {
+		for _, entry := range folder.Security.Roles {
+			if _, ok := clmSlugForAccessType(entry.AccessType); ok && entry.Item != "" && !clmIsKnownRole(entry.Item) {
+				roleNames = append(roleNames, entry.Item)
+			}
+		}
+	}
+	// The session store rejects repeated keys.
+	slices.Sort(roleNames)
+	syncedRoles, err := session.GetManyJSON[bool](ctx, attr.Session, slices.Compact(roleNames), sessions.WithPrefix(clmRoleSessionPrefix))
+	if err != nil {
+		return nil, nil, fmt.Errorf("baton-docusign: reading synced CLM roles for folder %s: %w", folderResource.Id.Resource, err)
+	}
+
 	for _, entry := range folder.Security.Roles {
 		slug, ok := clmSlugForAccessType(entry.AccessType)
 		if !ok {
@@ -166,17 +187,19 @@ func (f *clmFolderBuilder) Grants(ctx context.Context, folderResource *v2.Resour
 				zap.String("folder_id", folderResource.Id.Resource), zap.String("role", entry.Item))
 			continue
 		}
-		if !clmIsKnownRole(entry.Item) {
-			// clm_role is a fixed, hardcoded 5-role list (clmRoleBuilder.List) — a role
-			// name outside that set has no synced principal to grant against. Skip
-			// rather than emit a grant to a dangling/unsynced resource.
-			ctxzap.Extract(ctx).Debug("baton-docusign: skipping CLM folder role-security entry for an unrecognized role",
+		// Shipped roles need no session-store hit: clm_role List always emits them.
+		roleSynced := syncedRoles[entry.Item] || (f.includeRoles && clmIsKnownRole(entry.Item))
+		if !roleSynced {
+			ctxzap.Extract(ctx).Debug("baton-docusign: skipping CLM folder role-security entry for a role not synced as clm_role",
 				zap.String("folder_id", folderResource.Id.Resource), zap.String("role", entry.Item), zap.String("access_type", entry.AccessType),
 				zap.String("principal_kind", clmFolderPrincipalKindRole))
 			continue
 		}
 		principalID := &v2.ResourceId{ResourceType: clmRoleResourceType.Id, Resource: entry.Item}
-		grants = append(grants, grant.NewGrant(folderResource, slug, principalID))
+		grantOpts := []grant.GrantOption{grant.WithAnnotation(v2.GrantExpandable_builder{
+			EntitlementIds: []string{fmt.Sprintf("%s:%s:%s", clmRoleResourceType.Id, principalID.Resource, clmRoleAssignedTag)},
+		}.Build())}
+		grants = append(grants, grant.NewGrant(folderResource, slug, principalID, grantOpts...))
 	}
 
 	for _, entry := range folder.Security.Users {
@@ -429,10 +452,11 @@ func (f *clmFolderBuilder) Revoke(ctx context.Context, grantObj *v2.Grant) (anno
 	return patchAnnos, nil
 }
 
-func newClmFolderBuilder(c *client.Client) *clmFolderBuilder {
+func newClmFolderBuilder(c *client.Client, includeRoles bool) *clmFolderBuilder {
 	return &clmFolderBuilder{
 		resourceType: clmFolderResourceType,
 		client:       c,
+		includeRoles: includeRoles,
 	}
 }
 
@@ -479,11 +503,7 @@ func clmIsBenignUnmappedAccessType(accessType string) bool {
 	}
 }
 
-// clmIsKnownRole reports whether name is one of the 5 fixed CLM account-level roles
-// (client.ClmRoles) — the same fixed set clmRoleBuilder.List syncs as clm_role
-// resources. Used to reject a folder-security Roles entry referencing a role outside
-// that set before emitting a grant to it, since such a grant would target a principal
-// this connector never syncs.
+// clmIsKnownRole reports whether name is one of client.ClmRoles, which clm_role List always syncs.
 func clmIsKnownRole(name string) bool {
 	for _, role := range client.ClmRoles {
 		if role.Name == name {

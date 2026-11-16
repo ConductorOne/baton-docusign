@@ -812,6 +812,10 @@ func (c *Client) ListMembers(ctx context.Context, options PageOptions) ([]ClmMem
 	var page ClmMemberPage
 	anno, err := c.doClmRequest(ctx, http.MethodGet, listURL, nil, &page)
 	if err != nil {
+		// Fail on a 404 rather than return NotFound, which the SDK treats as a warning and stops listing.
+		if status.Code(err) == codes.NotFound {
+			err = uhttp.WrapErrors(codes.PermissionDenied, "CLM members list returned not found", err)
+		}
 		return nil, "", nil, fmt.Errorf("baton-docusign: failed to list CLM members: %w", err)
 	}
 
