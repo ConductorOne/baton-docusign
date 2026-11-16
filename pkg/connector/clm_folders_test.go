@@ -2,7 +2,9 @@ package connector
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -67,7 +69,7 @@ func TestClmFolderBuilder_List_FailsWhenClmUnavailable(t *testing.T) {
 	// See clm_members_test.go's identical test for the full rationale.
 	s, _ := clmtest.NewServer(t)
 	badClient := s.NewClientWithToken("wrong-token")
-	b := newClmFolderBuilder(badClient)
+	b := newClmFolderBuilder(badClient, true)
 	ctx := context.Background()
 
 	resources, _, err := b.List(ctx, nil, rs.SyncOpAttrs{PageToken: pagination.Token{Size: 10}})
@@ -81,7 +83,7 @@ func TestClmFolderBuilder_List_FailsWhenClmUnavailable(t *testing.T) {
 
 func TestClmFolderBuilder_List(t *testing.T) {
 	_, c := clmtest.NewServer(t)
-	b := newClmFolderBuilder(c)
+	b := newClmFolderBuilder(c, true)
 	ctx := context.Background()
 
 	var all []*v2.Resource
@@ -105,7 +107,7 @@ func TestClmFolderBuilder_List(t *testing.T) {
 
 func TestClmFolderBuilder_StaticEntitlements(t *testing.T) {
 	_, c := clmtest.NewServer(t)
-	b := newClmFolderBuilder(c)
+	b := newClmFolderBuilder(c, true)
 	ctx := context.Background()
 
 	ents, _, err := b.StaticEntitlements(ctx, rs.SyncOpAttrs{})
@@ -129,12 +131,13 @@ func TestClmFolderBuilder_StaticEntitlements(t *testing.T) {
 }
 
 func TestClmFolderBuilder_Grants_MapsAndSkipsCorrectly(t *testing.T) {
-	// folder-contracts is seeded with 4 Security entries across all 3 principal-type
-	// collections (see seed.go): a known-tier group, a "Custom" (unmapped) group, a
-	// known-tier role, and a known-tier member. Grants() must emit exactly 3 grants,
-	// skipping the Custom entry rather than approximating it.
+	// folder-contracts is seeded with 9 Security entries across all 3 principal-type
+	// collections (see seed.go): a known-tier group, a "Custom" (unmapped) group, six
+	// roles (five synced as clm_role, one not), and a known-tier member. Grants() must
+	// emit exactly 7 grants, skipping the Custom entry rather than approximating it and
+	// skipping the role clm_role does not sync.
 	_, c := clmtest.NewServer(t)
-	b := newClmFolderBuilder(c)
+	b := newClmFolderBuilder(c, true)
 	ctx := context.Background()
 
 	folderResource, err := rs.NewResource("Contracts", clmFolderResourceType, "folder-contracts")
@@ -142,15 +145,15 @@ func TestClmFolderBuilder_Grants_MapsAndSkipsCorrectly(t *testing.T) {
 		t.Fatalf("NewResource: %v", err)
 	}
 
-	grants, _, err := b.Grants(ctx, folderResource, rs.SyncOpAttrs{})
+	grants, _, err := b.Grants(ctx, folderResource, rs.SyncOpAttrs{Session: storeWithSyncedClmRoles(t, c)})
 	if err != nil {
 		t.Fatalf("Grants: %v", err)
 	}
-	if len(grants) != 3 {
-		t.Fatalf("expected 3 grants (the Custom group entry should be skipped), got %d", len(grants))
+	if len(grants) != 7 {
+		t.Fatalf("expected 7 grants (the Custom group entry and the UnheldRole entry should be skipped), got %d", len(grants))
 	}
 
-	var sawGroup, sawMember, sawRole bool
+	var sawGroup, sawMember bool
 	for _, g := range grants {
 		switch g.Principal.Id.ResourceType {
 		case clmGroupResourceType.Id:
@@ -166,25 +169,153 @@ func TestClmFolderBuilder_Grants_MapsAndSkipsCorrectly(t *testing.T) {
 			if g.Principal.Id.Resource != "member-bob" {
 				t.Errorf("expected the member grant to target member-bob, got %s", g.Principal.Id.Resource)
 			}
-		case clmRoleResourceType.Id:
-			sawRole = true
-			if g.Principal.Id.Resource != "FullSubscriber" {
-				t.Errorf("expected the role grant to target FullSubscriber, got %s", g.Principal.Id.Resource)
-			}
 		}
 	}
-	if !sawGroup || !sawMember || !sawRole {
-		t.Errorf("expected one grant each for group/member/role principals; got group=%v member=%v role=%v", sawGroup, sawMember, sawRole)
+	if !sawGroup || !sawMember {
+		t.Errorf("expected a grant each for group/member principals; got group=%v member=%v", sawGroup, sawMember)
 	}
 }
 
-// TestClmFolderBuilder_Grants_SkipsUnknownRoleName is a regression test: clm_role is a
-// fixed, hardcoded 5-role list (clmRoleBuilder.List, not fetched from the API), so a
-// Roles security entry referencing a role name outside that set has no synced
-// principal to grant against. The old clmPrincipalIDForItem validated role names
-// before emitting a grant; the rewritten Grants() must do the same rather than
-// blindly trusting entry.Item.
-func TestClmFolderBuilder_Grants_SkipsUnknownRoleName(t *testing.T) {
+// TestClmFolderBuilder_Grants_RoleGrants resolves roles against a real clm_role List: a
+// shipped role (UserAdministrator has no holder) or one a member holds. UnheldRole is neither.
+func TestClmFolderBuilder_Grants_RoleGrants(t *testing.T) {
+	_, c := clmtest.NewServer(t)
+	store := storeWithSyncedClmRoles(t, c)
+
+	folderResource, err := rs.NewResource("Contracts", clmFolderResourceType, "folder-contracts")
+	if err != nil {
+		t.Fatalf("NewResource: %v", err)
+	}
+
+	grants, _, err := newClmFolderBuilder(c, true).Grants(context.Background(), folderResource, rs.SyncOpAttrs{Session: store})
+	if err != nil {
+		t.Fatalf("Grants: %v", err)
+	}
+
+	roleGrants := map[string]string{}
+	for _, folderGrant := range grants {
+		if folderGrant.Principal.Id.ResourceType != clmRoleResourceType.Id {
+			continue
+		}
+		role := folderGrant.Principal.Id.Resource
+		roleGrants[role] = folderGrant.Entitlement.Id
+
+		expandable := &v2.GrantExpandable{}
+		grantAnnos := annotations.Annotations(folderGrant.Annotations)
+		if ok, err := grantAnnos.Pick(expandable); err != nil || !ok {
+			t.Fatalf("role %s: expected a GrantExpandable annotation (err: %v)", role, err)
+		}
+		if want := []string{"clm_role:" + role + ":" + clmRoleAssignedTag}; !reflect.DeepEqual(expandable.EntitlementIds, want) {
+			t.Errorf("role %s: expected expandable entitlements %v, got %v", role, want, expandable.EntitlementIds)
+		}
+	}
+	wantRoleGrants := map[string]string{
+		"FullSubscriber":    "clm_folder:folder-contracts:view",
+		"CLMAdmin":          "clm_folder:folder-contracts:view_edit",
+		"CLMUser":           "clm_folder:folder-contracts:view",
+		"UserAdministrator": "clm_folder:folder-contracts:view",
+		"ContractReviewer":  "clm_folder:folder-contracts:view",
+	}
+	if !reflect.DeepEqual(roleGrants, wantRoleGrants) {
+		t.Errorf("expected role grants %v, got %v", wantRoleGrants, roleGrants)
+	}
+	if store.getManyCalls != 1 {
+		t.Errorf("expected one session read per folder, got %d", store.getManyCalls)
+	}
+}
+
+func TestClmFolderBuilder_Grants_SkipsRolesWhenClmRoleIsNotSynced(t *testing.T) {
+	_, c := clmtest.NewServer(t)
+	store := newFakeSessionStore()
+	store.getManyErr = errors.New("the session store must not be read")
+
+	folderResource, err := rs.NewResource("Contracts", clmFolderResourceType, "folder-contracts")
+	if err != nil {
+		t.Fatalf("NewResource: %v", err)
+	}
+
+	grants, _, err := newClmFolderBuilder(c, false).Grants(context.Background(), folderResource, rs.SyncOpAttrs{Session: store})
+	if err != nil {
+		t.Fatalf("Grants: %v", err)
+	}
+	if len(grants) != 2 {
+		t.Errorf("expected only the group and member grants, got %d: %+v", len(grants), grants)
+	}
+}
+
+// A clm_role List that recorded nothing (a sync resumed from an older version's checkpoint)
+// must still yield the shipped roles' grants.
+func TestClmFolderBuilder_Grants_ShippedRolesWithoutStoredRoles(t *testing.T) {
+	_, c := clmtest.NewServer(t)
+
+	folderResource, err := rs.NewResource("Contracts", clmFolderResourceType, "folder-contracts")
+	if err != nil {
+		t.Fatalf("NewResource: %v", err)
+	}
+
+	grants, _, err := newClmFolderBuilder(c, true).Grants(context.Background(), folderResource, rs.SyncOpAttrs{Session: newFakeSessionStore()})
+	if err != nil {
+		t.Fatalf("Grants: %v", err)
+	}
+
+	var roles []string
+	for _, folderGrant := range grants {
+		if folderGrant.Principal.Id.ResourceType == clmRoleResourceType.Id {
+			roles = append(roles, folderGrant.Principal.Id.Resource)
+		}
+	}
+	if want := []string{"FullSubscriber", "UserAdministrator"}; !reflect.DeepEqual(roles, want) {
+		t.Errorf("expected grants for the shipped roles %v, got %v", want, roles)
+	}
+}
+
+func TestClmFolderBuilder_Grants_PropagatesSessionReadError(t *testing.T) {
+	_, c := clmtest.NewServer(t)
+	b := newClmFolderBuilder(c, true)
+	store := newFakeSessionStore()
+	store.getManyErr = errors.New("session store unavailable")
+
+	folderResource, err := rs.NewResource("Contracts", clmFolderResourceType, "folder-contracts")
+	if err != nil {
+		t.Fatalf("NewResource: %v", err)
+	}
+
+	if _, _, err := b.Grants(context.Background(), folderResource, rs.SyncOpAttrs{Session: store}); !errors.Is(err, store.getManyErr) {
+		t.Fatalf("expected the session read error to propagate, got %v", err)
+	}
+}
+
+func TestClmFolderBuilder_Grants_ShippedRolesSkipSessionRead(t *testing.T) {
+	_, c := clmtest.NewServer(t)
+	ctx := context.Background()
+
+	if _, err := c.PatchFolderSecurity(ctx, "folder-templates", client.ClmFolderSecurityWrite{
+		Roles: []client.ClmRoleSecurityEntry{{AccessType: client.ClmAccessTypeView, Item: "FullSubscriber"}},
+	}); err != nil {
+		t.Fatalf("PatchFolderSecurity (seed): %v", err)
+	}
+	store := newFakeSessionStore()
+	store.getManyErr = errors.New("the session store must not be read")
+
+	folderResource, err := rs.NewResource("Templates", clmFolderResourceType, "folder-templates")
+	if err != nil {
+		t.Fatalf("NewResource: %v", err)
+	}
+
+	grants, _, err := newClmFolderBuilder(c, true).Grants(ctx, folderResource, rs.SyncOpAttrs{Session: store})
+	if err != nil {
+		t.Fatalf("Grants: %v", err)
+	}
+	if len(grants) != 1 || grants[0].Principal.Id.Resource != "FullSubscriber" {
+		t.Errorf("expected only the FullSubscriber grant, got %+v", grants)
+	}
+}
+
+// TestClmFolderBuilder_Grants_SkipsRoleNotSyncedAsClmRole is a regression test: a Roles
+// security entry referencing a role clm_role never synced (neither shipped nor held by a
+// member) has no synced principal to grant against, so Grants() must skip it rather
+// than blindly trust entry.Item.
+func TestClmFolderBuilder_Grants_SkipsRoleNotSyncedAsClmRole(t *testing.T) {
 	_, c := clmtest.NewServer(t)
 	ctx := context.Background()
 
@@ -194,18 +325,18 @@ func TestClmFolderBuilder_Grants_SkipsUnknownRoleName(t *testing.T) {
 		t.Fatalf("PatchFolderSecurity (seed): %v", err)
 	}
 
-	b := newClmFolderBuilder(c)
+	b := newClmFolderBuilder(c, true)
 	folderResource, err := rs.NewResource("Templates", clmFolderResourceType, "folder-templates")
 	if err != nil {
 		t.Fatalf("NewResource: %v", err)
 	}
 
-	grants, _, err := b.Grants(ctx, folderResource, rs.SyncOpAttrs{})
+	grants, _, err := b.Grants(ctx, folderResource, rs.SyncOpAttrs{Session: storeWithSyncedClmRoles(t, c)})
 	if err != nil {
 		t.Fatalf("Grants: %v", err)
 	}
 	if len(grants) != 0 {
-		t.Errorf("expected the unknown role entry to be skipped, got %d grants: %+v", len(grants), grants)
+		t.Errorf("expected the unsynced role entry to be skipped, got %d grants: %+v", len(grants), grants)
 	}
 }
 
@@ -262,7 +393,7 @@ func TestClmFolderBuilder_Grants_LogsOnlyForGenuinelyUnrecognizedAccessType(t *t
 	core, logs := observer.New(zapcore.DebugLevel)
 	observedCtx := ctxzap.ToContext(ctx, zap.New(core))
 
-	b := newClmFolderBuilder(c)
+	b := newClmFolderBuilder(c, true)
 	folderResource, err := rs.NewResource("Templates", clmFolderResourceType, "folder-templates")
 	if err != nil {
 		t.Fatalf("NewResource: %v", err)
@@ -350,7 +481,7 @@ func TestClmFolderBuilder_Grants_LogsDistinctlyForCustomAccessType(t *testing.T)
 	core, logs := observer.New(zapcore.DebugLevel)
 	observedCtx := ctxzap.ToContext(ctx, zap.New(core))
 
-	b := newClmFolderBuilder(c)
+	b := newClmFolderBuilder(c, true)
 	folderResource, err := rs.NewResource("Templates", clmFolderResourceType, "folder-templates")
 	if err != nil {
 		t.Fatalf("NewResource: %v", err)
@@ -384,7 +515,7 @@ func TestClmFolderBuilder_Grants_LogsDistinctlyForCustomAccessType(t *testing.T)
 
 func TestClmFolderBuilder_GrantAndRevoke_Idempotent(t *testing.T) {
 	srv, c := clmtest.NewServer(t)
-	b := newClmFolderBuilder(c)
+	b := newClmFolderBuilder(c, true)
 	ctx := context.Background()
 
 	// folder-templates starts with no Security entries.
@@ -446,18 +577,18 @@ func TestClmFolderBuilder_GrantAndRevoke_Idempotent(t *testing.T) {
 // security state back (via clmFolderSecurityToWrite), not just the one changed entry.
 // The clmtest mock models the pessimistic "replace" interpretation specifically to
 // catch a regression to sending just one entry — that would make this test fail with
-// the other principals' entries disappearing. folder-contracts is seeded with 4
+// the other principals' entries disappearing. folder-contracts is seeded with 9
 // entries across all 3 collections (see seed.go); this grants and revokes access for a
-// 5th, previously-absent principal ("group-ops") and confirms the original 4 are
+// 10th, previously-absent principal ("group-ops") and confirms the original 9 are
 // untouched throughout.
 func TestClmFolderBuilder_GrantAndRevoke_PreservesOtherPrincipals(t *testing.T) {
 	srv, c := clmtest.NewServer(t)
-	b := newClmFolderBuilder(c)
+	b := newClmFolderBuilder(c, true)
 	ctx := context.Background()
 
 	before := srv.FolderSecurity("folder-contracts")
-	if total := len(before.Groups) + len(before.Roles) + len(before.Users); total != 4 {
-		t.Fatalf("expected folder-contracts seeded with 4 entries total, got %d: %+v", total, before)
+	if total := len(before.Groups) + len(before.Roles) + len(before.Users); total != 9 {
+		t.Fatalf("expected folder-contracts seeded with 9 entries total, got %d: %+v", total, before)
 	}
 
 	folderResource, err := rs.NewResource("Contracts", clmFolderResourceType, "folder-contracts")
@@ -554,7 +685,7 @@ func assertUsersPreserved(t *testing.T, before, after []client.ClmUserSecurityEn
 // that read-side shape.
 func TestClmFolderBuilder_GrantAndRevoke_ToleratesBareIDOnRead(t *testing.T) {
 	srv, c := clmtest.NewServer(t)
-	b := newClmFolderBuilder(c)
+	b := newClmFolderBuilder(c, true)
 	ctx := context.Background()
 
 	// Seed folder-templates' group Security entry with a bare group ID, not the full
@@ -611,7 +742,7 @@ func clmIdentityOnlyResource(resourceType *v2.ResourceType, resourceID string) *
 // uses a fully-populated resource) to confirm Href is still derivable.
 func TestClmFolderBuilder_GrantAndRevoke_SurvivesIdentityOnlyPrincipal(t *testing.T) {
 	srv, c := clmtest.NewServer(t)
-	b := newClmFolderBuilder(c)
+	b := newClmFolderBuilder(c, true)
 	ctx := context.Background()
 
 	folderResource, err := rs.NewResource("Templates", clmFolderResourceType, "folder-templates")
@@ -696,7 +827,7 @@ func TestClmFolderBuilder_GrantAndRevoke_SurvivesIdentityOnlyPrincipal(t *testin
 // firing instead of it.
 func TestClmFolderBuilder_GrantAndRevoke_RejectEmptyPrincipalID(t *testing.T) {
 	_, c := clmtest.NewServer(t)
-	b := newClmFolderBuilder(c)
+	b := newClmFolderBuilder(c, true)
 	ctx := context.Background()
 
 	folderResource, err := rs.NewResource("Templates", clmFolderResourceType, "folder-templates")
@@ -729,7 +860,7 @@ func TestClmFolderBuilder_GrantAndRevoke_RejectEmptyPrincipalID(t *testing.T) {
 // folders collection root instead of failing clearly client-side.
 func TestClmFolderBuilder_GrantAndRevoke_RejectEmptyFolderID(t *testing.T) {
 	_, c := clmtest.NewServer(t)
-	b := newClmFolderBuilder(c)
+	b := newClmFolderBuilder(c, true)
 	ctx := context.Background()
 
 	principal := clmIdentityOnlyResource(clmMemberResourceType, "member-dave")
@@ -759,7 +890,7 @@ func TestClmFolderBuilder_GrantAndRevoke_RejectEmptyFolderID(t *testing.T) {
 // or not the sample branch actually ran.
 func TestClmFolderBuilder_Grant_SurvivesIdentityOnlyPrincipal_SampleBranch(t *testing.T) {
 	srv, c := clmtest.NewServer(t)
-	b := newClmFolderBuilder(c)
+	b := newClmFolderBuilder(c, true)
 	ctx := context.Background()
 
 	const sampleHost = "https://other.example.com"
@@ -835,4 +966,14 @@ func hasAlreadyExists(annos annotations.Annotations) bool {
 
 func hasAlreadyRevoked(annos annotations.Annotations) bool {
 	return annos.Contains(&v2.GrantAlreadyRevoked{})
+}
+
+// storeWithSyncedClmRoles runs clm_role List over every page, leaving the session store
+// as a real sync would before the folders' Grants run.
+func storeWithSyncedClmRoles(t *testing.T, c *client.Client) *fakeSessionStore {
+	t.Helper()
+
+	store := newFakeSessionStore()
+	listClmRolePages(t, newClmRoleBuilder(c, true, true), store, 3)
+	return store
 }

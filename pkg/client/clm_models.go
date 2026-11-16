@@ -497,9 +497,7 @@ type ClmMember struct {
 	FirstName  string `json:"FirstName"`
 	LastName   string `json:"LastName"`
 	MiddleName string `json:"MiddleName,omitempty"`
-	// Role is an account-level enum: Guest/LimitedSubscriber/FullSubscriber/
-	// UserAdministrator/SuperAdministrator. This is the "Role" grantee type
-	// referenced in folder Security's "by role, group, and user".
+	// Role is the member's CLM role; accounts can return values beyond ClmRoles (e.g. CLMAdmin).
 	Role               string `json:"Role"`
 	Company            string `json:"Company,omitempty"`
 	Department         string `json:"Department,omitempty"`
@@ -532,15 +530,12 @@ type ClmPermissionSetPage struct {
 	Items []ClmPermissionSet `json:"Items"`
 }
 
-// ClmRole is a static, hardcoded representation of one of the 5 fixed account-level
-// Member.Role values. Not backed by an API call — needed so folder-security entries
-// granted "by role" (Item referencing a Role rather than a Group/User) have a real
-// synced resource to attach the grant to. See pkg/connector/clm_roles.go.
+// ClmRole is a documented Member.Role value.
 type ClmRole struct {
 	Name string
 }
 
-// ClmRoles are the confirmed, fixed set of CLM account-level roles.
+// ClmRoles are the Member.Role values the CLM API reference lists; clm_role always syncs them.
 var ClmRoles = []ClmRole{
 	{Name: "Guest"},
 	{Name: "LimitedSubscriber"},

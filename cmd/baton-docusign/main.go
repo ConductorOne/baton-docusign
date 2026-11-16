@@ -9,6 +9,7 @@ import (
 	"github.com/conductorone/baton-sdk/pkg/cli"
 	"github.com/conductorone/baton-sdk/pkg/config"
 	"github.com/conductorone/baton-sdk/pkg/connectorbuilder"
+	"github.com/conductorone/baton-sdk/pkg/connectorrunner"
 )
 
 var version = "dev"
@@ -32,5 +33,6 @@ func main() {
 		version,
 		cfg.ConfigurationSchema,
 		connectorFn,
+		connectorrunner.WithSessionStoreEnabled(),
 	)
 }

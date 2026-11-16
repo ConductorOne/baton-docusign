@@ -64,14 +64,12 @@ var (
 		Annotations: annotations.New(&v2.OptInRequired{}, &v2.ChildResourceType{ResourceTypeId: clmWorkflowQueueResourceType.Id}),
 	}
 
-	// clmRoleResourceType represents the 5 fixed CLM account-level Member.Role values.
-	// Not backed by its own API call (see client.ClmRoles) — needed so folder-security
-	// entries granted "by role" have a real synced resource to grant against.
+	// clmRoleResourceType is the documented CLM roles plus every role a member holds; CLM has no roles endpoint.
 	clmRoleResourceType = &v2.ResourceType{
 		Id:          "clm_role",
 		DisplayName: "CLM Role",
 		Traits:      []v2.ResourceType_Trait{v2.ResourceType_TRAIT_ROLE},
-		Annotations: annotations.New(&v2.OptInRequired{}),
+		Annotations: annotations.New(&v2.OptInRequired{}, &v2.SkipEntitlements{}, &v2.TypeScopedGrants{}),
 	}
 
 	// clmGroupResourceType is a distinct upstream object from groupResourceType

@@ -2,13 +2,17 @@ package connector
 
 import (
 	"context"
+	"errors"
+	"reflect"
 	"strings"
 	"testing"
 
 	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
 	"github.com/conductorone/baton-sdk/pkg/annotations"
 	"github.com/conductorone/baton-sdk/pkg/pagination"
+	"github.com/conductorone/baton-sdk/pkg/session"
 	rs "github.com/conductorone/baton-sdk/pkg/types/resource"
+	"github.com/conductorone/baton-sdk/pkg/types/sessions"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
@@ -16,10 +20,10 @@ import (
 )
 
 func TestClmMemberBuilder_List_Pagination(t *testing.T) {
-	// member-frank has 105 synthetic groups but is just one member row among 6 — this
+	// member-frank has 105 synthetic groups but is just one member row among 10 — this
 	// confirms ListMembers' own pagination (not GetMemberGroups') is threaded correctly.
 	_, c := clmtest.NewServer(t)
-	b := newClmMemberBuilder(c, true)
+	b := newClmMemberBuilder(c, true, false)
 	ctx := context.Background()
 
 	var all []*v2.Resource
@@ -36,8 +40,8 @@ func TestClmMemberBuilder_List_Pagination(t *testing.T) {
 		pageToken = res.NextPageToken
 	}
 
-	if len(all) != 6 { // alice, bob, carol, dave, eve, frank
-		t.Fatalf("expected 6 CLM members across all pages, got %d", len(all))
+	if len(all) != 10 { // alice, bob, carol, dave, eve, clm.admin, clm.user, no-role, contract-reviewer, frank
+		t.Fatalf("expected 10 CLM members across all pages, got %d", len(all))
 	}
 }
 
@@ -49,7 +53,7 @@ func TestClmMemberBuilder_List_Pagination(t *testing.T) {
 // clm_workflow_queue.List() call triggered even though the type declaration looks correct.
 func TestClmMemberBuilder_List_StampsWorkflowQueueChildResourceType(t *testing.T) {
 	_, c := clmtest.NewServer(t)
-	b := newClmMemberBuilder(c, true)
+	b := newClmMemberBuilder(c, true, false)
 	ctx := context.Background()
 
 	resources, _, err := b.List(ctx, nil, rs.SyncOpAttrs{PageToken: pagination.Token{Size: 10}})
@@ -81,10 +85,10 @@ func TestClmMemberBuilder_List_FailsWhenClmUnavailable(t *testing.T) {
 	// syncs once a customer has explicitly opted it in, and C1's opt-in toggle has no
 	// upstream check against DocuSign — so an account/token that can't use CLM at that
 	// point is a real misconfiguration, not an expected state. List() must fail loudly
-	// rather than silently succeed with zero resources — see clm_roles.go's doc comment.
+	// rather than silently succeed with zero resources — see Connector.Validate()'s doc comment.
 	s, _ := clmtest.NewServer(t)
 	badClient := s.NewClientWithToken("wrong-token")
-	b := newClmMemberBuilder(badClient, true)
+	b := newClmMemberBuilder(badClient, true, false)
 	ctx := context.Background()
 
 	resources, _, err := b.List(ctx, nil, rs.SyncOpAttrs{PageToken: pagination.Token{Size: 10}})
@@ -99,10 +103,45 @@ func TestClmMemberBuilder_List_FailsWhenClmUnavailable(t *testing.T) {
 	}
 }
 
+func TestClmMemberBuilder_List_StoresMemberRolesOnlyWhenClmRoleIsSynced(t *testing.T) {
+	_, c := clmtest.NewServer(t)
+	ctx := context.Background()
+
+	store := newFakeSessionStore()
+	if _, _, err := newClmMemberBuilder(c, false, true).List(ctx, nil, rs.SyncOpAttrs{Session: store, PageToken: pagination.Token{Size: 100}}); err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	page, found, err := session.GetJSON[clmMemberRolesPage](ctx, store, clmMemberRolesPageKey(""), sessions.WithPrefix(clmMemberRolesSessionPrefix))
+	if err != nil || !found {
+		t.Fatalf("expected the first page in the session store, got found=%t err=%v", found, err)
+	}
+	if want := (clmMemberRolesPage{MemberRoles: seededMemberRoles}); !reflect.DeepEqual(page, want) {
+		t.Errorf("expected stored page %v, got %v", want, page)
+	}
+
+	storeWithoutRoles := newFakeSessionStore()
+	if _, _, err := newClmMemberBuilder(c, false, false).List(ctx, nil, rs.SyncOpAttrs{Session: storeWithoutRoles, PageToken: pagination.Token{Size: 100}}); err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(storeWithoutRoles.values) != 0 {
+		t.Errorf("expected no session writes when clm_role is not synced, got %v", storeWithoutRoles.keysWithPrefix(clmMemberRolesSessionPrefix))
+	}
+}
+
+func TestClmMemberBuilder_List_PropagatesSessionWriteError(t *testing.T) {
+	_, c := clmtest.NewServer(t)
+	store := newFakeSessionStore()
+	store.setErr = errors.New("session store unavailable")
+
+	if _, _, err := newClmMemberBuilder(c, false, true).List(context.Background(), nil, rs.SyncOpAttrs{Session: store, PageToken: pagination.Token{Size: 100}}); !errors.Is(err, store.setErr) {
+		t.Fatalf("expected the session write error, got %v", err)
+	}
+}
+
 func TestClmMemberBuilder_Entitlements_IsNoop(t *testing.T) {
 	// clm_member is a pure principal: it holds no entitlements of its own.
 	_, c := clmtest.NewServer(t)
-	b := newClmMemberBuilder(c, true)
+	b := newClmMemberBuilder(c, true, false)
 	ctx := context.Background()
 
 	memberResource, err := rs.NewResource("Alice", clmMemberResourceType, "member-alice")
@@ -123,7 +162,7 @@ func TestClmMemberBuilder_Entitlements_IsNoop(t *testing.T) {
 // entitlement-resource side and the member as the principal.
 func TestClmMemberBuilder_Grants_EmitsWorkflowQueueMembership(t *testing.T) {
 	_, c := clmtest.NewServer(t)
-	b := newClmMemberBuilder(c, true)
+	b := newClmMemberBuilder(c, true, false)
 	ctx := context.Background()
 
 	memberResource, err := rs.NewResource("Bob", clmMemberResourceType, "member-bob")
@@ -168,7 +207,7 @@ func TestClmMemberBuilder_Grants_EmitsWorkflowQueueMembership(t *testing.T) {
 // rather than an error.
 func TestClmMemberBuilder_Grants_NoQueues(t *testing.T) {
 	_, c := clmtest.NewServer(t)
-	b := newClmMemberBuilder(c, true)
+	b := newClmMemberBuilder(c, true, false)
 	ctx := context.Background()
 
 	memberResource, err := rs.NewResource("Carol", clmMemberResourceType, "member-carol")
@@ -191,7 +230,7 @@ func TestClmMemberBuilder_Grants_NoQueues(t *testing.T) {
 func TestClmMemberBuilder_Grants_PropagatesClientError(t *testing.T) {
 	srv, c := clmtest.NewServer(t)
 	srv.ForceMemberWorkflowQueuesStatus("member-alice", 403)
-	b := newClmMemberBuilder(c, true)
+	b := newClmMemberBuilder(c, true, false)
 	ctx := context.Background()
 
 	memberResource, err := rs.NewResource("Alice", clmMemberResourceType, "member-alice")
@@ -221,7 +260,7 @@ func TestClmMemberBuilder_Grants_PropagatesClientError(t *testing.T) {
 func TestClmMemberBuilder_Grants_SkipsQueueWithEmptyHref(t *testing.T) {
 	srv, c := clmtest.NewServer(t)
 	srv.AddMemberWorkflowQueueWithEmptyHref("member-no-href-queue")
-	b := newClmMemberBuilder(c, true)
+	b := newClmMemberBuilder(c, true, false)
 	ctx := context.Background()
 
 	memberResource, err := rs.NewResource("No Href Queue Member", clmMemberResourceType, "member-no-href-queue")
@@ -244,7 +283,7 @@ func TestClmMemberBuilder_Grants_SkipsQueueWithEmptyHref(t *testing.T) {
 // (Grants() must still run to emit workflow-queue membership grants).
 func TestClmMemberBuilder_ResourceType_SyncWorkflowQueuesEnabled(t *testing.T) {
 	ctx := context.Background()
-	b := newClmMemberBuilder(nil, true)
+	b := newClmMemberBuilder(nil, true, false)
 
 	rt := b.ResourceType(ctx)
 
@@ -265,7 +304,7 @@ func TestClmMemberBuilder_ResourceType_SyncWorkflowQueuesEnabled(t *testing.T) {
 // package-level clmMemberResourceType var.
 func TestClmMemberBuilder_ResourceType_SyncWorkflowQueuesDisabled(t *testing.T) {
 	ctx := context.Background()
-	b := newClmMemberBuilder(nil, false)
+	b := newClmMemberBuilder(nil, false, false)
 
 	rt := b.ResourceType(ctx)
 

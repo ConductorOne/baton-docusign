@@ -176,7 +176,7 @@ func TestNewWithRefreshToken_StoresIncludeClm(t *testing.T) {
 		cb, err := NewWithRefreshToken(
 			ctx, false, "client-id", "client-secret", "https://redirect.example.com",
 			"refresh-token", "account-1", false, includeClm,
-			"https://clm.example.com", "https://api.example.com", false, false,
+			"https://clm.example.com", "https://api.example.com", false, false, false, false, false,
 		)
 		if err != nil {
 			t.Fatalf("includeClm=%v: NewWithRefreshToken: %v", includeClm, err)
@@ -198,7 +198,7 @@ func TestNewWithTokenSource_StoresIncludeClm(t *testing.T) {
 
 	for _, includeClm := range []bool{true, false} {
 		cb, err := NewWithTokenSource(
-			ctx, false, tokenSource, "account-1", false, includeClm, "https://clm.example.com", false, false,
+			ctx, false, tokenSource, "account-1", false, includeClm, "https://clm.example.com", false, false, false, false, false,
 		)
 		if err != nil {
 			t.Fatalf("includeClm=%v: NewWithTokenSource: %v", includeClm, err)
@@ -283,15 +283,18 @@ func TestNew_IncludeClmDerivation(t *testing.T) {
 		syncResourceTypeIDs       []string
 		wantIncludeClm            bool
 		wantIncludeWorkflowQueues bool
+		wantIncludeClmMembers     bool
+		wantIncludeClmRoles       bool
+		wantIncludeClmFolders     bool
 	}{
-		{"no filter (opts.SyncResourceTypeIDs empty): syncs everything, including CLM", nil, true, true},
-		{"CI's actual allowlist: no clm_* type present", nonClmAllowlist(), false, false},
-		{"clm_member present", []string{"user", clmMemberResourceType.Id}, true, false},
-		{"clm_role present", []string{"user", clmRoleResourceType.Id}, true, false},
-		{"clm_group present", []string{"user", clmGroupResourceType.Id}, true, false},
-		{"clm_permission_set present", []string{"user", clmPermissionSetResourceType.Id}, true, false},
-		{"clm_folder present", []string{"user", clmFolderResourceType.Id}, true, false},
-		{"clm_workflow_queue present", []string{"user", clmWorkflowQueueResourceType.Id}, true, true},
+		{"no filter (opts.SyncResourceTypeIDs empty): syncs everything, including CLM", nil, true, true, true, true, true},
+		{"CI's actual allowlist: no clm_* type present", nonClmAllowlist(), false, false, false, false, false},
+		{"clm_member present", []string{"user", clmMemberResourceType.Id}, true, false, true, false, false},
+		{"clm_role present", []string{"user", clmRoleResourceType.Id}, true, false, false, true, false},
+		{"clm_group present", []string{"user", clmGroupResourceType.Id}, true, false, false, false, false},
+		{"clm_permission_set present", []string{"user", clmPermissionSetResourceType.Id}, true, false, false, false, false},
+		{"clm_folder present", []string{"user", clmFolderResourceType.Id}, true, false, false, false, true},
+		{"clm_workflow_queue present", []string{"user", clmWorkflowQueueResourceType.Id}, true, true, false, false, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -309,6 +312,15 @@ func TestNew_IncludeClmDerivation(t *testing.T) {
 			}
 			if cb.includeWorkflowQueues != tt.wantIncludeWorkflowQueues {
 				t.Errorf("SyncResourceTypeIDs=%v: expected includeWorkflowQueues=%v, got %v", tt.syncResourceTypeIDs, tt.wantIncludeWorkflowQueues, cb.includeWorkflowQueues)
+			}
+			if cb.includeClmMembers != tt.wantIncludeClmMembers {
+				t.Errorf("SyncResourceTypeIDs=%v: expected includeClmMembers=%v, got %v", tt.syncResourceTypeIDs, tt.wantIncludeClmMembers, cb.includeClmMembers)
+			}
+			if cb.includeClmRoles != tt.wantIncludeClmRoles {
+				t.Errorf("SyncResourceTypeIDs=%v: expected includeClmRoles=%v, got %v", tt.syncResourceTypeIDs, tt.wantIncludeClmRoles, cb.includeClmRoles)
+			}
+			if cb.includeClmFolders != tt.wantIncludeClmFolders {
+				t.Errorf("SyncResourceTypeIDs=%v: expected includeClmFolders=%v, got %v", tt.syncResourceTypeIDs, tt.wantIncludeClmFolders, cb.includeClmFolders)
 			}
 		})
 	}
