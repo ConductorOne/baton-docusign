@@ -5,10 +5,10 @@ on:
   push:
     branches:
       - main
-# Workflow-level, not per-job: all three jobs share the DocuSign demo account, and a
-# per-job block only protects a *running* job — GitHub Actions still cancels a *pending*
-# job in the same group when a newer run queues. Declaring it once here queues/cancels
-# all three jobs as one unit.
+# Workflow-level, not per-job: the three demo-account jobs share the DocuSign demo
+# account, and a per-job block only protects a *running* job — GitHub Actions still
+# cancels a *pending* job in the same group when a newer run queues. Declaring it once
+# here queues/cancels every job as one unit; test-clm-sync uses the CLM mock and only waits.
 concurrency:
   group: docusign-demo-account
   cancel-in-progress: false
@@ -26,10 +26,11 @@ env:
   # guard.
   # This is an allowlist, not a CLM-only exclusion: if you register a new non-CLM
   # resource type in pkg/connector/connector.go, add it here too — otherwise it silently
-  # gets zero CI sync-test coverage. Declared once at the workflow level (all three jobs
-  # inherit it) so there's no per-job copy to keep in sync.
+  # gets zero CI sync-test coverage. Declared once at the workflow level (the three
+  # demo-account jobs inherit it) so there's no per-job copy to keep in sync;
+  # test-clm-sync overrides it on purpose to sync clm_* types against the CLM mock.
   #
-  # signing_group specifically only works here because every job below also sets
+  # signing_group specifically only works here because every demo-account job below sets
   # BATON_INCLUDE_SIGNING_GROUPS: "true" — the connector only advertises signing_group
   # via ListResourceTypes() when that flag is set (pkg/connector/connector.go), and the
   # SDK hard-errors on any filter entry the connector doesn't advertise
@@ -137,3 +138,45 @@ jobs:
           # DocuSign write-propagation delay risk (the one confirmed to actually fire
           # here).
           sleep: "5"
+  # Syncs the CLM types against the CLM mock (cmd/test-server); every credential is a placeholder.
+  test-clm-sync:
+    runs-on: ubuntu-latest
+    env:
+      BATON_LOG_LEVEL: debug
+      BATON_BASE_URL: http://localhost:8765
+      BATON_CLM_BASE_URL: http://localhost:8765
+      BATON_REFRESH_TOKEN: mock-token
+      BATON_DOCUSIGN_CLIENT_ID: mock-client-id
+      BATON_DOCUSIGN_CLIENT_SECRET: mock-client-secret
+      BATON_REDIRECT_URI: http://localhost
+      BATON_ACCOUNT_ID: mock-account
+      BATON_SYNC_RESOURCE_TYPES: clm_member,clm_role,clm_folder
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Build baton-docusign and the CLM mock
+        run: |
+          go build ./cmd/baton-docusign
+          go build -o clm-test-server ./cmd/test-server
+      - name: Start the CLM mock
+        run: |
+          ./clm-test-server &
+          for attempt in $(seq 1 30); do
+            curl -s -o /dev/null http://localhost:8765 && exit 0
+            sleep 1
+          done
+          echo "CLM mock did not start" && exit 1
+      - name: Get baton
+        uses: ConductorOne/github-workflows/actions/get-baton@v3
+      - name: Sync CLM members, roles and folders
+        run: ./baton-docusign -f sync.c1z
+      - name: Check member-to-role and folder-to-role grants
+        run: |
+          baton grants -f sync.c1z --output-format json > grants.json
+          jq -e '[.grants[] | select(.grant.entitlement.id | test("^clm_role:.+:assigned$"))] | length > 0' grants.json
+          jq -e '[.grants[] | select(.grant.principal.id.resourceType == "clm_role" and (.grant.entitlement.id | startswith("clm_folder:")))] | length > 0' grants.json
+          jq -e '[.grants[] | select(.grant.principal.id.resourceType == "clm_member" and (.grant.entitlement.id | startswith("clm_folder:")) and ((.grant.sources.sources // {}) | keys | any(startswith("clm_role:"))))] | length > 0' grants.json

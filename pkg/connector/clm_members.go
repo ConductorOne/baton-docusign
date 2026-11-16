@@ -7,8 +7,10 @@ import (
 	"github.com/conductorone/baton-docusign/pkg/client"
 	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
 	"github.com/conductorone/baton-sdk/pkg/annotations"
+	"github.com/conductorone/baton-sdk/pkg/session"
 	"github.com/conductorone/baton-sdk/pkg/types/grant"
 	rs "github.com/conductorone/baton-sdk/pkg/types/resource"
+	"github.com/conductorone/baton-sdk/pkg/types/sessions"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -25,6 +27,8 @@ type clmMemberBuilder struct {
 	// otherwise invoke GetMemberWorkflowQueues even though the customer didn't
 	// opt into workflow queues (mirrors userBuilder + skipPermissionProfileResourceType).
 	includeWorkflowQueues bool
+	// includeRoles reports whether clm_role is synced; its grants read the member pages List stores.
+	includeRoles bool
 }
 
 // ResourceType returns the Baton resource type handled by this builder,
@@ -73,6 +77,14 @@ func (b *clmMemberBuilder) List(ctx context.Context, _ *v2.ResourceId, attr rs.S
 		resources = append(resources, memberResource)
 	}
 
+	if b.includeRoles {
+		// clm_role grants read this page instead of listing the members again.
+		page := clmMemberRolesPage{MemberRoles: clmMemberRoles(members), NextPageToken: nextPageToken}
+		if err := session.SetJSON(ctx, attr.Session, clmMemberRolesPageKey(pageToken), page, sessions.WithPrefix(clmMemberRolesSessionPrefix)); err != nil {
+			return nil, nil, fmt.Errorf("baton-docusign: storing CLM member roles in the session store: %w", err)
+		}
+	}
+
 	var outToken string
 	if nextPageToken != "" {
 		outToken, err = bag.NextToken(nextPageToken)
@@ -99,10 +111,10 @@ func (b *clmMemberBuilder) Entitlements(_ context.Context, _ *v2.Resource, _ rs.
 // side that can produce this. clmWorkflowQueueBuilder.List() (this member's child-resource
 // sync) makes the same GetMemberWorkflowQueues call earlier in the sync to discover queue
 // resources; this Grants() call repeats it once per member — an accepted 2x tradeoff of
-// the ChildResourceType design (no session store between List and Grants phases). That
+// the ChildResourceType design (workflow queues keep no state between List and Grants). That
 // also means membership can drift between the resources and grants phases on very long
 // syncs (a grant could reference a queue resource not yet stored); we accept that skew
-// rather than reintroduce session-store coupling per the ChildResourceType redesign.
+// rather than tie workflow queues to the session store, per the ChildResourceType redesign.
 func (b *clmMemberBuilder) Grants(ctx context.Context, resource *v2.Resource, _ rs.SyncOpAttrs) ([]*v2.Grant, *rs.SyncOpResults, error) {
 	memberID := resource.Id.Resource
 
@@ -129,11 +141,12 @@ func (b *clmMemberBuilder) Grants(ctx context.Context, resource *v2.Resource, _ 
 	return grants, &rs.SyncOpResults{Annotations: annos}, nil
 }
 
-func newClmMemberBuilder(c *client.Client, includeWorkflowQueues bool) *clmMemberBuilder {
+func newClmMemberBuilder(c *client.Client, includeWorkflowQueues, includeRoles bool) *clmMemberBuilder {
 	return &clmMemberBuilder{
 		resourceType:          clmMemberResourceType,
 		client:                c,
 		includeWorkflowQueues: includeWorkflowQueues,
+		includeRoles:          includeRoles,
 	}
 }
 
