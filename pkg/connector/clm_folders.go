@@ -173,6 +173,7 @@ func (f *clmFolderBuilder) Grants(ctx context.Context, folderResource *v2.Resour
 			}
 		}
 	}
+	// No API fallback: a miss means clm_role List didn't emit the role; that holds while clm_folder has no Get (targeted resyncs run no List).
 	// The session store rejects repeated keys.
 	slices.Sort(roleNames)
 	syncedRoles, err := session.GetManyJSON[bool](ctx, attr.Session, slices.Compact(roleNames), sessions.WithPrefix(clmRoleSessionPrefix))
