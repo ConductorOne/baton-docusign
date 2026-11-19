@@ -3,6 +3,7 @@ package connector
 import (
 	"context"
 	"errors"
+	"maps"
 	"net/http"
 	"reflect"
 	"testing"
@@ -12,6 +13,7 @@ import (
 	"github.com/conductorone/baton-sdk/pkg/annotations"
 	"github.com/conductorone/baton-sdk/pkg/pagination"
 	rs "github.com/conductorone/baton-sdk/pkg/types/resource"
+	"github.com/conductorone/baton-sdk/pkg/types/sessions"
 )
 
 // Seeded members that hold a role; member-no-role has none and gets no grant.
@@ -64,7 +66,7 @@ func listClmRolePages(t *testing.T, b *clmRoleBuilder, store *fakeSessionStore, 
 func TestClmRoleBuilder_List(t *testing.T) {
 	_, c := clmtest.NewServer(t)
 
-	pages := listClmRolePages(t, newClmRoleBuilder(c, true, true), newFakeSessionStore(), 3)
+	pages := listClmRolePages(t, newClmRoleBuilder(c, true), newFakeSessionStore(), 3)
 
 	wantPages := [][]string{
 		shippedRoles, // alice, bob and carol hold shipped roles only
@@ -81,7 +83,7 @@ func TestClmRoleBuilder_List_WithoutMembersEmitsShippedRoles(t *testing.T) {
 	srv, c := clmtest.NewServer(t)
 	srv.ClearMembers()
 
-	pages := listClmRolePages(t, newClmRoleBuilder(c, true, true), newFakeSessionStore(), 100)
+	pages := listClmRolePages(t, newClmRoleBuilder(c, true), newFakeSessionStore(), 100)
 
 	if want := [][]string{shippedRoles}; !reflect.DeepEqual(pages, want) {
 		t.Errorf("expected only the shipped roles %v, got %v", want, pages)
@@ -92,16 +94,10 @@ func TestClmRoleBuilder_List_SessionStore(t *testing.T) {
 	_, c := clmtest.NewServer(t)
 
 	store := newFakeSessionStore()
-	listClmRolePages(t, newClmRoleBuilder(c, true, true), store, 3)
+	listClmRolePages(t, newClmRoleBuilder(c, true), store, 3)
 	wantRoles := []string{"CLMAdmin", "CLMUser", "ContractReviewer", "FullSubscriber", "Guest", "LimitedSubscriber", "SuperAdministrator", "UserAdministrator"}
 	if got := store.keysWithPrefix(clmRoleSessionPrefix); !reflect.DeepEqual(got, wantRoles) {
 		t.Errorf("expected the store to hold %v, got %v", wantRoles, got)
-	}
-
-	storeWithoutFolders := newFakeSessionStore()
-	listClmRolePages(t, newClmRoleBuilder(c, true, false), storeWithoutFolders, 3)
-	if storeWithoutFolders.setManyCalls != 0 {
-		t.Errorf("expected no session writes when clm_folder is not synced, got %d", storeWithoutFolders.setManyCalls)
 	}
 }
 
@@ -113,7 +109,7 @@ func TestClmRoleBuilder_PropagatesErrors(t *testing.T) {
 		srv, c := clmtest.NewServer(t)
 		srv.ForceListMembersStatus(http.StatusInternalServerError)
 
-		if _, _, err := newClmRoleBuilder(c, true, true).List(ctx, nil, rs.SyncOpAttrs{Session: newFakeSessionStore(), PageToken: pageToken}); err == nil {
+		if _, _, err := newClmRoleBuilder(c, true).List(ctx, nil, rs.SyncOpAttrs{Session: newFakeSessionStore(), PageToken: pageToken}); err == nil {
 			t.Fatal("expected an error")
 		}
 	})
@@ -123,7 +119,7 @@ func TestClmRoleBuilder_PropagatesErrors(t *testing.T) {
 		store := newFakeSessionStore()
 		store.setManyErr = errors.New("session store unavailable")
 
-		if _, _, err := newClmRoleBuilder(c, true, true).List(ctx, nil, rs.SyncOpAttrs{Session: store, PageToken: pageToken}); !errors.Is(err, store.setManyErr) {
+		if _, _, err := newClmRoleBuilder(c, true).List(ctx, nil, rs.SyncOpAttrs{Session: store, PageToken: pageToken}); !errors.Is(err, store.setManyErr) {
 			t.Fatalf("expected the session write error, got %v", err)
 		}
 	})
@@ -132,7 +128,7 @@ func TestClmRoleBuilder_PropagatesErrors(t *testing.T) {
 		srv, c := clmtest.NewServer(t)
 		srv.ForceListMembersStatus(http.StatusInternalServerError)
 
-		if _, _, err := newClmRoleBuilder(c, true, true).GrantsForResourceType(ctx, clmRoleResourceType.Id, rs.SyncOpAttrs{Session: newFakeSessionStore(), PageToken: pageToken}); err == nil {
+		if _, _, err := newClmRoleBuilder(c, true).GrantsForResourceType(ctx, clmRoleResourceType.Id, rs.SyncOpAttrs{Session: newFakeSessionStore(), PageToken: pageToken}); err == nil {
 			t.Fatal("expected an error")
 		}
 	})
@@ -142,8 +138,18 @@ func TestClmRoleBuilder_PropagatesErrors(t *testing.T) {
 		store := newFakeSessionStore()
 		store.getErr = errors.New("session store unavailable")
 
-		if _, _, err := newClmRoleBuilder(c, true, true).GrantsForResourceType(ctx, clmRoleResourceType.Id, rs.SyncOpAttrs{Session: store, PageToken: pageToken}); !errors.Is(err, store.getErr) {
+		if _, _, err := newClmRoleBuilder(c, true).GrantsForResourceType(ctx, clmRoleResourceType.Id, rs.SyncOpAttrs{Session: store, PageToken: pageToken}); !errors.Is(err, store.getErr) {
 			t.Fatalf("expected the session read error, got %v", err)
+		}
+	})
+
+	t.Run("GrantsForResourceType: synced roles read failure", func(t *testing.T) {
+		_, c := clmtest.NewServer(t)
+		store := newFakeSessionStore()
+		store.getManyErr = errors.New("session store unavailable")
+
+		if _, _, err := newClmRoleBuilder(c, true).GrantsForResourceType(ctx, clmRoleResourceType.Id, rs.SyncOpAttrs{Session: store, PageToken: pageToken}); !errors.Is(err, store.getManyErr) {
+			t.Fatalf("expected the synced roles read error, got %v", err)
 		}
 	})
 }
@@ -169,14 +175,14 @@ func TestClmRoleDisplayName(t *testing.T) {
 }
 
 func TestClmRoleBuilder_ResourceType_Annotations(t *testing.T) {
-	annos := annotations.Annotations(newClmRoleBuilder(nil, true, true).ResourceType(context.Background()).Annotations)
+	annos := annotations.Annotations(newClmRoleBuilder(nil, true).ResourceType(context.Background()).Annotations)
 	if !annos.Contains(&v2.OptInRequired{}) || !annos.Contains(&v2.SkipEntitlements{}) || !annos.Contains(&v2.TypeScopedGrants{}) {
 		t.Errorf("expected OptInRequired, SkipEntitlements and TypeScopedGrants annotations, got %v", annos)
 	}
 }
 
 func TestClmRoleBuilder_StaticEntitlements(t *testing.T) {
-	ents, _, err := newClmRoleBuilder(nil, true, true).StaticEntitlements(context.Background(), rs.SyncOpAttrs{})
+	ents, _, err := newClmRoleBuilder(nil, true).StaticEntitlements(context.Background(), rs.SyncOpAttrs{})
 	if err != nil {
 		t.Fatalf("StaticEntitlements: %v", err)
 	}
@@ -215,8 +221,10 @@ func listClmRoleGrants(t *testing.T, b *clmRoleBuilder, store *fakeSessionStore,
 func TestClmRoleBuilder_GrantsForResourceType(t *testing.T) {
 	_, c := clmtest.NewServer(t)
 
-	// An empty session store makes every page a miss, so the members are read from CLM.
-	grants := listClmRoleGrants(t, newClmRoleBuilder(c, true, true), newFakeSessionStore(), 3)
+	// No member pages are stored, so every page is read from CLM.
+	store := newFakeSessionStore()
+	listClmRolePages(t, newClmRoleBuilder(c, true), store, 3)
+	grants := listClmRoleGrants(t, newClmRoleBuilder(c, true), store, 3)
 
 	gotRoles := map[string]string{}
 	for _, roleGrant := range grants {
@@ -241,6 +249,8 @@ func TestClmRoleBuilder_GrantsForResourceType(t *testing.T) {
 }
 
 func TestClmRoleBuilder_GrantsForResourceType_ReadsStoredMemberPages(t *testing.T) {
+	// Without this, the uhttp GET cache serves the earlier pages and the forced 500 never hits.
+	t.Setenv("BATON_DISABLE_HTTP_CACHE", "true")
 	srv, c := clmtest.NewServer(t)
 	store := newFakeSessionStore()
 
@@ -256,10 +266,11 @@ func TestClmRoleBuilder_GrantsForResourceType_ReadsStoredMemberPages(t *testing.
 		}
 		pageToken = res.NextPageToken
 	}
+	listClmRolePages(t, newClmRoleBuilder(c, true), store, 3)
 
 	// Any page read from CLM now fails, so every grant must come from the stored pages.
 	srv.ForceListMembersStatus(http.StatusInternalServerError)
-	grants := listClmRoleGrants(t, newClmRoleBuilder(c, true, true), store, 3)
+	grants := listClmRoleGrants(t, newClmRoleBuilder(c, true), store, 3)
 
 	gotRoles := map[string]string{}
 	for _, roleGrant := range grants {
@@ -270,11 +281,33 @@ func TestClmRoleBuilder_GrantsForResourceType_ReadsStoredMemberPages(t *testing.
 	}
 }
 
+func TestClmRoleBuilder_GrantsForResourceType_SkipsRolesListDidNotEmit(t *testing.T) {
+	_, c := clmtest.NewServer(t)
+	store := newFakeSessionStore()
+	listClmRolePages(t, newClmRoleBuilder(c, true), store, 3)
+	// A role the member took after clm_role List ran has no key.
+	if err := store.Delete(context.Background(), "CLMAdmin", sessions.WithPrefix(clmRoleSessionPrefix)); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+
+	grants := listClmRoleGrants(t, newClmRoleBuilder(c, true), store, 3)
+
+	gotRoles := map[string]string{}
+	for _, roleGrant := range grants {
+		gotRoles[roleGrant.Principal.Id.Resource] = roleGrant.Entitlement.Resource.Id.Resource
+	}
+	wantRoles := maps.Clone(seededMemberRoles)
+	delete(wantRoles, "member-clm-admin")
+	if !reflect.DeepEqual(gotRoles, wantRoles) {
+		t.Errorf("expected member-to-role grants %v, got %v", wantRoles, gotRoles)
+	}
+}
+
 func TestClmRoleBuilder_GrantsForResourceType_SkippedWithoutMembers(t *testing.T) {
 	srv, c := clmtest.NewServer(t)
 	srv.ForceListMembersStatus(http.StatusInternalServerError)
 
-	grants, res, err := newClmRoleBuilder(c, false, true).GrantsForResourceType(context.Background(), clmRoleResourceType.Id, rs.SyncOpAttrs{PageToken: pagination.Token{Size: 100}})
+	grants, res, err := newClmRoleBuilder(c, false).GrantsForResourceType(context.Background(), clmRoleResourceType.Id, rs.SyncOpAttrs{PageToken: pagination.Token{Size: 100}})
 	if err != nil {
 		t.Fatalf("expected no members API call when clm_member is not synced, got error: %v", err)
 	}

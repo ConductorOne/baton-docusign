@@ -46,9 +46,6 @@ type Connector struct {
 	// filter. Gates clmFolderBuilder's folder-to-role grants and clmMemberBuilder's
 	// session-store writes, which only role grants read.
 	includeClmRoles bool
-	// includeClmFolders reports whether clm_folder is included in the customer's sync
-	// filter. Gates clmRoleBuilder's session-store writes, which only folder grants read.
-	includeClmFolders bool
 }
 
 // Configure handles the OAuth2 authorization flow to obtain a refresh token.
@@ -95,7 +92,7 @@ func (d *Connector) ResourceSyncers(_ context.Context) []connectorbuilder.Resour
 		newGroupBuilder(d.client),
 		newPermissionProfilesBuilder(d.client),
 		newClmMemberBuilder(d.client, d.includeWorkflowQueues, d.includeClmRoles),
-		newClmRoleBuilder(d.client, d.includeClmMembers, d.includeClmFolders),
+		newClmRoleBuilder(d.client, d.includeClmMembers),
 		newClmGroupBuilder(d.client),
 		newClmPermissionSetBuilder(d.client),
 		newClmFolderBuilder(d.client, d.includeClmRoles),
@@ -180,7 +177,7 @@ func (d *Connector) Validate(ctx context.Context) (annotations.Annotations, erro
 func NewWithRefreshToken(
 	ctx context.Context, isDemo bool, clientId, clientSecret, redirectURI, refreshToken, accountId string,
 	includeSigningGroups, includeClm bool, clmBaseURLOverride, baseURLOverride string,
-	skipPermissionProfileResourceType, includeWorkflowQueues, includeClmMembers, includeClmRoles, includeClmFolders bool,
+	skipPermissionProfileResourceType, includeWorkflowQueues, includeClmMembers, includeClmRoles bool,
 ) (*Connector, error) {
 	l := ctxzap.Extract(ctx)
 
@@ -201,7 +198,6 @@ func NewWithRefreshToken(
 		includeWorkflowQueues:             includeWorkflowQueues,
 		includeClmMembers:                 includeClmMembers,
 		includeClmRoles:                   includeClmRoles,
-		includeClmFolders:                 includeClmFolders,
 	}, nil
 }
 
@@ -212,7 +208,7 @@ func NewWithRefreshToken(
 func NewWithTokenSource(
 	ctx context.Context, isDemo bool, tokenSource oauth2.TokenSource, accountId string,
 	includeSigningGroups, includeClm bool, clmBaseURLOverride string,
-	skipPermissionProfileResourceType, includeWorkflowQueues, includeClmMembers, includeClmRoles, includeClmFolders bool,
+	skipPermissionProfileResourceType, includeWorkflowQueues, includeClmMembers, includeClmRoles bool,
 ) (*Connector, error) {
 	docusignClient := client.NewClient(ctx, isDemo, tokenSource, accountId, clmBaseURLOverride)
 
@@ -224,7 +220,6 @@ func NewWithTokenSource(
 		includeWorkflowQueues:             includeWorkflowQueues,
 		includeClmMembers:                 includeClmMembers,
 		includeClmRoles:                   includeClmRoles,
-		includeClmFolders:                 includeClmFolders,
 	}, nil
 }
 
@@ -251,7 +246,6 @@ func New(ctx context.Context, docusignCfg *cfg.Docusign, opts *cli.ConnectorOpts
 	includeWorkflowQueues := opts.WillSyncResourceType(clmWorkflowQueueResourceType.Id)
 	includeClmMembers := opts.WillSyncResourceType(clmMemberResourceType.Id)
 	includeClmRoles := opts.WillSyncResourceType(clmRoleResourceType.Id)
-	includeClmFolders := opts.WillSyncResourceType(clmFolderResourceType.Id)
 
 	if includeWorkflowQueues && !includeClmMembers {
 		l.Debug("baton-docusign: clm_workflow_queue is enabled but clm_member is not — workflow queues are discovered per member, so this sync will produce zero queues and zero grants")
@@ -261,7 +255,7 @@ func New(ctx context.Context, docusignCfg *cfg.Docusign, opts *cli.ConnectorOpts
 		cbWithTokenSource, err := NewWithTokenSource(
 			ctx, isDemo, opts.TokenSource, docusignCfg.AccountId,
 			docusignCfg.IncludeSigningGroups, includeClm, docusignCfg.ClmBaseUrl,
-			skipPermissionProfileResourceType, includeWorkflowQueues, includeClmMembers, includeClmRoles, includeClmFolders,
+			skipPermissionProfileResourceType, includeWorkflowQueues, includeClmMembers, includeClmRoles,
 		)
 		if err != nil {
 			l.Error("error creating connector with token source", zap.Error(err))
@@ -298,7 +292,6 @@ func New(ctx context.Context, docusignCfg *cfg.Docusign, opts *cli.ConnectorOpts
 			includeWorkflowQueues,
 			includeClmMembers,
 			includeClmRoles,
-			includeClmFolders,
 		)
 		if err != nil {
 			l.Error("error creating connector", zap.Error(err))
