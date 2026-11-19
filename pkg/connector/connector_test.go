@@ -176,7 +176,7 @@ func TestNewWithRefreshToken_StoresIncludeClm(t *testing.T) {
 		cb, err := NewWithRefreshToken(
 			ctx, false, "client-id", "client-secret", "https://redirect.example.com",
 			"refresh-token", "account-1", false, includeClm,
-			"https://clm.example.com", "https://api.example.com", false, false, false, false, false,
+			"https://clm.example.com", "https://api.example.com", false, false, false, false,
 		)
 		if err != nil {
 			t.Fatalf("includeClm=%v: NewWithRefreshToken: %v", includeClm, err)
@@ -198,7 +198,7 @@ func TestNewWithTokenSource_StoresIncludeClm(t *testing.T) {
 
 	for _, includeClm := range []bool{true, false} {
 		cb, err := NewWithTokenSource(
-			ctx, false, tokenSource, "account-1", false, includeClm, "https://clm.example.com", false, false, false, false, false,
+			ctx, false, tokenSource, "account-1", false, includeClm, "https://clm.example.com", false, false, false, false,
 		)
 		if err != nil {
 			t.Fatalf("includeClm=%v: NewWithTokenSource: %v", includeClm, err)
@@ -275,8 +275,15 @@ func TestNonClmAllowlistMatchesCI(t *testing.T) {
 // needs no mock server and no refresh token.
 func TestNew_IncludeClmDerivation(t *testing.T) {
 	ctx := context.Background()
-	docusignCfg := &cfg.Docusign{DocusignClientId: "client-id", DocusignClientSecret: "client-secret"}
-	tokenSource := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "tok"})
+	// Each case runs through both constructors, so a swapped bool in either one fails.
+	authPaths := []struct {
+		name        string
+		docusignCfg *cfg.Docusign
+		tokenSource oauth2.TokenSource
+	}{
+		{"token source", &cfg.Docusign{DocusignClientId: "client-id", DocusignClientSecret: "client-secret"}, oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "tok"})},
+		{"refresh token", &cfg.Docusign{DocusignClientId: "client-id", DocusignClientSecret: "client-secret", RefreshToken: "tok", BaseUrl: "http://localhost"}, nil},
+	}
 
 	tests := []struct {
 		name                      string
@@ -285,43 +292,41 @@ func TestNew_IncludeClmDerivation(t *testing.T) {
 		wantIncludeWorkflowQueues bool
 		wantIncludeClmMembers     bool
 		wantIncludeClmRoles       bool
-		wantIncludeClmFolders     bool
 	}{
-		{"no filter (opts.SyncResourceTypeIDs empty): syncs everything, including CLM", nil, true, true, true, true, true},
-		{"CI's actual allowlist: no clm_* type present", nonClmAllowlist(), false, false, false, false, false},
-		{"clm_member present", []string{"user", clmMemberResourceType.Id}, true, false, true, false, false},
-		{"clm_role present", []string{"user", clmRoleResourceType.Id}, true, false, false, true, false},
-		{"clm_group present", []string{"user", clmGroupResourceType.Id}, true, false, false, false, false},
-		{"clm_permission_set present", []string{"user", clmPermissionSetResourceType.Id}, true, false, false, false, false},
-		{"clm_folder present", []string{"user", clmFolderResourceType.Id}, true, false, false, false, true},
-		{"clm_workflow_queue present", []string{"user", clmWorkflowQueueResourceType.Id}, true, true, false, false, false},
+		{"no filter (opts.SyncResourceTypeIDs empty): syncs everything, including CLM", nil, true, true, true, true},
+		{"CI's actual allowlist: no clm_* type present", nonClmAllowlist(), false, false, false, false},
+		{"clm_member present", []string{"user", clmMemberResourceType.Id}, true, false, true, false},
+		{"clm_role present", []string{"user", clmRoleResourceType.Id}, true, false, false, true},
+		{"clm_group present", []string{"user", clmGroupResourceType.Id}, true, false, false, false},
+		{"clm_permission_set present", []string{"user", clmPermissionSetResourceType.Id}, true, false, false, false},
+		{"clm_folder present", []string{"user", clmFolderResourceType.Id}, true, false, false, false},
+		{"clm_workflow_queue present", []string{"user", clmWorkflowQueueResourceType.Id}, true, true, false, false},
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			opts := &cli.ConnectorOpts{TokenSource: tokenSource, SyncResourceTypeIDs: tt.syncResourceTypeIDs}
-			built, _, err := New(ctx, docusignCfg, opts)
-			if err != nil {
-				t.Fatalf("New: %v", err)
-			}
-			cb, ok := built.(*Connector)
-			if !ok {
-				t.Fatalf("New returned %T, expected *Connector", built)
-			}
-			if cb.includeClm != tt.wantIncludeClm {
-				t.Errorf("SyncResourceTypeIDs=%v: expected includeClm=%v, got %v", tt.syncResourceTypeIDs, tt.wantIncludeClm, cb.includeClm)
-			}
-			if cb.includeWorkflowQueues != tt.wantIncludeWorkflowQueues {
-				t.Errorf("SyncResourceTypeIDs=%v: expected includeWorkflowQueues=%v, got %v", tt.syncResourceTypeIDs, tt.wantIncludeWorkflowQueues, cb.includeWorkflowQueues)
-			}
-			if cb.includeClmMembers != tt.wantIncludeClmMembers {
-				t.Errorf("SyncResourceTypeIDs=%v: expected includeClmMembers=%v, got %v", tt.syncResourceTypeIDs, tt.wantIncludeClmMembers, cb.includeClmMembers)
-			}
-			if cb.includeClmRoles != tt.wantIncludeClmRoles {
-				t.Errorf("SyncResourceTypeIDs=%v: expected includeClmRoles=%v, got %v", tt.syncResourceTypeIDs, tt.wantIncludeClmRoles, cb.includeClmRoles)
-			}
-			if cb.includeClmFolders != tt.wantIncludeClmFolders {
-				t.Errorf("SyncResourceTypeIDs=%v: expected includeClmFolders=%v, got %v", tt.syncResourceTypeIDs, tt.wantIncludeClmFolders, cb.includeClmFolders)
-			}
-		})
+	for _, authPath := range authPaths {
+		for _, tt := range tests {
+			t.Run(authPath.name+"/"+tt.name, func(t *testing.T) {
+				opts := &cli.ConnectorOpts{TokenSource: authPath.tokenSource, SyncResourceTypeIDs: tt.syncResourceTypeIDs}
+				built, _, err := New(ctx, authPath.docusignCfg, opts)
+				if err != nil {
+					t.Fatalf("New: %v", err)
+				}
+				cb, ok := built.(*Connector)
+				if !ok {
+					t.Fatalf("New returned %T, expected *Connector", built)
+				}
+				if cb.includeClm != tt.wantIncludeClm {
+					t.Errorf("SyncResourceTypeIDs=%v: expected includeClm=%v, got %v", tt.syncResourceTypeIDs, tt.wantIncludeClm, cb.includeClm)
+				}
+				if cb.includeWorkflowQueues != tt.wantIncludeWorkflowQueues {
+					t.Errorf("SyncResourceTypeIDs=%v: expected includeWorkflowQueues=%v, got %v", tt.syncResourceTypeIDs, tt.wantIncludeWorkflowQueues, cb.includeWorkflowQueues)
+				}
+				if cb.includeClmMembers != tt.wantIncludeClmMembers {
+					t.Errorf("SyncResourceTypeIDs=%v: expected includeClmMembers=%v, got %v", tt.syncResourceTypeIDs, tt.wantIncludeClmMembers, cb.includeClmMembers)
+				}
+				if cb.includeClmRoles != tt.wantIncludeClmRoles {
+					t.Errorf("SyncResourceTypeIDs=%v: expected includeClmRoles=%v, got %v", tt.syncResourceTypeIDs, tt.wantIncludeClmRoles, cb.includeClmRoles)
+				}
+			})
+		}
 	}
 }
