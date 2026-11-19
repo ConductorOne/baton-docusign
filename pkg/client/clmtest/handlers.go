@@ -254,6 +254,12 @@ func (s *Server) handleListMembers(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if s.forcedListMembersStatus != 0 {
+		w.WriteHeader(s.forcedListMembersStatus)
+		_ = json.NewEncoder(w).Encode(client.ClmErrorResponse{})
+		return
+	}
+
 	page, meta := pageSlice(r, s.memberOrder)
 	items := make([]client.ClmMember, 0, len(page))
 	for _, id := range page {

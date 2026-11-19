@@ -168,8 +168,8 @@ func TestGetFolder_ExpandSecurity(t *testing.T) {
 		if len(folder.Security.Groups) != 2 {
 			t.Fatalf("expected 2 seeded group security entries, got %d: %+v", len(folder.Security.Groups), folder.Security.Groups)
 		}
-		if len(folder.Security.Roles) != 1 {
-			t.Fatalf("expected 1 seeded role security entry, got %d: %+v", len(folder.Security.Roles), folder.Security.Roles)
+		if len(folder.Security.Roles) != 6 {
+			t.Fatalf("expected 6 seeded role security entries, got %d: %+v", len(folder.Security.Roles), folder.Security.Roles)
 		}
 		if len(folder.Security.Users) != 1 {
 			t.Fatalf("expected 1 seeded user security entry, got %d: %+v", len(folder.Security.Users), folder.Security.Users)
@@ -358,8 +358,21 @@ func TestListMembers_Pagination(t *testing.T) {
 		}
 		pageToken = next
 	}
-	if len(all) != 6 { // alice, bob, carol, dave, eve, frank
-		t.Fatalf("expected 6 members across all pages, got %d", len(all))
+	if len(all) != 10 { // alice, bob, carol, dave, eve, clm.admin, clm.user, no-role, contract-reviewer, frank
+		t.Fatalf("expected 10 members across all pages, got %d", len(all))
+	}
+}
+
+func TestListMembers_NotFoundIsPermissionDenied(t *testing.T) {
+	srv, c := clmtest.NewServer(t)
+	srv.ForceListMembersStatus(http.StatusNotFound)
+
+	_, _, _, err := c.ListMembers(context.Background(), client.PageOptions{})
+	if err == nil {
+		t.Fatal("expected an error for a 404 on the members list, got nil")
+	}
+	if status.Code(err) != codes.PermissionDenied {
+		t.Errorf("expected PermissionDenied, got %s (err: %v)", status.Code(err), err)
 	}
 }
 
@@ -444,7 +457,7 @@ func TestGetMemberWorkflowQueues_PaginatesAcrossPages(t *testing.T) {
 	// requests for a member with more queues than fit on one page, rather than silently
 	// returning a truncated first page. member-mallory is added via
 	// AddBulkWorkflowQueueMember (not the default seed) specifically so its 105 queues
-	// don't perturb the default seed's "2 distinct queues" / "6 members" assertions used
+	// don't perturb the default seed's "2 distinct queues" / "10 members" assertions used
 	// elsewhere.
 	srv, c := clmtest.NewServer(t)
 	ctx := context.Background()

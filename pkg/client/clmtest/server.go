@@ -124,6 +124,8 @@ type Server struct {
 
 	forcedMemberWorkflowQueuesStatus map[string]int // memberID -> forced HTTP status, for tests
 
+	forcedListMembersStatus int // when non-zero, GET .../members fails with this HTTP status, for tests
+
 	lastPatchedMemberGroupHrefs map[string][]string // memberID -> the raw Href strings the last PATCH request body carried, for tests
 
 	nextFolderSearchTaskID int // incrementing counter for mock FolderSearchTasks task IDs
@@ -159,6 +161,13 @@ func (s *Server) ForceMemberWorkflowQueuesStatus(memberID string, status int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.forcedMemberWorkflowQueuesStatus[memberID] = status
+}
+
+// ForceListMembersStatus makes GET .../members fail with the given HTTP status.
+func (s *Server) ForceListMembersStatus(status int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.forcedListMembersStatus = status
 }
 
 // SetPendingFolderSearchPolls makes the next folder search task created by this server
@@ -254,6 +263,14 @@ func (s *Server) AddMemberWithoutHref(memberID string) {
 	defer s.mu.Unlock()
 	s.members[memberID] = &client.ClmMember{Email: memberID + "@example.com", UserName: memberID}
 	s.memberOrder = append(s.memberOrder, memberID)
+}
+
+// ClearMembers removes every seeded member.
+func (s *Server) ClearMembers() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.members = map[string]*client.ClmMember{}
+	s.memberOrder = nil
 }
 
 // AddMemberWorkflowQueueWithEmptyHref seeds a new member (not part of the default seed)
