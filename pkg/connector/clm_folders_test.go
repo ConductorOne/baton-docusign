@@ -974,6 +974,6 @@ func storeWithSyncedClmRoles(t *testing.T, c *client.Client) *fakeSessionStore {
 	t.Helper()
 
 	store := newFakeSessionStore()
-	listClmRolePages(t, newClmRoleBuilder(c, true, true), store, 3)
+	listClmRolePages(t, newClmRoleBuilder(c, true), store, 3)
 	return store
 }

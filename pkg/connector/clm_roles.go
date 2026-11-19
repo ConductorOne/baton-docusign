@@ -15,6 +15,8 @@ import (
 	"github.com/conductorone/baton-sdk/pkg/types/grant"
 	rs "github.com/conductorone/baton-sdk/pkg/types/resource"
 	"github.com/conductorone/baton-sdk/pkg/types/sessions"
+	"github.com/grpc-ecosystem/go-grpc-middleware/logging/zap/ctxzap"
+	"go.uber.org/zap"
 )
 
 var (
@@ -35,8 +37,6 @@ type clmRoleBuilder struct {
 	client *client.Client
 	// includeMembers reports whether clm_member is synced; role grants point at member resources.
 	includeMembers bool
-	// includeFolders reports whether clm_folder is synced; only folder Grants read the roles List stores.
-	includeFolders bool
 }
 
 func (b *clmRoleBuilder) ResourceType(_ context.Context) *v2.ResourceType {
@@ -79,10 +79,8 @@ func (b *clmRoleBuilder) List(ctx context.Context, _ *v2.ResourceId, attr rs.Syn
 		syncedRoles[role] = true
 	}
 
-	if b.includeFolders {
-		if err := session.SetManyJSON(ctx, attr.Session, syncedRoles, sessions.WithPrefix(clmRoleSessionPrefix)); err != nil {
-			return nil, nil, fmt.Errorf("baton-docusign: storing synced CLM roles in the session store: %w", err)
-		}
+	if err := session.SetManyJSON(ctx, attr.Session, syncedRoles, sessions.WithPrefix(clmRoleSessionPrefix)); err != nil {
+		return nil, nil, fmt.Errorf("baton-docusign: storing synced CLM roles in the session store: %w", err)
 	}
 
 	return resources, &rs.SyncOpResults{Annotations: annos, NextPageToken: nextPageToken}, nil
@@ -132,8 +130,25 @@ func (b *clmRoleBuilder) GrantsForResourceType(ctx context.Context, _ string, at
 		page.MemberRoles = clmMemberRoles(members)
 	}
 
+	roleNames := make([]string, 0, len(page.MemberRoles))
+	for _, role := range page.MemberRoles {
+		roleNames = append(roleNames, role)
+	}
+	// The session store rejects repeated keys.
+	slices.Sort(roleNames)
+	syncedRoles, err := session.GetManyJSON[bool](ctx, attr.Session, slices.Compact(roleNames), sessions.WithPrefix(clmRoleSessionPrefix))
+	if err != nil {
+		return nil, nil, fmt.Errorf("baton-docusign: reading synced CLM roles from the session store: %w", err)
+	}
+
 	grants := make([]*v2.Grant, 0, len(page.MemberRoles))
 	for memberID, role := range page.MemberRoles {
+		// A role that changed after clm_role List ran was never emitted.
+		if !syncedRoles[role] {
+			ctxzap.Extract(ctx).Debug("baton-docusign: skipping CLM role grant for a role not synced as clm_role",
+				zap.String("member_id", memberID), zap.String("role", role))
+			continue
+		}
 		roleResource := &v2.Resource{Id: &v2.ResourceId{ResourceType: clmRoleResourceType.Id, Resource: role}}
 		memberResourceID := &v2.ResourceId{ResourceType: clmMemberResourceType.Id, Resource: memberID}
 		grants = append(grants, grant.NewGrant(roleResource, clmRoleAssignedTag, memberResourceID, grant.WithAnnotation(&v2.GrantImmutable{})))
@@ -142,11 +157,10 @@ func (b *clmRoleBuilder) GrantsForResourceType(ctx context.Context, _ string, at
 	return grants, &rs.SyncOpResults{Annotations: annos, NextPageToken: page.NextPageToken}, nil
 }
 
-func newClmRoleBuilder(c *client.Client, includeMembers, includeFolders bool) *clmRoleBuilder {
+func newClmRoleBuilder(c *client.Client, includeMembers bool) *clmRoleBuilder {
 	return &clmRoleBuilder{
 		client:         c,
 		includeMembers: includeMembers,
-		includeFolders: includeFolders,
 	}
 }
 
