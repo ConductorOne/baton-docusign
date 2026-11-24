@@ -2,7 +2,7 @@
 
 # `baton-docusign` [![Go Reference](https://pkg.go.dev/badge/github.com/conductorone/baton-docusign.svg)](https://pkg.go.dev/github.com/conductorone/baton-docusign) ![ci](https://github.com/conductorone/baton-docusign/actions/workflows/ci.yaml/badge.svg) ![verify](https://github.com/conductorone/baton-docusign/actions/workflows/verify.yaml/badge.svg)
 
-`baton-docusign` is a connector for DocuSign built using the [Baton SDK](https://github.com/conductorone/baton-sdk). It communicates with the DocuSign eSignature REST API v2.1 to sync users, groups, signing groups, and permission profiles. It also syncs DocuSign CLM (Contract Lifecycle Management) folders, folder security, groups, and permission sets for accounts with a CLM subscription — see [CLM Support](#clm-support) below.
+`baton-docusign` is a connector for DocuSign built using the [Baton SDK](https://github.com/conductorone/baton-sdk). It communicates with the DocuSign eSignature REST API v2.1 to sync users, groups, signing groups, and permission profiles. It also syncs DocuSign CLM (Contract Lifecycle Management) members, roles, groups, folders, folder security, permission sets, and workflow queues for accounts with a CLM subscription — see [CLM Support](#clm-support) below.
 
 Check out [Baton](https://github.com/conductorone/baton) to learn more about the project in general.
 
@@ -24,6 +24,7 @@ Check out [Baton](https://github.com/conductorone/baton) to learn more about the
 - Permission profiles (grant only - users must always have a profile assigned)
 - CLM group membership (grant/revoke, requires a CLM subscription)
 - CLM folder security (grant/revoke, requires a CLM subscription)
+- CLM role membership is synced for visibility only — a role comes from the `Role` value on each CLM member, which the connector reads and does not write, so role membership cannot be granted or revoked
 - CLM permission sets are synced for visibility only — the CLM API has no assignment endpoint, so they cannot be granted or revoked
 - CLM workflow queue membership is synced for visibility only — the CLM API supports work-item assign/unassign, not queue-membership grant/revoke, so it cannot be granted or revoked here
 
@@ -148,10 +149,10 @@ Within `List()` itself (once `Validate()` has passed and a sync is actually runn
 of the 6 CLM resource types carry their own CLM-availability tolerance logic anymore —
 that responsibility now lives entirely in `Connector.Validate()`'s upfront
 `EnsureClmReady()` gate (see above), which runs once, before any CLM builder's `List()`
-executes. `clm_member`, `clm_group`, `clm_permission_set`, `clm_folder`, and
+executes. `clm_member`, `clm_role`, `clm_group`, `clm_permission_set`, `clm_folder`, and
 `clm_workflow_queue` all behave identically here: if `Validate()` passed, their `List()`
-bodies just call the API and propagate whatever error comes back, same as any other
-resource type; `clm_role` still makes no API call at all (a hardcoded set). An earlier
+bodies just call the API (`clm_role` reads the members list) and propagate whatever error
+comes back, same as any other resource type. An earlier
 version of this connector had each CLM builder run its own per-type tolerance check
 instead (with `clm_workflow_queue` as a deliberate exception that failed loud where the
 others didn't) — that logic has been removed now that `Validate()` covers it once, upfront,
@@ -160,6 +161,14 @@ for all 6 types uniformly.
 CLM permission sets sync for visibility only — DocuSign's CLM API has no endpoint to
 assign or unassign a permission set, so they cannot be granted or revoked through this
 connector.
+
+CLM roles (`clm_role`) sync the roles the CLM API reference documents (`Guest`, `LimitedSubscriber`,
+`FullSubscriber`, `UserAdministrator` and `SuperAdministrator`) plus every `Role` held by a
+CLM member (e.g. `CLMAdmin`, shown as "CLM Admin"); the CLM API has no roles endpoint. Each
+role has an `assigned` entitlement, and member-to-role grants sync when `clm_member` is also
+synced. Folder security entries that grant a synced role are synced and expand to the
+role's members. Role membership is read-only: members cannot be added to or removed from a
+role through this connector.
 
 CLM workflow queues (`clm_workflow_queue`) map to what the CLM admin console reportedly
 calls "Task Groups" — that equivalence is an unconfirmed assumption, not a documented
@@ -197,11 +206,12 @@ implementation time, so the connector checks a short list of likely field names
 field names it received if none match — that error message is the first thing to check
 if the connector can't resolve the CLM base URL against a real account.
 
-Folder discovery (`SearchFolders`) sends an empty search body, on the assumption that
-no criteria means "match all folders." This has not been confirmed against a live CLM
-account — if it instead means "no criteria, no results," no folders (and therefore no
-folder-security grants) would sync while the connector reports success. If a real CLM
-account syncs zero `clm_folder` resources, this is the first thing to check.
+Folder discovery (`SearchFolders`) creates a folder search task with the body
+`{"Title": ""}`. CLM requires a recognized search parameter: an empty body, and every
+other property name tried, is rejected with ErrorCode 1024 "no valid search parameter".
+`Title` is a documented `FolderSearchTask` request field and matches as a substring, so
+an empty string matches every folder — confirmed against a real CLM account with 100
+folders.
 
 # Getting Started
 

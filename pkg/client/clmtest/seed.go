@@ -13,6 +13,7 @@ const (
 	memberBobID            = "member-bob"
 	memberEveID            = "member-eve"
 	roleFullSubscriberName = "FullSubscriber"
+	roleUnheldName         = "UnheldRole"
 )
 
 // seed populates a freshly constructed Server with fixture data. Diversity matters
@@ -48,8 +49,12 @@ func seed(s *Server) {
 		{Email: "carol@example.com", UserName: "carol", FirstName: "Carol", LastName: "Gamma", Role: "LimitedSubscriber"},
 		{Email: "dave@example.com", UserName: "dave", FirstName: "Dave", LastName: "Delta", Role: "Guest"}, // no groups
 		{Email: "eve@example.com", UserName: "eve", FirstName: "Eve", LastName: "Epsilon", Role: "SuperAdministrator"},
+		{Email: "clm.admin@example.com", UserName: "clm.admin", FirstName: "Clm", LastName: "Admin", Role: "CLMAdmin"},
+		{Email: "clm.user@example.com", UserName: "clm.user", FirstName: "Clm", LastName: "User", Role: "CLMUser"},
+		{Email: "norole@example.com", UserName: "norole", FirstName: "No", LastName: "Role"},                                         // empty Role
+		{Email: "reviewer@example.com", UserName: "reviewer", FirstName: "Contract", LastName: "Reviewer", Role: "ContractReviewer"}, // role outside client.ClmRoles
 	}
-	memberIDs := []string{"member-alice", memberBobID, "member-carol", "member-dave", memberEveID}
+	memberIDs := []string{"member-alice", memberBobID, "member-carol", "member-dave", memberEveID, "member-clm-admin", "member-clm-user", "member-no-role", "member-contract-reviewer"}
 	for i, m := range members {
 		id := memberIDs[i]
 		m.Href = s.MemberHref(id)
@@ -134,6 +139,14 @@ func seed(s *Server) {
 			Roles: []client.ClmRoleSecurityEntry{
 				// Role-granted entry — tests clm_role routing.
 				{AccessType: client.ClmAccessTypeView, Item: roleFullSubscriberName},
+				// Roles held by members but outside client.ClmRoles — synced from the members list.
+				{AccessType: client.ClmAccessTypeViewEdit, Item: "CLMAdmin"},
+				{AccessType: client.ClmAccessTypeView, Item: "CLMUser"},
+				{AccessType: client.ClmAccessTypeView, Item: "ContractReviewer"},
+				// In client.ClmRoles, so synced even though no member holds it.
+				{AccessType: client.ClmAccessTypeView, Item: "UserAdministrator"},
+				// Neither shipped nor held by any member — not synced as clm_role, so skipped.
+				{AccessType: client.ClmAccessTypeView, Item: roleUnheldName},
 			},
 			Users: []client.ClmUserSecurityEntry{
 				// Known tier granted to a member — tests clm_member routing.
