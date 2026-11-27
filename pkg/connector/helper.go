@@ -84,6 +84,16 @@ func clmIDFromHref(href string) string {
 	return client.IDFromHref(href)
 }
 
+// isUnexpectedClmFolderParent reports whether a clm_folder List call got a non-folder parent.
+func isUnexpectedClmFolderParent(ctx context.Context, parentResourceID *v2.ResourceId) bool {
+	if parentResourceID.ResourceType == clmFolderResourceType.Id {
+		return false
+	}
+	ctxzap.Extract(ctx).Debug("baton-docusign: unexpected parent resource type in clm_folder List",
+		zap.String("parent_resource_type", parentResourceID.ResourceType))
+	return true
+}
+
 // permissionProfileIDByName returns the ID of the profile named name (requiring a
 // non-empty ID) and how many matched, so callers can tell "not found" (0) from
 // "ambiguous" (2+) — names aren't guaranteed unique per account — without a second scan

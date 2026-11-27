@@ -123,23 +123,10 @@ type ClmFolderRef struct {
 	Name string `json:"Name,omitempty"`
 }
 
-// ClmFolderPage is the paginated collection of ClmFolder (e.g. from Search).
+// ClmFolderPage is the paginated collection of ClmFolder (e.g. a folder's child folders).
 type ClmFolderPage struct {
 	ClmPage
 	Items []ClmFolder `json:"Items"`
-}
-
-// ClmFolderSearchTaskResponse is CLM's FolderSearchTasks response envelope — the same
-// shape whether returned by the initial POST (create) or a poll GET on the task's own
-// Href. Confirmed live for the POST/"Success" case (Result already populated with the
-// same Items/Offset/Limit/Total/Next fields as every other CLM list endpoint); the CLM
-// Task API 101 docs describe the identical {Status, Href, Result} envelope for
-// DocumentSearchTasks, CLM's sibling search-task resource — see SearchFolders' doc in
-// clm_client.go for what's confirmed vs. assumed.
-type ClmFolderSearchTaskResponse struct {
-	Status string         `json:"Status"`
-	Href   string         `json:"Href"`
-	Result *ClmFolderPage `json:"Result,omitempty"`
 }
 
 // ClmChangeSecurityTaskResponse is CLM's ChangeSecurityTasks response envelope — per
@@ -148,8 +135,8 @@ type ClmFolderSearchTaskResponse struct {
 // ClmChangeSecurityTaskRequest's doc for why that distinction mattered here). The full
 // schema also lists top-level Folder and Security fields alongside Href/Status, but
 // PatchFolderSecurity only needs Status to decide success/failure; Href is this task's
-// own poll URL, echoed back from the create call. Status uses a distinct, lowercase
-// vocabulary from FolderSearchTasks — see PatchFolderSecurity's doc in clm_client.go.
+// own poll URL, echoed back from the create call. Status uses a lowercase vocabulary —
+// see PatchFolderSecurity's doc in clm_client.go.
 // Not independently confirmed live (no more live-testing against the customer tenant).
 type ClmChangeSecurityTaskResponse struct {
 	Href   string `json:"Href"`

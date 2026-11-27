@@ -72,43 +72,45 @@ func (f *clmFolderBuilder) ResourceType(_ context.Context) *v2.ResourceType {
 	return clmFolderResourceType
 }
 
-// List discovers folders via Search — CLM's Folders object has no flat list-all
-// endpoint, unlike Groups/Members/PermissionSets.
-func (f *clmFolderBuilder) List(ctx context.Context, _ *v2.ResourceId, attr rs.SyncOpAttrs) ([]*v2.Resource, *rs.SyncOpResults, error) {
-	var resources []*v2.Resource
-
-	bag, pageToken, err := parsePageToken(attr.PageToken.Token, &v2.ResourceId{ResourceType: clmFolderResourceType.Id})
-	if err != nil {
-		return nil, nil, err
+// List returns the root folder on the unparented call and a folder's direct children otherwise.
+func (f *clmFolderBuilder) List(ctx context.Context, parentResourceID *v2.ResourceId, attr rs.SyncOpAttrs) ([]*v2.Resource, *rs.SyncOpResults, error) {
+	if parentResourceID == nil {
+		rootFolder, annos, err := f.client.GetRootFolder(ctx)
+		if err != nil {
+			return nil, nil, err
+		}
+		rootResource, err := parseIntoClmFolderResource(rootFolder, nil)
+		if err != nil {
+			return nil, nil, err
+		}
+		return []*v2.Resource{rootResource}, &rs.SyncOpResults{Annotations: annos}, nil
 	}
 
-	folders, nextPageToken, annos, err := f.client.SearchFolders(ctx, client.PageOptions{
+	if isUnexpectedClmFolderParent(ctx, parentResourceID) {
+		return nil, nil, nil
+	}
+
+	var resources []*v2.Resource
+
+	folders, nextPageToken, annos, err := f.client.ListChildFolders(ctx, parentResourceID.Resource, client.PageOptions{
 		PageSize:  attr.PageToken.Size,
-		PageToken: pageToken,
+		PageToken: attr.PageToken.Token,
 	})
 	if err != nil {
 		return nil, nil, err
 	}
 
 	for _, folder := range folders {
-		folderResource, err := parseIntoClmFolderResource(&folder)
+		folderResource, err := parseIntoClmFolderResource(&folder, parentResourceID)
 		if err != nil {
 			return nil, nil, err
 		}
 		resources = append(resources, folderResource)
 	}
 
-	var outToken string
-	if nextPageToken != "" {
-		outToken, err = bag.NextToken(nextPageToken)
-		if err != nil {
-			return nil, nil, err
-		}
-	}
-
 	return resources, &rs.SyncOpResults{
 		Annotations:   annos,
-		NextPageToken: outToken,
+		NextPageToken: nextPageToken,
 	}, nil
 }
 
@@ -461,11 +463,13 @@ func newClmFolderBuilder(c *client.Client, includeRoles bool) *clmFolderBuilder 
 	}
 }
 
-func parseIntoClmFolderResource(folder *client.ClmFolder) (*v2.Resource, error) {
+func parseIntoClmFolderResource(folder *client.ClmFolder, parentResourceID *v2.ResourceId) (*v2.Resource, error) {
 	return rs.NewResource(
 		folder.Name,
 		clmFolderResourceType,
 		clmIDFromHref(folder.Href),
+		rs.WithParentResourceID(parentResourceID),
+		rs.WithAnnotation(&v2.ChildResourceType{ResourceTypeId: clmFolderResourceType.Id}),
 	)
 }
 

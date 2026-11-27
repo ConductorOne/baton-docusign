@@ -2,6 +2,7 @@ package clmtest
 
 import (
 	"fmt"
+	"path"
 
 	"github.com/conductorone/baton-docusign/pkg/client"
 )
@@ -14,6 +15,7 @@ const (
 	memberEveID            = "member-eve"
 	roleFullSubscriberName = "FullSubscriber"
 	roleUnheldName         = "UnheldRole"
+	rootFolderID           = "folder-root"
 )
 
 // seed populates a freshly constructed Server with fixture data. Diversity matters
@@ -113,50 +115,37 @@ func seed(s *Server) {
 		s.permissionSetOrder = append(s.permissionSetOrder, id)
 	}
 
-	rootFolder := &client.ClmFolder{Name: "Root", Path: "/"}
-	rootFolder.Href = s.FolderHref("folder-root")
-	s.folders["folder-root"] = rootFolder
-	s.folderOrder = append(s.folderOrder, "folder-root")
+	s.addFolder(rootFolderID, "Root", "")
+	s.addFolder("folder-templates", "Templates", rootFolderID)
 
-	templatesFolder := &client.ClmFolder{Name: "Templates", Path: "/Templates"}
-	templatesFolder.Href = s.FolderHref("folder-templates")
-	s.folders["folder-templates"] = templatesFolder
-	s.folderOrder = append(s.folderOrder, "folder-templates")
-
-	contractsFolder := &client.ClmFolder{
-		Name: "Contracts",
-		Path: "/Contracts",
-		Security: client.ClmFolderSecurity{
-			Groups: []client.ClmGroupSecurityEntry{
-				// Known tier granted to a group — tests slug-from-AccessType and
-				// group-Href routing (should carry GrantExpandable at the connector
-				// layer).
-				{AccessType: client.ClmAccessTypeViewEdit, Href: s.GroupHref(groupLegalID)},
-				// "Custom" — not one of the 5 grantable tiers — tests that Grants()
-				// skips rather than guesses.
-				{AccessType: client.ClmAccessTypeCustom, Href: s.GroupHref("group-finance")},
-			},
-			Roles: []client.ClmRoleSecurityEntry{
-				// Role-granted entry — tests clm_role routing.
-				{AccessType: client.ClmAccessTypeView, Item: roleFullSubscriberName},
-				// Roles held by members but outside client.ClmRoles — synced from the members list.
-				{AccessType: client.ClmAccessTypeViewEdit, Item: "CLMAdmin"},
-				{AccessType: client.ClmAccessTypeView, Item: "CLMUser"},
-				{AccessType: client.ClmAccessTypeView, Item: "ContractReviewer"},
-				// In client.ClmRoles, so synced even though no member holds it.
-				{AccessType: client.ClmAccessTypeView, Item: "UserAdministrator"},
-				// Neither shipped nor held by any member — not synced as clm_role, so skipped.
-				{AccessType: client.ClmAccessTypeView, Item: roleUnheldName},
-			},
-			Users: []client.ClmUserSecurityEntry{
-				// Known tier granted to a member — tests clm_member routing.
-				{AccessType: client.ClmAccessTypeView, Href: s.MemberHref(memberBobID)},
-			},
+	contractsFolder := s.addFolder("folder-contracts", "Contracts", rootFolderID)
+	contractsFolder.Security = client.ClmFolderSecurity{
+		Groups: []client.ClmGroupSecurityEntry{
+			// Known tier granted to a group — tests slug-from-AccessType and
+			// group-Href routing (should carry GrantExpandable at the connector
+			// layer).
+			{AccessType: client.ClmAccessTypeViewEdit, Href: s.GroupHref(groupLegalID)},
+			// "Custom" — not one of the 5 grantable tiers — tests that Grants()
+			// skips rather than guesses.
+			{AccessType: client.ClmAccessTypeCustom, Href: s.GroupHref("group-finance")},
+		},
+		Roles: []client.ClmRoleSecurityEntry{
+			// Role-granted entry — tests clm_role routing.
+			{AccessType: client.ClmAccessTypeView, Item: roleFullSubscriberName},
+			// Roles held by members but outside client.ClmRoles — synced from the members list.
+			{AccessType: client.ClmAccessTypeViewEdit, Item: "CLMAdmin"},
+			{AccessType: client.ClmAccessTypeView, Item: "CLMUser"},
+			{AccessType: client.ClmAccessTypeView, Item: "ContractReviewer"},
+			// In client.ClmRoles, so synced even though no member holds it.
+			{AccessType: client.ClmAccessTypeView, Item: "UserAdministrator"},
+			// Neither shipped nor held by any member — not synced as clm_role, so skipped.
+			{AccessType: client.ClmAccessTypeView, Item: roleUnheldName},
+		},
+		Users: []client.ClmUserSecurityEntry{
+			// Known tier granted to a member — tests clm_member routing.
+			{AccessType: client.ClmAccessTypeView, Href: s.MemberHref(memberBobID)},
 		},
 	}
-	contractsFolder.Href = s.FolderHref("folder-contracts")
-	s.folders["folder-contracts"] = contractsFolder
-	s.folderOrder = append(s.folderOrder, "folder-contracts")
 
 	// Workflow queues: no list-all endpoint exists for this object (see
 	// pkg/connector/clm_workflow_queues.go), so they're only discoverable by scanning
@@ -178,4 +167,60 @@ func seed(s *Server) {
 	}
 	s.memberWorkflowQueues["member-alice"] = []string{queueOnboardingID}
 	s.memberWorkflowQueues[memberBobID] = []string{queueOnboardingID, queueEscalationsID}
+}
+
+// addFolder registers a folder under parentID ("" for the root) and returns it.
+func (s *Server) addFolder(id, name, parentID string) *client.ClmFolder {
+	folder := &client.ClmFolder{Name: name, Path: "/", Href: s.FolderHref(id)}
+	if parentID != "" {
+		parent := s.folders[parentID]
+		folder.Path = path.Join(parent.Path, name)
+		folder.ParentFolder = &client.ClmFolderRef{Href: parent.Href, Name: parent.Name}
+		s.folderChildren[parentID] = append(s.folderChildren[parentID], id)
+	}
+	s.folders[id] = folder
+	return folder
+}
+
+// addChildFolders adds count numbered folders under parentID and returns their IDs.
+func (s *Server) addChildFolders(parentID, namePrefix string, count int) []string {
+	ids := make([]string, 0, count)
+	for i := 1; i <= count; i++ {
+		id := fmt.Sprintf("%s-%03d", parentID, i)
+		s.addFolder(id, fmt.Sprintf("%s %03d", namePrefix, i), parentID)
+		ids = append(ids, id)
+	}
+	return ids
+}
+
+// SeedFolderTree adds a deep, wide folder tree under the root, including one folder with two
+// pages of children. Kept out of the default seed so other tests' folder counts don't change.
+func (s *Server) SeedFolderTree() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.addFolder("folder-other-sources", "Other Sources", rootFolderID)
+	s.addFolder("folder-salesforce", "Salesforce", "folder-other-sources")
+	s.addFolder("folder-agreements", "Agreements", rootFolderID)
+	s.addFolder("folder-company", "Company", rootFolderID)
+
+	s.addFolder("folder-trash", "Trash", rootFolderID)
+	s.addFolder("folder-trash-20261103", "20261103", "folder-trash")
+	s.addFolder("folder-trash-old-contracts", "Old Contracts", "folder-trash-20261103")
+
+	agreementIDs := s.addChildFolders("folder-agreements", "Agreement", 150)
+	for _, agreementID := range agreementIDs[:10] {
+		s.addChildFolders(agreementID, "Addendum", 5)
+	}
+
+	for _, salesforceAccountID := range s.addChildFolders("folder-salesforce", "Account", 20) {
+		s.addChildFolders(salesforceAccountID, "Opportunity", 2)
+	}
+
+	for i, departmentID := range s.addChildFolders("folder-company", "Department", 10) {
+		teamIDs := s.addChildFolders(departmentID, "Team", 5)
+		if i < 5 {
+			s.addChildFolders(teamIDs[0], "Project", 4)
+		}
+	}
 }

@@ -206,12 +206,12 @@ implementation time, so the connector checks a short list of likely field names
 field names it received if none match — that error message is the first thing to check
 if the connector can't resolve the CLM base URL against a real account.
 
-Folder discovery (`SearchFolders`) creates a folder search task with the body
-`{"Title": ""}`. CLM requires a recognized search parameter: an empty body, and every
-other property name tried, is rejected with ErrorCode 1024 "no valid search parameter".
-`Title` is a documented `FolderSearchTask` request field and matches as a substring, so
-an empty string matches every folder — confirmed against a real CLM account with 100
-folders.
+Folders (`clm_folder`) are discovered by walking the folder tree from the root. The
+unparented `List` call returns the root folder (`GET /v2/{accountId}/folders/type?systemFolder=root`),
+and every folder carries a `ChildResourceType` annotation, so the SDK calls `List` again
+with that folder as the parent. That call lists the folder's direct children
+(`GET /v2/{accountId}/folders/{id}/folders`, paged with `pageSortParams.offset`/`limit`).
+Each folder's parent folder is its `ParentResourceId`; the root folder has none.
 
 # Getting Started
 
