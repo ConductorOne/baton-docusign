@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strconv"
 
 	"github.com/conductorone/baton-docusign/pkg/client"
 )
@@ -13,91 +12,6 @@ import (
 // idFromHref extracts the trailing path segment of a Href — see client.IDFromHref's doc.
 func idFromHref(href string) string {
 	return client.IDFromHref(href)
-}
-
-// folderSearchResults builds the flat, paginated ClmFolderPage for a folder search —
-// shared by the create/poll (wrapped in {Status, Href, Result}) and continuation
-// (bare) responses. Search results are summaries; Security only comes via ?expand on
-// Get, mirroring the real API.
-func (s *Server) folderSearchResults(r *http.Request) client.ClmFolderPage {
-	page, meta := pageSlice(r, s.folderOrder)
-	items := make([]client.ClmFolder, 0, len(page))
-	for _, id := range page {
-		f := *s.folders[id]
-		f.Security = client.ClmFolderSecurity{}
-		items = append(items, f)
-	}
-	return client.ClmFolderPage{ClmPage: meta, Items: items}
-}
-
-// Doc URL: https://developers.docusign.com/docs/clm-api/reference/tasks/foldersearchtasks/
-// (Post). Real CLM requires a recognized search parameter in the body (confirmed live:
-// {"Title": ""} matches every folder) — this mock doesn't replicate that validation,
-// since every real client call already sends the confirmed-working body.
-func (s *Server) handleCreateFolderSearchTask(w http.ResponseWriter, r *http.Request) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	s.nextFolderSearchTaskID++
-	taskID := strconv.Itoa(s.nextFolderSearchTaskID)
-	taskHref := fmt.Sprintf("%s/v2/%s/foldersearchtasks/%s", s.baseURL, AccountID, taskID)
-	if s.folderSearchTaskHrefOverride != "" {
-		taskHref = s.folderSearchTaskHrefOverride
-	}
-
-	status := "Success"
-	if s.pendingFolderSearchPolls > 0 {
-		status = "Processing"
-	}
-	resp := client.ClmFolderSearchTaskResponse{Status: status, Href: taskHref}
-	if status == "Success" {
-		result := s.folderSearchResults(r)
-		if s.omitFolderSearchResultHref {
-			// Leave Href empty and force a "more pages remain" shape so SearchFolders'
-			// empty-Href continuation guard is reachable, regardless of what page size the
-			// caller requested.
-			if len(result.Items) > 1 {
-				result.Items = result.Items[:1]
-			}
-			result.Limit = 1
-			result.Total = len(s.folderOrder)
-			result.Next = "more"
-			result.Offset = 0
-		} else {
-			result.Href = taskHref + "/result"
-		}
-		resp.Result = &result
-	}
-	writeJSON(w, resp)
-}
-
-// Doc URL: https://developers.docusign.com/docs/clm-api/reference/tasks/foldersearchtasks/get/
-func (s *Server) handlePollFolderSearchTask(w http.ResponseWriter, r *http.Request) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	taskID := r.PathValue("id")
-	taskHref := fmt.Sprintf("%s/v2/%s/foldersearchtasks/%s", s.baseURL, AccountID, taskID)
-
-	if s.pendingFolderSearchPolls > 0 {
-		s.pendingFolderSearchPolls--
-		writeJSON(w, client.ClmFolderSearchTaskResponse{Status: "Processing", Href: taskHref})
-		return
-	}
-
-	result := s.folderSearchResults(r)
-	if !s.omitFolderSearchResultHref {
-		result.Href = taskHref + "/result"
-	}
-	writeJSON(w, client.ClmFolderSearchTaskResponse{Status: "Success", Href: taskHref, Result: &result})
-}
-
-// Doc URL: https://developers.docusign.com/docs/clm-api/reference/tasks/foldersearchtasks/getsearchresult/
-func (s *Server) handleFolderSearchTaskResult(w http.ResponseWriter, r *http.Request) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	writeJSON(w, s.folderSearchResults(r))
 }
 
 // Doc URL: https://developers.docusign.com/docs/clm-api/reference/objects/folders/get/
@@ -117,6 +31,50 @@ func (s *Server) handleGetFolder(w http.ResponseWriter, r *http.Request) {
 		out.Security = client.ClmFolderSecurity{}
 	}
 	writeJSON(w, out)
+}
+
+// Doc URL: https://developers.docusign.com/docs/clm-api/reference/objects/folders/getbysystemtype/
+// Only the "root" system folder is modeled.
+func (s *Server) handleGetSystemFolder(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.forcedRootFolderStatus != 0 {
+		w.WriteHeader(s.forcedRootFolderStatus)
+		_ = json.NewEncoder(w).Encode(client.ClmErrorResponse{})
+		return
+	}
+
+	rootFolder, ok := s.folders[rootFolderID]
+	if r.URL.Query().Get("systemFolder") != "root" || !ok {
+		writeNotFound(w)
+		return
+	}
+
+	out := *rootFolder
+	out.Security = client.ClmFolderSecurity{}
+	writeJSON(w, out)
+}
+
+// Doc URL: https://developers.docusign.com/docs/clm-api/reference/objects/folders/getchildfolders/
+func (s *Server) handleListChildFolders(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	id := r.PathValue("id")
+	if _, ok := s.folders[id]; !ok {
+		writeNotFound(w)
+		return
+	}
+
+	page, meta := pageSlice(r, s.folderChildren[id])
+	items := make([]client.ClmFolder, 0, len(page))
+	for _, childID := range page {
+		child := *s.folders[childID]
+		child.Security = client.ClmFolderSecurity{}
+		items = append(items, child)
+	}
+	writeJSON(w, client.ClmFolderPage{ClmPage: meta, Items: items})
 }
 
 // Doc URL: https://developers.docusign.com/docs/clm-api/reference/objects/folders/patch/
@@ -192,6 +150,9 @@ func (s *Server) handleCreateChangeSecurityTask(w http.ResponseWriter, r *http.R
 
 	s.nextChangeSecurityTaskID++
 	taskHref := fmt.Sprintf("%s/v2/%s/changesecuritytasks/%d", s.baseURL, AccountID, s.nextChangeSecurityTaskID)
+	if s.changeSecurityTaskHrefOverride != "" {
+		taskHref = s.changeSecurityTaskHrefOverride
+	}
 	status := client.ClmChangeSecurityStatusSuccess
 	if s.pendingChangeSecurityPolls > 0 {
 		status = client.ClmChangeSecurityStatusWaiting

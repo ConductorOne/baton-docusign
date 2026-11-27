@@ -37,9 +37,7 @@ func preparePagedRequestClm(baseURL *url.URL, endpoint string, options PageOptio
 // appendClmPageQuery appends CLM's pageSortParams.offset/limit query params to an
 // already-resolved absolute URL and decodes options.PageToken — the part of
 // preparePagedRequestClm that doesn't depend on resolving a relative endpoint against
-// the CLM base URL. Split out for SearchFolders' continuation pages, which paginate
-// against a server-issued Result href (a per-search URL CLM hands back, not one of this
-// package's own static endpoint constants) rather than a fixed collection endpoint.
+// the CLM base URL.
 func appendClmPageQuery(fullURL *url.URL, options PageOptions) (*url.URL, clmRequestedPage, error) {
 	q := fullURL.Query()
 
@@ -67,15 +65,10 @@ func appendClmPageQuery(fullURL *url.URL, options PageOptions) (*url.URL, clmReq
 
 // clmPageToken is the internal offset-based continuation token for CLM pagination.
 // Requests counts how many requests this pagination sequence has made so far — see
-// maxClmListPages. ResultHref is only set by SearchFolders' continuation pages: unlike
-// every other CLM list endpoint (a fixed collection URL re-queried with a different
-// offset), a folder search's results live at a per-search URL CLM hands back from the
-// FolderSearchTasks create call, so the token must carry it forward — the collection
-// URL isn't otherwise derivable from the resource type alone.
+// maxClmListPages.
 type clmPageToken struct {
-	Offset     int    `json:"offset"`
-	Requests   int    `json:"requests"`
-	ResultHref string `json:"resultHref,omitempty"`
+	Offset   int `json:"offset"`
+	Requests int `json:"requests"`
 }
 
 func encodeClmPageToken(pt *clmPageToken) string {
@@ -104,7 +97,7 @@ func decodeClmPageToken(token string) (*clmPageToken, error) {
 // keep paginating unless Total confirmed the end, to guard against the API capping its
 // effective page size below what was requested. That traded one unconfirmed risk for a
 // more concrete one: the extra request it issued past a short page targets an
-// out-of-range offset, and if any CLM list/search endpoint rejects that with a 4xx
+// out-of-range offset, and if any CLM list endpoint rejects that with a 4xx
 // instead of an empty 200, the whole sync would fail on what was otherwise its last,
 // complete page — a regression flagged in review by two independent reviewers.
 //
@@ -131,7 +124,7 @@ func decodeClmPageToken(token string) (*clmPageToken, error) {
 // accepted rather than resolved.
 //
 // maxClmListPages bounds the total pages any single SDK-driven List() pagination
-// sequence can walk (SearchFolders/ListGroups/GetGroupMembers/ListMembers/
+// sequence can walk (ListChildFolders/ListGroups/GetGroupMembers/ListMembers/
 // ListPermissionSets, plus GetMemberGroups' own internal loop, which already had this
 // exact protection independently — see maxMemberGroupPages in clm_client.go). Without
 // it, a CLM endpoint that ignores pageSortParams.offset (always returning the same
@@ -167,7 +160,7 @@ func decodeClmPageToken(token string) (*clmPageToken, error) {
 //
 //   - This cannot distinguish a genuinely non-advancing endpoint from a legitimately
 //     huge tenant. With DefaultPageSize=100, that's a hard ceiling of ~100k objects in
-//     any single CLM type (folders being the most plausible one to approach it) before
+//     any single list sequence (for folders, the direct children of one folder) before
 //     an otherwise-healthy sync starts failing with an error that blames the API for
 //     ignoring offsets. A narrower check (comparing the response's own echoed Offset,
 //     or requested.Offset against Total, to detect non-advancement directly on page 2)
@@ -185,9 +178,7 @@ func decodeClmPageToken(token string) (*clmPageToken, error) {
 //     matters when the floor is the larger of the two estimates.
 const maxClmListPages = 1000
 
-// resultHref is embedded in the returned token as-is (see clmPageToken's doc) — pass ""
-// for every endpoint except SearchFolders' continuation pages.
-func getClmNextToken(requested clmRequestedPage, itemCount int, hasNext bool, total int, resultHref string) (string, error) {
+func getClmNextToken(requested clmRequestedPage, itemCount int, hasNext bool, total int) (string, error) {
 	if itemCount == 0 {
 		return "", nil
 	}
@@ -211,5 +202,5 @@ func getClmNextToken(requested clmRequestedPage, itemCount int, hasNext bool, to
 		return "", fmt.Errorf("baton-docusign: exceeded %d pages paginating a CLM list — the API may be ignoring the requested offset", maxClmListPages)
 	}
 
-	return encodeClmPageToken(&clmPageToken{Offset: nextOffset, Requests: nextRequests, ResultHref: resultHref}), nil
+	return encodeClmPageToken(&clmPageToken{Offset: nextOffset, Requests: nextRequests}), nil
 }

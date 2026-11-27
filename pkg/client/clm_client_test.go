@@ -2,7 +2,9 @@ package client_test
 
 import (
 	"context"
+	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -13,96 +15,14 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-func TestSearchFolders_Pagination(t *testing.T) {
-	_, c := clmtest.NewServer(t)
-	ctx := context.Background()
-
-	var all []client.ClmFolder
-	pages := 0
-	pageToken := ""
-	for i := 0; i < 10; i++ { // safety bound for the test loop itself
-		folders, next, _, err := c.SearchFolders(ctx, client.PageOptions{PageSize: 2, PageToken: pageToken})
-		if err != nil {
-			t.Fatalf("SearchFolders page %d: %v", i, err)
-		}
-		pages++
-		all = append(all, folders...)
-		if next == "" {
-			break
-		}
-		pageToken = next
-	}
-
-	// Pins the requested PageSize actually reaching the create-task POST (not just
-	// continuation pages): with PageSize 2 and 3 seeded folders, a real second page is
-	// the only way this test exercises getClmFolderSearchResultPage and the ResultHref
-	// token round-trip at all.
-	if pages < 2 {
-		t.Fatalf("expected SearchFolders to paginate across at least 2 pages with PageSize 2 and 3 folders, got %d page(s)", pages)
-	}
-	if len(all) != 3 {
-		t.Fatalf("expected 3 folders across all pages, got %d", len(all))
-	}
-	// Search results are summaries — no Security field.
-	for _, f := range all {
-		if len(f.Security.Groups) != 0 || len(f.Security.Roles) != 0 || len(f.Security.Users) != 0 {
-			t.Errorf("folder %s: expected Search to omit Security, got %+v", f.Name, f.Security)
-		}
-	}
-}
-
-// TestSearchFolders_EmptyResultHrefFailsLoud is a regression for the page-1 loop that
-// happens when Result.Href is empty but more pages remain: getClmNextToken would mint a
-// token with ResultHref:"", and the next SearchFolders call would re-POST a new search
-// (resetting Requests) forever. SearchFolders must error instead of emitting that token.
-func TestSearchFolders_EmptyResultHrefFailsLoud(t *testing.T) {
-	srv, c := clmtest.NewServer(t)
-	ctx := context.Background()
-	srv.SetOmitFolderSearchResultHref(true)
-
-	folders, next, _, err := c.SearchFolders(ctx, client.PageOptions{PageSize: 2})
-	if err == nil {
-		t.Fatalf("expected error when Result.Href is empty and more pages remain, got folders=%d next=%q", len(folders), next)
-	}
-	if next != "" {
-		t.Errorf("expected empty next token on failure, got %q", next)
-	}
-	if !strings.Contains(err.Error(), "Result has no Href") {
-		t.Errorf("expected Result-Href error, got: %v", err)
-	}
-}
-
-// TestSearchFolders_PollsUntilSuccess is a regression test for SearchFolders'
-// awaitClmFolderSearchTask branch: every live test against a real CLM tenant resolved
-// the task inline (Status "Success" already in the POST response), leaving the polling
-// branch itself unexercised until now.
-func TestSearchFolders_PollsUntilSuccess(t *testing.T) {
-	original := client.ClmFolderSearchTaskPollInterval
-	client.ClmFolderSearchTaskPollInterval = time.Millisecond
-	defer func() { client.ClmFolderSearchTaskPollInterval = original }()
-
-	srv, c := clmtest.NewServer(t)
-	ctx := context.Background()
-
-	srv.SetPendingFolderSearchPolls(2)
-
-	folders, _, _, err := c.SearchFolders(ctx, client.PageOptions{PageSize: 10})
-	if err != nil {
-		t.Fatalf("SearchFolders: %v", err)
-	}
-	if len(folders) != 3 {
-		t.Fatalf("expected all 3 seeded folders once the task resolves, got %d", len(folders))
-	}
-}
-
 // TestPatchFolderSecurity_PollsUntilSuccess is a regression test for
 // PatchFolderSecurity's awaitClmChangeSecurityTask branch — unverified against a live
 // tenant (see PatchFolderSecurity's doc in clm_client.go), so this mock-driven test is
 // this branch's only coverage.
 func TestPatchFolderSecurity_PollsUntilSuccess(t *testing.T) {
-	original := client.ClmFolderSearchTaskPollInterval
-	client.ClmFolderSearchTaskPollInterval = time.Millisecond
-	defer func() { client.ClmFolderSearchTaskPollInterval = original }()
+	original := client.ClmChangeSecurityTaskPollInterval
+	client.ClmChangeSecurityTaskPollInterval = time.Millisecond
+	defer func() { client.ClmChangeSecurityTaskPollInterval = original }()
 
 	srv, c := clmtest.NewServer(t)
 	ctx := context.Background()
@@ -122,27 +42,127 @@ func TestPatchFolderSecurity_PollsUntilSuccess(t *testing.T) {
 	}
 }
 
-// TestSearchFolders_RejectsTaskHrefOnUnexpectedHost is a regression test for
+// TestPatchFolderSecurity_RejectsTaskHrefOnUnexpectedHost is a regression test for
 // Client.validateClmURL: doClmRequest attaches the bearer token to whatever URL it's
 // given, so a task Href pointing at a host other than the discovered CLM base URL must
 // be rejected before it's ever dispatched, not just parsed.
-func TestSearchFolders_RejectsTaskHrefOnUnexpectedHost(t *testing.T) {
-	original := client.ClmFolderSearchTaskPollInterval
-	client.ClmFolderSearchTaskPollInterval = time.Millisecond
-	defer func() { client.ClmFolderSearchTaskPollInterval = original }()
+func TestPatchFolderSecurity_RejectsTaskHrefOnUnexpectedHost(t *testing.T) {
+	original := client.ClmChangeSecurityTaskPollInterval
+	client.ClmChangeSecurityTaskPollInterval = time.Millisecond
+	defer func() { client.ClmChangeSecurityTaskPollInterval = original }()
 
-	srv, c := clmtest.NewServer(t)
+	srv, clmClient := clmtest.NewServer(t)
 	ctx := context.Background()
 
-	srv.SetPendingFolderSearchPolls(1)
-	srv.SetFolderSearchTaskHrefOverride("http://attacker.example.com/v2/acct-clm-test/foldersearchtasks/1")
+	srv.SetPendingChangeSecurityPolls(1)
+	srv.SetChangeSecurityTaskHrefOverride("http://attacker.example.com/v2/acct-clm-test/changesecuritytasks/1")
 
-	_, _, _, err := c.SearchFolders(ctx, client.PageOptions{PageSize: 10})
+	_, err := clmClient.PatchFolderSecurity(ctx, "folder-templates", client.ClmFolderSecurityWrite{
+		Groups: []client.ClmGroupSecurityEntry{{AccessType: client.ClmAccessTypeView, Href: srv.GroupHref("group-ops")}},
+	})
 	if err == nil {
-		t.Fatal("expected SearchFolders to reject a task href on an unexpected host, got nil error")
+		t.Fatal("expected PatchFolderSecurity to reject a task href on an unexpected host, got nil error")
 	}
 	if !strings.Contains(err.Error(), "refusing to send CLM credentials") {
 		t.Fatalf("expected a host-validation error, got: %v", err)
+	}
+}
+
+// The mock answers GET .../folders/type with 404 unless systemFolder=root is sent, so a
+// successful call pins the query param.
+func TestGetRootFolder(t *testing.T) {
+	_, clmClient := clmtest.NewServer(t)
+
+	root, _, err := clmClient.GetRootFolder(context.Background())
+	if err != nil {
+		t.Fatalf("GetRootFolder: %v", err)
+	}
+	if got := client.IDFromHref(root.Href); got != "folder-root" {
+		t.Errorf("expected the root folder folder-root, got %q", got)
+	}
+	if root.ParentFolder != nil {
+		t.Errorf("expected the root folder to have no parent, got %+v", root.ParentFolder)
+	}
+}
+
+func TestGetRootFolder_NotFoundIsPermissionDenied(t *testing.T) {
+	srv, clmClient := clmtest.NewServer(t)
+	srv.ForceRootFolderStatus(http.StatusNotFound)
+
+	_, _, err := clmClient.GetRootFolder(context.Background())
+	if err == nil {
+		t.Fatal("expected an error for a 404 on the root folder, got nil")
+	}
+	if status.Code(err) != codes.PermissionDenied {
+		t.Errorf("expected PermissionDenied, got %s (err: %v)", status.Code(err), err)
+	}
+}
+
+// Page sizes and the folder order pin pageSortParams.limit and pageSortParams.offset
+// reaching the server: a wrong limit changes the sizes, a wrong offset repeats or skips folders.
+func TestListChildFolders_Pagination(t *testing.T) {
+	tests := []struct {
+		name          string
+		pageSize      int
+		wantPageSizes []int
+	}{
+		{"explicit page size", 60, []int{60, 60, 30}},
+		{"default page size", 0, []int{100, 50}},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			srv, clmClient := clmtest.NewServer(t)
+			srv.SeedFolderTree() // folder-agreements has 150 direct children
+			ctx := context.Background()
+
+			var pageSizes []int
+			var gotIDs []string
+			pageToken := ""
+			for i := 0; i < 10; i++ { // safety bound for the test loop itself
+				folders, next, _, err := clmClient.ListChildFolders(ctx, "folder-agreements", client.PageOptions{PageSize: testCase.pageSize, PageToken: pageToken})
+				if err != nil {
+					t.Fatalf("ListChildFolders page %d: %v", i, err)
+				}
+				pageSizes = append(pageSizes, len(folders))
+				for _, folder := range folders {
+					gotIDs = append(gotIDs, client.IDFromHref(folder.Href))
+				}
+				if next == "" {
+					break
+				}
+				pageToken = next
+			}
+
+			if !slices.Equal(pageSizes, testCase.wantPageSizes) {
+				t.Fatalf("expected page sizes %v, got %v", testCase.wantPageSizes, pageSizes)
+			}
+			for i, folderID := range gotIDs {
+				if want := fmt.Sprintf("folder-agreements-%03d", i+1); folderID != want {
+					t.Fatalf("folder %d: expected %s, got %s", i, want, folderID)
+				}
+			}
+		})
+	}
+}
+
+func TestListChildFolders_LeafHasNoChildren(t *testing.T) {
+	_, clmClient := clmtest.NewServer(t)
+
+	folders, next, _, err := clmClient.ListChildFolders(context.Background(), "folder-templates", client.PageOptions{})
+	if err != nil {
+		t.Fatalf("ListChildFolders: %v", err)
+	}
+	if len(folders) != 0 || next != "" {
+		t.Errorf("expected no child folders and no next token, got %d folders (next %q)", len(folders), next)
+	}
+}
+
+func TestListChildFolders_NotFoundIsPermissionDenied(t *testing.T) {
+	_, clmClient := clmtest.NewServer(t)
+
+	_, _, _, err := clmClient.ListChildFolders(context.Background(), "folder-missing", client.PageOptions{})
+	if status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("expected a PermissionDenied error, got %v", err)
 	}
 }
 

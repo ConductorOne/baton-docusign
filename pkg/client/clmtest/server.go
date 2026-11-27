@@ -27,10 +27,9 @@
 //
 //	GET   /oauth/userinfo                              — eSignature account discovery (ensureInitialized)
 //	GET   /api/v2/{accountId}/account                   — CLM account discovery (ensureClmInitialized)
-//	POST  /v2/{accountId}/foldersearchtasks             — SearchFolders (create task; resolves inline)
-//	GET   /v2/{accountId}/foldersearchtasks/{id}        — SearchFolders (poll a task — see PendingFolderSearchPolls)
-//	GET   /v2/{accountId}/foldersearchtasks/{id}/result — SearchFolders (continuation pages)
+//	GET   /v2/{accountId}/folders/type                  — GetRootFolder (only ?systemFolder=root)
 //	GET   /v2/{accountId}/folders/{id}                  — GetFolder (supports ?expand=Security)
+//	GET   /v2/{accountId}/folders/{id}/folders           — ListChildFolders (paginated)
 //	POST  /v2/{accountId}/changesecuritytasks           — PatchFolderSecurity (create task; resolves inline)
 //	GET   /v2/{accountId}/changesecuritytasks/{id}      — PatchFolderSecurity (poll a task — see PendingChangeSecurityPolls)
 //	GET   /v2/{accountId}/groups                        — ListGroups
@@ -102,8 +101,8 @@ type Server struct {
 
 	mu sync.Mutex
 
-	folders     map[string]*client.ClmFolder
-	folderOrder []string
+	folders        map[string]*client.ClmFolder
+	folderChildren map[string][]string // parent folderID -> child folderIDs, insertion order preserved
 
 	groups       map[string]*client.ClmGroup
 	groupOrder   []string
@@ -126,22 +125,9 @@ type Server struct {
 
 	forcedListMembersStatus int // when non-zero, GET .../members fails with this HTTP status, for tests
 
+	forcedRootFolderStatus int // when non-zero, GET .../folders/type fails with this HTTP status, for tests
+
 	lastPatchedMemberGroupHrefs map[string][]string // memberID -> the raw Href strings the last PATCH request body carried, for tests
-
-	nextFolderSearchTaskID int // incrementing counter for mock FolderSearchTasks task IDs
-
-	// pendingFolderSearchPolls, when > 0, makes the next SearchFolders task created via
-	// POST /foldersearchtasks come back "Processing" this many times before resolving to
-	// "Success" on poll — see SetPendingFolderSearchPolls. Decremented on each poll.
-	pendingFolderSearchPolls int
-
-	// omitFolderSearchResultHref, when true, leaves Result.Href empty on the next
-	// successful folder-search task response — see SetOmitFolderSearchResultHref.
-	omitFolderSearchResultHref bool
-
-	// folderSearchTaskHrefOverride, when non-empty, replaces the Href on the next folder
-	// search task response — see SetFolderSearchTaskHrefOverride.
-	folderSearchTaskHrefOverride string
 
 	nextChangeSecurityTaskID int // incrementing counter for mock ChangeSecurityTasks task IDs
 
@@ -150,6 +136,10 @@ type Server struct {
 	// resolving to "success" on poll — see SetPendingChangeSecurityPolls. Decremented on
 	// each poll.
 	pendingChangeSecurityPolls int
+
+	// changeSecurityTaskHrefOverride, when non-empty, replaces the Href on the next
+	// change-security task response — see SetChangeSecurityTaskHrefOverride.
+	changeSecurityTaskHrefOverride string
 }
 
 // ForceMemberWorkflowQueuesStatus makes GET .../members/{id}/workflowqueues fail with
@@ -170,33 +160,35 @@ func (s *Server) ForceListMembersStatus(status int) {
 	s.forcedListMembersStatus = status
 }
 
-// SetPendingFolderSearchPolls makes the next folder search task created by this server
-// require n polls of GET .../foldersearchtasks/{id} before resolving to "Success" —
-// exercises SearchFolders' awaitClmFolderSearchTask polling loop, which every live test
-// against a real CLM tenant resolved past on the first try (inline in the POST
-// response), leaving that branch otherwise untested.
-func (s *Server) SetPendingFolderSearchPolls(n int) {
+// ForceRootFolderStatus makes GET .../folders/type fail with the given HTTP status.
+func (s *Server) ForceRootFolderStatus(status int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.pendingFolderSearchPolls = n
+	s.forcedRootFolderStatus = status
 }
 
-// SetFolderSearchTaskHrefOverride makes the next folder search task response carry the
-// given Href instead of this server's own — used to pin the client's host-validation
+// FolderParents maps every folder ID to its parent's ID, or "" for the root — for
+// asserting a folder walk reached the whole tree with the right parents.
+func (s *Server) FolderParents() map[string]string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	parents := make(map[string]string, len(s.folders))
+	for id, folder := range s.folders {
+		parents[id] = ""
+		if folder.ParentFolder != nil {
+			parents[id] = idFromHref(folder.ParentFolder.Href)
+		}
+	}
+	return parents
+}
+
+// SetChangeSecurityTaskHrefOverride makes the next change-security task response carry
+// the given Href instead of this server's own — used to pin the client's host-validation
 // guard (Client.validateClmURL) against a task Href pointing at an unexpected host.
-func (s *Server) SetFolderSearchTaskHrefOverride(href string) {
+func (s *Server) SetChangeSecurityTaskHrefOverride(href string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.folderSearchTaskHrefOverride = href
-}
-
-// SetOmitFolderSearchResultHref makes the next successful FolderSearchTasks response
-// leave Result.Href empty. Used to pin SearchFolders' guard against minting a
-// continuation token that would re-POST a new search (page-1 loop).
-func (s *Server) SetOmitFolderSearchResultHref(omit bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.omitFolderSearchResultHref = omit
+	s.changeSecurityTaskHrefOverride = href
 }
 
 // SetPendingChangeSecurityPolls makes the next change-security task created by this
@@ -427,6 +419,7 @@ func (s *Server) FolderSecurity(folderID string) client.ClmFolderSecurity {
 func newState() *Server {
 	return &Server{
 		folders:                          make(map[string]*client.ClmFolder),
+		folderChildren:                   make(map[string][]string),
 		groups:                           make(map[string]*client.ClmGroup),
 		groupMembers:                     make(map[string][]string),
 		members:                          make(map[string]*client.ClmMember),
@@ -445,10 +438,9 @@ func newMux(s *Server) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /oauth/userinfo", s.handleUserInfo)
 	mux.HandleFunc("GET /api/v2/{accountId}/account", s.requireAuth(s.handleClmAccountDiscovery))
-	mux.HandleFunc("POST /v2/{accountId}/foldersearchtasks", s.requireAuth(s.handleCreateFolderSearchTask))
-	mux.HandleFunc("GET /v2/{accountId}/foldersearchtasks/{id}", s.requireAuth(s.handlePollFolderSearchTask))
-	mux.HandleFunc("GET /v2/{accountId}/foldersearchtasks/{id}/result", s.requireAuth(s.handleFolderSearchTaskResult))
+	mux.HandleFunc("GET /v2/{accountId}/folders/type", s.requireAuth(s.handleGetSystemFolder))
 	mux.HandleFunc("GET /v2/{accountId}/folders/{id}", s.requireAuth(s.handleGetFolder))
+	mux.HandleFunc("GET /v2/{accountId}/folders/{id}/folders", s.requireAuth(s.handleListChildFolders))
 	mux.HandleFunc("POST /v2/{accountId}/changesecuritytasks", s.requireAuth(s.handleCreateChangeSecurityTask))
 	mux.HandleFunc("GET /v2/{accountId}/changesecuritytasks/{id}", s.requireAuth(s.handlePollChangeSecurityTask))
 	mux.HandleFunc("GET /v2/{accountId}/groups", s.requireAuth(s.handleListGroups))
@@ -581,7 +573,7 @@ func (s *Server) handleClmAccountDiscovery(w http.ResponseWriter, _ *http.Reques
 }
 
 // pageSlice applies pageSortParams.offset/limit to an ordered ID slice and returns the
-// page's IDs plus the ClmPage metadata — shared by every List/Search handler.
+// page's IDs plus the ClmPage metadata — shared by every list handler.
 // Returns (page IDs, page metadata).
 func pageSlice(r *http.Request, ids []string) ([]string, client.ClmPage) {
 	offset, _ := strconv.Atoi(r.URL.Query().Get("pageSortParams.offset"))

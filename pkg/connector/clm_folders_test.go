@@ -18,6 +18,8 @@ import (
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	"go.uber.org/zap/zaptest/observer"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // --- Pure-function tests: clmSlugForAccessType / clmAccessTypeForSlug ---
@@ -82,26 +84,124 @@ func TestClmFolderBuilder_List_FailsWhenClmUnavailable(t *testing.T) {
 }
 
 func TestClmFolderBuilder_List(t *testing.T) {
-	_, c := clmtest.NewServer(t)
-	b := newClmFolderBuilder(c, true)
+	_, clmClient := clmtest.NewServer(t)
+	folderBuilder := newClmFolderBuilder(clmClient, true)
 	ctx := context.Background()
 
-	var all []*v2.Resource
+	roots, syncResults, err := folderBuilder.List(ctx, nil, rs.SyncOpAttrs{PageToken: pagination.Token{Size: 1}})
+	if err != nil {
+		t.Fatalf("List(nil): %v", err)
+	}
+	if len(roots) != 1 || roots[0].Id.Resource != "folder-root" || roots[0].ParentResourceId != nil || syncResults.NextPageToken != "" {
+		t.Fatalf("expected the unparented call to return only the root folder without a parent or next page, got %v (next %q)", roots, syncResults.NextPageToken)
+	}
+
+	var children []*v2.Resource
 	pageToken := ""
 	for i := 0; i < 10; i++ {
-		resources, res, err := b.List(ctx, nil, rs.SyncOpAttrs{PageToken: pagination.Token{Size: 2, Token: pageToken}})
+		resources, syncResults, err := folderBuilder.List(ctx, roots[0].Id, rs.SyncOpAttrs{PageToken: pagination.Token{Size: 1, Token: pageToken}})
 		if err != nil {
 			t.Fatalf("List page %d: %v", i, err)
 		}
-		all = append(all, resources...)
-		if res.NextPageToken == "" {
+		children = append(children, resources...)
+		if syncResults.NextPageToken == "" {
 			break
 		}
-		pageToken = res.NextPageToken
+		pageToken = syncResults.NextPageToken
 	}
 
-	if len(all) != 3 {
-		t.Fatalf("expected 3 CLM folders (root, templates, contracts), got %d", len(all))
+	if len(children) != 2 {
+		t.Fatalf("expected 2 CLM folders under the root (templates, contracts), got %d", len(children))
+	}
+	for _, child := range children {
+		if child.ParentResourceId.GetResource() != "folder-root" {
+			t.Errorf("folder %s: expected parent folder-root, got %v", child.Id.Resource, child.ParentResourceId)
+		}
+	}
+}
+
+func TestClmFolderBuilder_List_IgnoresNonFolderParent(t *testing.T) {
+	_, clmClient := clmtest.NewServer(t)
+	folderBuilder := newClmFolderBuilder(clmClient, true)
+
+	resources, syncResults, err := folderBuilder.List(context.Background(), &v2.ResourceId{ResourceType: clmMemberResourceType.Id, Resource: "member-bob"}, rs.SyncOpAttrs{})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(resources) != 0 || syncResults != nil {
+		t.Errorf("expected no resources for a non-folder parent, got %d (results %v)", len(resources), syncResults)
+	}
+}
+
+func TestClmFolderBuilder_List_ReturnsChildFolderErrors(t *testing.T) {
+	_, clmClient := clmtest.NewServer(t)
+	folderBuilder := newClmFolderBuilder(clmClient, true)
+
+	_, _, err := folderBuilder.List(context.Background(), &v2.ResourceId{ResourceType: clmFolderResourceType.Id, Resource: "folder-missing"}, rs.SyncOpAttrs{})
+	if err == nil {
+		t.Fatal("expected List to return the error for an unknown parent folder, got nil")
+	}
+	if status.Code(err) != codes.PermissionDenied {
+		t.Errorf("expected PermissionDenied for an unknown parent folder, got code %s (err: %v)", status.Code(err), err)
+	}
+}
+
+// TestClmFolderBuilder_List_WalksWholeFolderTree drives List the way the SDK does: one
+// unparented call, then one parented call per emitted clm_folder, against a wide and
+// deep folder tree.
+func TestClmFolderBuilder_List_WalksWholeFolderTree(t *testing.T) {
+	srv, clmClient := clmtest.NewServer(t)
+	srv.SeedFolderTree()
+	folderBuilder := newClmFolderBuilder(clmClient, true)
+	ctx := context.Background()
+
+	gotParents := map[string]string{}
+	pendingParents := []*v2.ResourceId{nil}
+	for len(pendingParents) > 0 {
+		parentID := pendingParents[0]
+		pendingParents = pendingParents[1:]
+
+		pageToken := ""
+		for {
+			resources, syncResults, err := folderBuilder.List(ctx, parentID, rs.SyncOpAttrs{PageToken: pagination.Token{Token: pageToken}})
+			if err != nil {
+				t.Fatalf("List(parent=%v): %v", parentID, err)
+			}
+
+			for _, folderResource := range resources {
+				folderID := folderResource.Id.Resource
+				if _, seen := gotParents[folderID]; seen {
+					t.Fatalf("folder %s emitted more than once", folderID)
+				}
+				gotParents[folderID] = folderResource.GetParentResourceId().GetResource()
+
+				var child v2.ChildResourceType
+				folderAnnos := annotations.Annotations(folderResource.Annotations)
+				hasChild, err := folderAnnos.Pick(&child)
+				if err != nil {
+					t.Fatalf("folder %s: Pick(ChildResourceType): %v", folderID, err)
+				}
+				if hasChild && child.ResourceTypeId == clmFolderResourceType.Id {
+					pendingParents = append(pendingParents, folderResource.Id)
+				}
+			}
+
+			if syncResults == nil || syncResults.NextPageToken == "" {
+				break
+			}
+			pageToken = syncResults.NextPageToken
+		}
+	}
+
+	wantParents := srv.FolderParents()
+	if len(gotParents) != len(wantParents) {
+		t.Fatalf("walk emitted %d folders, want %d", len(gotParents), len(wantParents))
+	}
+
+	for folderID, wantParent := range wantParents {
+		if gotParents[folderID] != wantParent {
+			t.Errorf("folder %s: parent %q, want %q", folderID, gotParents[folderID], wantParent)
+		}
 	}
 }
 

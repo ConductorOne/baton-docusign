@@ -9,15 +9,14 @@
 // entitlements and grants, once the authorizing user had admin rights in that
 // environment — an earlier 401 "Access Denied" on every data call (discovery
 // succeeded) turned out to be exactly that, not a scope, licensing, or demo-vs-
-// production issue as initially suspected. Folders required a separate fix — see
-// SearchFolders' doc for the confirmed request/response shape.
+// production issue as initially suspected.
 //
 // # API Endpoints Used
 //
 // Folders:
-//   - POST /v2/{accountId}/foldersearchtasks - Search for folders (async Task API — see
-//     SearchFolders' doc). Prefer this over the also-documented Folders:Search
-//     (POST /v2/{accountId}/folders/search), which returns 405 live.
+//   - GET  /v2/{accountId}/folders/type?systemFolder=root - Get the root folder
+//     (GetRootFolder), the entry point for walking the folder tree.
+//   - GET  /v2/{accountId}/folders/{id}/folders - List a folder's child folders (ListChildFolders).
 //   - GET  /v2/{accountId}/folders/{id}?expand=Security - Get a folder with its explicit security entries.
 //     Security is three separate collections by principal type (Groups/Roles/Users), confirmed via
 //     DocuSign's own Folders.Patch reference page - see ClmFolderSecurity's doc in clm_models.go.
@@ -120,17 +119,13 @@ var clmBaseURLCandidateFields = []string{
 
 // CLM API endpoint constants.
 const (
-	// clmCreateFolderSearchTask creates a CLM FolderSearchTasks task — see
-	// SearchFolders' doc. The CLM API Reference also documents a synchronous
-	// Folders:Search at POST /v2/{accountId}/folders/search, but against a real
-	// tenant that path returns 405 Method Not Allowed, so this connector uses the
-	// documented async FolderSearchTasks resource instead.
-	clmCreateFolderSearchTask = "/v2/%s/foldersearchtasks"
 	// clmCreateChangeSecurityTask creates a CLM ChangeSecurityTasks task — see
 	// PatchFolderSecurity's doc. The generic Folders Patch this replaced silently
 	// ignores a Security payload (confirmed live: 200 OK, but no effect).
 	clmCreateChangeSecurityTask = "/v2/%s/changesecuritytasks"
 	clmGetFolder                = "/v2/%s/folders/%s"
+	clmGetSystemFolder          = "/v2/%s/folders/type"
+	clmGetChildFolders          = "/v2/%s/folders/%s/folders"
 	clmGetGroups                = "/v2/%s/groups"
 	clmGetGroupMembers          = "/v2/%s/groups/%s/groupmembers"
 	clmGetMembers               = "/v2/%s/members"
@@ -310,18 +305,17 @@ func (c *Client) prepareClmPagedRequest(endpoint string, options PageOptions, ex
 var clmKnownDomains = []string{"docusign.net", "springcm.com"}
 
 // validateClmURL rejects a URL that isn't a plausible CLM host — a guard for the Task
-// API polling/continuation URLs (task Href, SearchFolders' ResultHref) that come from a
-// response body or a round-tripped page token rather than being built from clmBaseURI
-// like every other CLM request. doClmRequest attaches this connector's bearer token to
-// whatever URL it's given, with no host check of its own, so a malformed or tampered
-// href here would otherwise send that token to an arbitrary host.
+// API polling URLs (task Href) that come from a response body rather than being built
+// from clmBaseURI like every other CLM request. doClmRequest attaches this connector's
+// bearer token to whatever URL it's given, with no host check of its own, so a malformed
+// or tampered href here would otherwise send that token to an arbitrary host.
 //
 // Deliberately not an exact match against the discovered base host: clmPreferredHref's
 // doc (pkg/connector/helper.go) notes CLM's Href host isn't guaranteed to match the
 // discovered base URL, and this package's own confirmed base-URL-resolution flow proves
 // it — the Object API base and the account-discovery host are already two different
 // domains. An exact-host check would risk hard-failing every genuine Task API call (and
-// so the whole clm_folder sync) the first time CLM legitimately serves one from a
+// so folder security provisioning) the first time CLM legitimately serves one from a
 // sibling host. source names the caller/field for the error message.
 func (c *Client) validateClmURL(u *url.URL, source string) error {
 	c.mutex.RLock()
@@ -383,184 +377,15 @@ func (c *Client) doClmRequest(ctx context.Context, method string, reqURL *url.UR
 	return anno, err
 }
 
-// clmMaxTaskPolls bounds how many times a CLM Task API poll loop (SearchFolders,
-// PatchFolderSecurity) retries a not-yet-resolved task before giving up. Against a live
-// CLM tenant, FolderSearchTasks always resolved inline (Status "Success" already in the
-// POST response), so both polling branches are implemented per the Task API's
-// documented contract but unverified live; the cap exists so a task that genuinely
-// never resolves fails loudly instead of hanging.
+// clmMaxTaskPolls bounds how many times PatchFolderSecurity's poll loop retries a
+// not-yet-resolved ChangeSecurityTasks task before giving up, so a task that never
+// resolves fails loudly instead of hanging.
 const clmMaxTaskPolls = 30
 
-// ClmFolderSearchTaskPollInterval is how long SearchFolders waits between polls of a
-// "Processing" FolderSearchTasks task. Exported, like DefaultPageSize, so tests can
-// override it — a real poll cadence would make a test exercising this branch
-// needlessly slow.
-var ClmFolderSearchTaskPollInterval = 2 * time.Second
-
-// SearchFolders discovers folders via CLM's FolderSearchTasks (CLM API Reference →
-// Tasks → FolderSearchTasks). Unlike Groups/Members/PermissionSets there is no
-// flat list-all for folders. The Reference also documents Folders:Search
-// (POST /v2/{accountId}/folders/search); this connector follows FolderSearchTasks
-// because that sync path returns 405 live (see bullets below). A POST creates a
-// search task, which either resolves inline or must be polled via its own Href
-// until Status leaves "Processing", after which the paginated folder list is read
-// from the task's Result. (FolderSearchTasks' Status field is an unenumerated
-// string in the schema — live returns Title-Case "Success"/"Processing", distinct
-// from ChangeSecurityTasks' documented lowercase success/waiting/failure/processing.)
-//
-// Confirmed live against a real CLM tenant:
-//   - POST /v2/{accountId}/folders/search (Folders:Search in the Reference — this
-//     function's original implementation) returns 405 Method Not Allowed, so the
-//     documented sync search is not usable on the tenants we hit.
-//   - POST /v2/{accountId}/foldersearchtasks requires a recognized search parameter in
-//     the body — an empty body, or {"Name": ...} (the field ClmFolder's own JSON tag
-//     uses), is rejected with CLM ErrorCode 1024 "no valid search parameter" against
-//     every property name tried except "Title". {"Title": ""} is accepted and matches
-//     every folder (Title is a substring match, so empty matches everything) —
-//     confirmed against a real account with 100 folders. Title is a documented
-//     FolderSearchTask request field in the Reference.
-//   - The task resolved inline (Status "Success" already in the POST response, Result
-//     already populated) on every live test; the "Processing" polling branch below is
-//     unverified live.
-//   - Continuation pages don't re-POST a new search: they GET the task's own Result
-//     href (offset/limit appended) directly, confirmed live to return the same flat,
-//     paginated shape as every other CLM list endpoint.
-func (c *Client) SearchFolders(ctx context.Context, options PageOptions) ([]ClmFolder, string, annotations.Annotations, error) {
-	if err := c.ensureClmReady(ctx); err != nil {
-		return nil, "", nil, err
-	}
-
-	if options.PageToken != "" {
-		decoded, err := decodeClmPageToken(options.PageToken)
-		if err != nil {
-			return nil, "", nil, fmt.Errorf("baton-docusign: invalid CLM page token: %w", err)
-		}
-		if decoded.ResultHref == "" {
-			// A SearchFolders continuation token without ResultHref would fall through
-			// to POST a brand-new search task (page 1 again) — an unbounded loop when
-			// more pages remain. Fail loud instead.
-			return nil, "", nil, fmt.Errorf("baton-docusign: CLM folder search page token missing ResultHref")
-		}
-		return c.getClmFolderSearchResultPage(ctx, decoded.ResultHref, options)
-	}
-
-	createURL, err := c.buildClmClientURL(clmCreateFolderSearchTask)
-	if err != nil {
-		return nil, "", nil, err
-	}
-	// Page-1 unconfirmed live: FolderSearchTasks' create response embeds a page of
-	// results inline (see this func's doc), and every other paged CLM request controls
-	// its page size via pageSortParams.limit on the request URL — applying the same
-	// convention here on the POST, rather than leaving page 1 to whatever CLM's default
-	// happens to be, since options.PageSize should govern the first page like it does
-	// every continuation page (getClmFolderSearchResultPage).
-	createURL, requestedPage, err := appendClmPageQuery(createURL, options)
-	if err != nil {
-		return nil, "", nil, err
-	}
-
-	var task ClmFolderSearchTaskResponse
-	anno, err := c.doClmRequest(ctx, http.MethodPost, createURL, map[string]string{"Title": ""}, &task)
-	if err != nil {
-		return nil, "", nil, fmt.Errorf("baton-docusign: failed to create CLM folder search task: %w", err)
-	}
-
-	task, err = c.awaitClmFolderSearchTask(ctx, task)
-	if err != nil {
-		return nil, "", anno, err
-	}
-	if task.Result == nil {
-		return nil, "", anno, fmt.Errorf("baton-docusign: CLM folder search task %s succeeded with no Result", task.Href)
-	}
-	// Prefer the smaller of the requested and echoed page sizes: applying
-	// pageSortParams.limit to the create POST is unconfirmed live (see this func's
-	// doc), so either direction of mismatch is possible. An echoed Limit smaller than
-	// requested (CLM ignored the param, served its own default) would make a
-	// genuinely full page look short if left at the requested size; an echoed Limit
-	// larger than requested (e.g. CLM's max page size rather than what it actually
-	// applied) would make a genuinely full page look short the other way if trusted
-	// outright. Taking the minimum is safe either way — worst case it costs one extra
-	// empty-page request, never lost data.
-	if task.Result.Limit > 0 && task.Result.Limit < requestedPage.PageSize {
-		requestedPage.PageSize = task.Result.Limit
-	}
-
-	nextToken, err := getClmNextToken(requestedPage, len(task.Result.Items), task.Result.Next != "", task.Result.Total, task.Result.Href)
-	if err != nil {
-		return nil, "", anno, err
-	}
-	// getClmNextToken will happily mint a token with ResultHref:"" when Href is empty.
-	// The next SearchFolders call would then re-POST (Requests reset to 0) and loop on
-	// page 1 forever — maxClmListPages never fires. Refuse to emit that token.
-	if nextToken != "" && task.Result.Href == "" {
-		return nil, "", anno, fmt.Errorf("baton-docusign: CLM folder search task %s Result has no Href; cannot continue pagination", task.Href)
-	}
-	return task.Result.Items, nextToken, anno, nil
-}
-
-// getClmFolderSearchResultPage fetches one continuation page of an already-completed
-// CLM folder search — see SearchFolders' doc for why this reads from a server-issued
-// Result href instead of re-POSTing a new search task.
-func (c *Client) getClmFolderSearchResultPage(ctx context.Context, resultHref string, options PageOptions) ([]ClmFolder, string, annotations.Annotations, error) {
-	base, err := url.Parse(resultHref)
-	if err != nil {
-		return nil, "", nil, fmt.Errorf("baton-docusign: invalid CLM folder search result href %q: %w", resultHref, err)
-	}
-	if err := c.validateClmURL(base, "folder search result href"); err != nil {
-		return nil, "", nil, err
-	}
-	pageURL, requestedPage, err := appendClmPageQuery(base, options)
-	if err != nil {
-		return nil, "", nil, err
-	}
-
-	var page ClmFolderPage
-	anno, err := c.doClmRequest(ctx, http.MethodGet, pageURL, nil, &page)
-	if err != nil {
-		return nil, "", nil, fmt.Errorf("baton-docusign: failed to read CLM folder search results: %w", err)
-	}
-
-	nextToken, err := getClmNextToken(requestedPage, len(page.Items), page.Next != "", page.Total, resultHref)
-	if err != nil {
-		return nil, "", anno, err
-	}
-	return page.Items, nextToken, anno, nil
-}
-
-// awaitClmFolderSearchTask polls a CLM FolderSearchTasks task until it leaves
-// "Processing", per the CLM Task API's documented contract (GET the task's own Href;
-// Status becomes "Success" or "Failure") — see SearchFolders' doc for why this branch
-// is unverified against a live tenant.
-func (c *Client) awaitClmFolderSearchTask(ctx context.Context, task ClmFolderSearchTaskResponse) (ClmFolderSearchTaskResponse, error) {
-	for attempt := 0; task.Status == "Processing"; attempt++ {
-		if attempt >= clmMaxTaskPolls {
-			return task, fmt.Errorf("baton-docusign: CLM folder search task %s did not finish after %d polls", task.Href, clmMaxTaskPolls)
-		}
-		select {
-		case <-ctx.Done():
-			return task, ctx.Err()
-		case <-time.After(ClmFolderSearchTaskPollInterval):
-		}
-
-		pollURL, err := url.Parse(task.Href)
-		if err != nil {
-			return task, fmt.Errorf("baton-docusign: invalid CLM folder search task href %q: %w", task.Href, err)
-		}
-		if err := c.validateClmURL(pollURL, "folder search task href"); err != nil {
-			return task, err
-		}
-		// WithNoCache: repeated GETs to the same task URL must observe its latest
-		// Status, not a memoized first response — see GetFolder's noCache param for the
-		// same uhttp GET-cache staleness concern.
-		if _, err := c.doClmRequest(ctx, http.MethodGet, pollURL, nil, &task, uhttp.WithNoCache()); err != nil {
-			return task, fmt.Errorf("baton-docusign: failed to poll CLM folder search task %s: %w", task.Href, err)
-		}
-	}
-	if task.Status == "Failure" {
-		return task, fmt.Errorf("baton-docusign: CLM folder search task %s failed", task.Href)
-	}
-	return task, nil
-}
+// ClmChangeSecurityTaskPollInterval is how long PatchFolderSecurity waits between polls of
+// a "waiting"/"processing" ChangeSecurityTasks task. Exported, like DefaultPageSize, so
+// tests can override it — a real poll cadence would make them needlessly slow.
+var ClmChangeSecurityTaskPollInterval = 2 * time.Second
 
 // GetFolder fetches a single folder, optionally expanding Security to get its explicit
 // (non-inherited) folder security entries. The response may be served from the shared
@@ -605,6 +430,65 @@ func (c *Client) getFolder(ctx context.Context, folderID string, noCache bool, e
 	return &folder, anno, nil
 }
 
+// GetRootFolder fetches the account's root folder, the entry point for walking the folder
+// tree with ListChildFolders. Doc URL:
+// https://developers.docusign.com/docs/clm-api/reference/objects/folders/getbysystemtype/
+func (c *Client) GetRootFolder(ctx context.Context) (*ClmFolder, annotations.Annotations, error) {
+	if err := c.ensureClmReady(ctx); err != nil {
+		return nil, nil, err
+	}
+
+	folderURL, err := c.buildClmClientURL(clmGetSystemFolder)
+	if err != nil {
+		return nil, nil, err
+	}
+	ApplyQueryParam(folderURL, "systemFolder", "root")
+
+	var folder ClmFolder
+	anno, err := c.doClmRequest(ctx, http.MethodGet, folderURL, nil, &folder)
+	if err != nil {
+		// Fail on a 404 rather than return NotFound, which the SDK treats as a warning and stops listing.
+		if status.Code(err) == codes.NotFound {
+			err = uhttp.WrapErrors(codes.PermissionDenied, "CLM root folder returned not found", err)
+		}
+		return nil, nil, fmt.Errorf("baton-docusign: failed to get CLM root folder: %w", err)
+	}
+
+	return &folder, anno, nil
+}
+
+// ListChildFolders lists the direct child folders of a CLM folder. Doc URL:
+// https://developers.docusign.com/docs/clm-api/reference/objects/folders/getchildfolders/
+//
+// Pagination: offset/limit, see package doc.
+// CLM caps a collection page at 100 items.
+func (c *Client) ListChildFolders(ctx context.Context, folderID string, options PageOptions) ([]ClmFolder, string, annotations.Annotations, error) {
+	if err := c.ensureClmReady(ctx); err != nil {
+		return nil, "", nil, err
+	}
+
+	foldersURL, requestedPage, err := c.prepareClmPagedRequest(clmGetChildFolders, options, folderID)
+	if err != nil {
+		return nil, "", nil, err
+	}
+
+	var page ClmFolderPage
+	anno, err := c.doClmRequest(ctx, http.MethodGet, foldersURL, nil, &page)
+	if err != nil {
+		// Fail on a 404 rather than return NotFound, which the SDK treats as a warning and stops listing.
+		if status.Code(err) == codes.NotFound {
+			err = uhttp.WrapErrors(codes.PermissionDenied, "CLM child folders list returned not found", err)
+		}
+		return nil, "", nil, fmt.Errorf("baton-docusign: failed to list child folders of CLM folder %s: %w", folderID, err)
+	}
+
+	nextToken, err := getClmNextToken(requestedPage, len(page.Items), page.Next != "", page.Total)
+	if err != nil {
+		return nil, "", anno, err
+	}
+	return page.Items, nextToken, anno, nil
+}
+
 // PatchFolderSecurity grants or revokes folder security. write must be the folder's
 // complete security state across all three principal-type collections (see the
 // connector-layer caller — clmFolderSecurityToWrite builds this from a fresh read,
@@ -637,10 +521,8 @@ func (c *Client) getFolder(ctx context.Context, folderID string, noCache bool, e
 //
 // NOT independently verified live: per explicit instruction, this project is done
 // live-testing against the customer's tenant. ChangeSecurityTasks' Status values are
-// documented in lowercase (success/waiting/failure/processing) — confirmed distinct
-// from FolderSearchTasks' PascalCase (Success/Processing), not a documentation
-// inconsistency to normalize away — is the other thing worth a second look if this
-// doesn't work in practice.
+// documented in lowercase (success/waiting/failure/processing) — worth a second look if
+// this doesn't work in practice.
 func (c *Client) PatchFolderSecurity(ctx context.Context, folderID string, write ClmFolderSecurityWrite) (annotations.Annotations, error) {
 	if err := c.ensureClmReady(ctx); err != nil {
 		return nil, err
@@ -675,8 +557,8 @@ func (c *Client) PatchFolderSecurity(ctx context.Context, folderID string, write
 	return anno, nil
 }
 
-// clmChangeSecurityStatus* are ChangeSecurityTasks' documented Status values —
-// lowercase, distinct from FolderSearchTasks' PascalCase. See PatchFolderSecurity's doc.
+// clmChangeSecurityStatus* are ChangeSecurityTasks' documented (lowercase) Status
+// values. See PatchFolderSecurity's doc.
 const (
 	ClmChangeSecurityStatusSuccess    = "success"
 	ClmChangeSecurityStatusWaiting    = "waiting"
@@ -685,10 +567,9 @@ const (
 )
 
 // awaitClmChangeSecurityTask polls a CLM ChangeSecurityTasks task until it leaves
-// "waiting"/"processing" — mirrors awaitClmFolderSearchTask's polling loop, but against
-// ChangeSecurityTasks' distinct (lowercase) Status vocabulary and leaner response shape
-// (no Result field: this task mutates rather than returns data, so success/failure is
-// the only thing to observe). Unverified live — see PatchFolderSecurity's doc.
+// "waiting"/"processing". The response has no Result field: this task mutates rather
+// than returns data, so success/failure is the only thing to observe. Unverified live —
+// see PatchFolderSecurity's doc.
 func (c *Client) awaitClmChangeSecurityTask(ctx context.Context, task ClmChangeSecurityTaskResponse) (ClmChangeSecurityTaskResponse, error) {
 	for attempt := 0; task.Status == ClmChangeSecurityStatusWaiting || task.Status == ClmChangeSecurityStatusProcessing; attempt++ {
 		if attempt >= clmMaxTaskPolls {
@@ -697,7 +578,7 @@ func (c *Client) awaitClmChangeSecurityTask(ctx context.Context, task ClmChangeS
 		select {
 		case <-ctx.Done():
 			return task, ctx.Err()
-		case <-time.After(ClmFolderSearchTaskPollInterval):
+		case <-time.After(ClmChangeSecurityTaskPollInterval):
 		}
 
 		pollURL, err := url.Parse(task.Href)
@@ -707,8 +588,8 @@ func (c *Client) awaitClmChangeSecurityTask(ctx context.Context, task ClmChangeS
 		if err := c.validateClmURL(pollURL, "change-security task href"); err != nil {
 			return task, err
 		}
-		// WithNoCache: see awaitClmFolderSearchTask's identical comment — repeated polls
-		// of the same task URL must observe its latest Status, not a memoized first one.
+		// WithNoCache: repeated polls of the same task URL must observe its latest
+		// Status, not a memoized first one (uhttp caches GETs).
 		if _, err := c.doClmRequest(ctx, http.MethodGet, pollURL, nil, &task, uhttp.WithNoCache()); err != nil {
 			return task, fmt.Errorf("baton-docusign: failed to poll CLM change-security task %s: %w", task.Href, err)
 		}
@@ -735,7 +616,7 @@ func (c *Client) ListGroups(ctx context.Context, options PageOptions) ([]ClmGrou
 		return nil, "", nil, fmt.Errorf("baton-docusign: failed to list CLM groups: %w", err)
 	}
 
-	nextToken, err := getClmNextToken(requestedPage, len(page.Items), page.Next != "", page.Total, "")
+	nextToken, err := getClmNextToken(requestedPage, len(page.Items), page.Next != "", page.Total)
 	if err != nil {
 		return nil, "", anno, err
 	}
@@ -787,7 +668,7 @@ func (c *Client) GetGroupMembers(ctx context.Context, groupID string, options Pa
 		return nil, "", nil, fmt.Errorf("baton-docusign: failed to list members of CLM group %s: %w", groupID, err)
 	}
 
-	nextToken, err := getClmNextToken(requestedPage, len(page.Items), page.Next != "", page.Total, "")
+	nextToken, err := getClmNextToken(requestedPage, len(page.Items), page.Next != "", page.Total)
 	if err != nil {
 		return nil, "", anno, err
 	}
@@ -819,7 +700,7 @@ func (c *Client) ListMembers(ctx context.Context, options PageOptions) ([]ClmMem
 		return nil, "", nil, fmt.Errorf("baton-docusign: failed to list CLM members: %w", err)
 	}
 
-	nextToken, err := getClmNextToken(requestedPage, len(page.Items), page.Next != "", page.Total, "")
+	nextToken, err := getClmNextToken(requestedPage, len(page.Items), page.Next != "", page.Total)
 	if err != nil {
 		return nil, "", anno, err
 	}
@@ -905,7 +786,7 @@ func (c *Client) getMemberGroupsPage(ctx context.Context, memberID string, optio
 		return nil, "", nil, fmt.Errorf("baton-docusign: failed to get groups for CLM member %s: %w", memberID, err)
 	}
 
-	nextToken, err := getClmNextToken(requestedPage, len(page.Items), page.Next != "", page.Total, "")
+	nextToken, err := getClmNextToken(requestedPage, len(page.Items), page.Next != "", page.Total)
 	if err != nil {
 		return nil, "", anno, err
 	}
@@ -981,7 +862,7 @@ func (c *Client) ListPermissionSets(ctx context.Context, options PageOptions) ([
 		return nil, "", nil, fmt.Errorf("baton-docusign: failed to list CLM permission sets: %w", err)
 	}
 
-	nextToken, err := getClmNextToken(requestedPage, len(page.Items), page.Next != "", page.Total, "")
+	nextToken, err := getClmNextToken(requestedPage, len(page.Items), page.Next != "", page.Total)
 	if err != nil {
 		return nil, "", anno, err
 	}
@@ -1017,7 +898,7 @@ func (c *Client) getMemberWorkflowQueuesPage(ctx context.Context, memberID strin
 		return nil, "", nil, fmt.Errorf("baton-docusign: failed to get workflow queues for CLM member %s: %w", memberID, err)
 	}
 
-	nextToken, err := getClmNextToken(requestedPage, len(page.Items), page.Next != "", page.Total, "")
+	nextToken, err := getClmNextToken(requestedPage, len(page.Items), page.Next != "", page.Total)
 	if err != nil {
 		return nil, "", anno, err
 	}
